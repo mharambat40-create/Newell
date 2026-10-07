@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(ARCHITECTURE.md)",
+      "Write(ARCHITECTURE.md)",
+      "Edit(.github/**)",
+      "Write(.github/**)",
+      "Edit(docs/adr/**)",
+      "Write(docs/adr/**)"
+    ]
+  }
+}
