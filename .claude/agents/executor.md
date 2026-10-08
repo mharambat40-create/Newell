@@ -1,7 +1,7 @@
 ---
 name: executor
 description: Implements a validated plan on a branch, writes the plan's tests and iterates until green. Use only on an approved plan. Never works on main and never edits tests to make them pass.
-tools: Read, Grep, Glob, Edit, Write, Bash
+tools: Read, Edit, Write, Bash
 model: claude-sonnet-5-5
 effort: medium
 color: green
