@@ -62,3 +62,30 @@ Pass 1: Render the base ASCII background colors.
 Pass 2: Render the text characters (Fira Code glyphs).
 Pass 3: Render the $2 \times 2$ atlas icons over the grid, respecting alpha blending.
 Pass 4: Render Viewport Modals (if active) on the highest Z-layer, capturing all mouse/keyboard events until closed.
+
+## 7. Global Layout Structure (6-Pane Layout)
+The main application window is strictly divided into 6 distinct logical areas overlaid on the ASCII grid. 
+
+* **Top:** `Menu Bar` (File, Edit, View, etc.)
+* **Below Menu:** `Toolbar` (Quick actions, tool icons from the atlas)
+* **Left:** `Tree` (Arbre CAO / Feature Tree)
+* **Right:** `Task` (Properties, context-specific tool settings)
+* **Bottom:** `State Info` (Status bar, coordinates, FPS, hints)
+* **Center:** `3D Viewport` (The actual CAD rendering area)
+
+The boundaries between these areas are drawn using the double-line box-drawing characters (e.g., `║`, `═`, `╬`).
+
+## 8. Responsiveness & Resizing Behavior
+Since the UI is a Character Grid, all resizing operations—whether driven by the OS window or user interaction—must be strictly **discrete (character-by-character)**. There is no sub-cell resizing.
+
+### 8.1 OS Window Resizing
+When the user resizes the main OS window, the internal grid dynamically re-allocates its cells:
+* **Menu Bar, Toolbar, State Info:** Expand/contract in **width** only (height in cells remains fixed).
+* **Tree (Left) & Task (Right):** Expand/contract in **height** only (width in cells remains fixed unless dragged by the user).
+* **3D Viewport (Center):** Expands/contracts in **both width and height** to perfectly fill the remaining space.
+
+### 8.2 User-Driven Panel Resizing (Mouse Grab)
+The user can customize the width of the side panels.
+* **Interaction:** Hovering over the vertical borders (`║`) between the Tree/Viewport or Viewport/Task changes the cursor to a resize grabber. Clicking and dragging moves the border.
+* **Grid Snapping:** The border visually snaps from column to column. It jumps one full cell width at a time.
+* **Viewport Compensation:** As the Tree or Task panels increase or decrease in width, the central 3D Viewport automatically shrinks or expands to absorb the delta.
