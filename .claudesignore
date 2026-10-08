@@ -1,0 +1,9 @@
+# .claudesignore
+target/
+assets/
+*.png
+*.ttf
+*.stl
+*.step
+# Ignorer les vieux plans et logs pour ne pas polluer la mémoire
+docs/plans/archive/
