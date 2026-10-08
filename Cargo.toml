@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "crates/newell-app",
+    "crates/newell-render",
+    "crates/newell-ui",
+    "crates/newell-model",
+    "crates/newell-kernel",
+]
+resolver = "2"
+
+# Règles de l'Auditeur imposées à tout le projet
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
