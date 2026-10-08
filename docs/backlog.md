@@ -2,9 +2,11 @@
 
 ## Milestone 1: Core UI & Window (Active)
 - [x] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
-- [ ] M1.2: Setup `winit` window in `crates/newell-app` with a solid background color.
-- [ ] M1.3: Initialize `wgpu` surface and render pipeline in `crates/newell-render`.
-- [ ] M1.4: Render a basic 3D ASCII grid in the center of the viewport.
+- [ ] M1.2: Setup `winit` window and basic `wgpu` surface in `crates/newell-app` and `crates/newell-render`.
+- [ ] M1.3: Load `assets/FiraCode-Regular.ttf` and implement glyph rasterization (Texture Atlas) in `newell-render`.
+- [ ] M1.4: Implement the core 2D ASCII Grid data structure and the text rendering pipeline.
+- [ ] M1.5: Implement the 6-pane responsive UI layout (Menu, Toolbar, Tree, Task, State, Viewport).
+- [ ] M1.6: Implement user-draggable panel resizing (character-by-character grid snapping).
 
 ## Milestone 2: Geometry & Kernel
 - [ ] M2.1: Implement BrepKIT basic cube generation in `crates/newell-model`.
