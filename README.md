@@ -1,5 +1,4 @@
 # Newell
-# Newell 📐
 
 **Newell** is a next-generation parametric CAD (Computer-Aided Design) application. 
 Designed for extreme performance and a minimal memory footprint, Newell adopts a "TUI / Hacker" aesthetic while leveraging modern GPU hardware acceleration. The development is driven by a structured AI-agent workflow, under the strict supervision of a human designer.
