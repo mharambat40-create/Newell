@@ -20,7 +20,7 @@ This document dictates the strict UI/UX constraints, layout topology, and render
 * **Typography:** `Fira Code` (Monospaced). Every grid cell supports independent foreground (glyph) and background (fill) color encoding.
 * **Pane Borders:** Rendered exclusively via double-line box characters (`╔`, `╗`, `╚`, `╝`, `║`, `═`, `╬`).
 * **Feature Tree (Hierarchy):** Uses single-line characters (`├─`, `└─`, `│`). Collapsed/Expanded states use `[-]` and `[+]`. Nodes must maintain strict vertical alignment.
-* **Inline Selectors (≤ 3 options):** Rendered as `◄ {Value} ▶`. Interacting mutates the state inline.
+* **Inline Selectors (≤ 3 options):** Rendered as `◀ {Value} ▶`. Arrow click events trigger cyclic state mutations (carousel effect). Double-click events on the central `{Value}` directly step to the next available state.
 * **Modals & Dropdowns (> 3 options):** Rendered as centered overlays bridging the `Viewport3D`. Require an opaque background and act as a focus trap (halting lower Z-index event propagation).
 
 ## 3. Sprite & Atlas Specifications
