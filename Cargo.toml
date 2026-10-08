@@ -18,3 +18,8 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
+
+# Dépendances de test (partagées par tous les crates)
+proptest = "1.4"
+insta = "1.38"
+thiserror = "1.0"
