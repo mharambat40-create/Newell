@@ -1,7 +1,7 @@
 ---
 name: auditor
 description: "Cleans up the code of an already green PR: duplication, Rust idioms, Clippy, documentation, and AGPL-3.0 headers. Use only after the executor's tests are green. Does not change any behavior; reverts any change that breaks a test."
-tools: Read, Grep, Glob, Edit, Bash
+tools: Read, Edit, Write, Bash
 model: claude-sonnet-5-5
 effort: high
 color: purple
