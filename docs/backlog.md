@@ -9,5 +9,5 @@
 - [ ] M1.6: Implement user-draggable panel resizing (character-by-character grid snapping).
 
 ## Milestone 2: Geometry & Kernel
-- [ ] M2.1: Implement BrepKIT basic cube generation in `crates/newell-model`.
+- [ ] M2.1: Setup newell-kernel crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
 - [ ] M2.2: Map BrepKIT topology to the `wgpu` mesh buffers.
