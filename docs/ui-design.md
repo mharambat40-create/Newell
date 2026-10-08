@@ -56,3 +56,9 @@ The parametric history and assembly structure is displayed using a strict ASCII-
    │   │   └─ [+] Revolution
    │   └─ [+] Pneu
    └─ [+] Vis_M8
+  
+## 6. Rendering PipelineConstraints
+Pass 1: Render the base ASCII background colors.
+Pass 2: Render the text characters (Fira Code glyphs).
+Pass 3: Render the $2 \times 2$ atlas icons over the grid, respecting alpha blending.
+Pass 4: Render Viewport Modals (if active) on the highest Z-layer, capturing all mouse/keyboard events until closed.
