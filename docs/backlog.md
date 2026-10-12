@@ -1,7 +1,7 @@
 # Newell - Project Backlog
 
 ## Milestone 1: Skeleton (Active)
-- [x] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
+- [ ] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
 - [ ] M1.2: Setup testing architecture workspace-wide (`proptest`, `insta`, `thiserror`) and standard `tests/` directories.
 - [ ] M1.3: Setup `winit` window and basic `wgpu` surface in `crates/newell-app` and `crates/newell-render` (window with empty grid at 60 FPS).
 
