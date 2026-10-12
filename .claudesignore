@@ -8,3 +8,4 @@ assets/
 Cargo.lock
 # Ignore old plans and logs so they do not pollute agent context
 docs/plans/archive/
+tests/fixtures/

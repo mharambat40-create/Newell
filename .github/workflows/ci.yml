@@ -53,6 +53,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      INSTA_UPDATE: "no"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install stable toolchain
@@ -130,3 +132,24 @@ jobs:
       - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  license-header:
+    name: AGPL header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check licence header
+        shell: bash
+        run: |
+          header=$(mktemp)
+          awk '/^## 6\./{s=1} s && /^```rust/{f=1; next} f && /^```/{exit} f' ARCHITECTURE.md > "$header"
+          test "$(wc -l < "$header")" -eq 6
+          status=0
+          while IFS= read -r -d '' file; do
+            if ! head -n 6 "$file" | tr -d '\r' | cmp -s - "$header"; then
+              echo "::error file=$file::AGPL header missing or altered"
+              status=1
+            fi
+          done < <(find crates -name '*.rs' -print0)
+          rm -f "$header"
+          exit $status
