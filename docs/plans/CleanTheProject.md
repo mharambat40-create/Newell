@@ -3,7 +3,7 @@
 **Author:** Architect
 **Revision:** 2 (decisions approved by the human on 2026-10-12; supersedes revision 1)
 **Backlog items:** None. Pre-M1 hygiene pass. Unblocks M1.1 and M1.2.
-**Status:** Approved decisions. Ready for Challenger review, then Executor.
+**Status:** Executed 2026-10-12 (cleanup pass). §7 gates run. Changes are uncommitted for human review.
 **Binding:** `ARCHITECTURE.md` is the source of truth. The only exceptions are the decisions in §1, which the human approved explicitly.
 
 ---
@@ -19,7 +19,7 @@
 
 ### 0.1 Current state (verified, 2026-10-12)
 
-- `cargo` is not installed. Nothing has been built or linted.
+- Superseded during execution: `cargo` was not installed at the start. Rust 1.99.0 (stable) was installed on 2026-10-12 and the §7 gates were run.
 - `crates/`, `tests/`, `assets/` do not exist. `Cargo.toml` lists five members that are absent.
 - `HEAD` = `89cc92c`. Working tree clean. `docs/backlog.md` M1.1 is `[ ]` at `HEAD`.
 - `LICENSE` is present (AGPL-3.0 text).
@@ -55,6 +55,8 @@ The §6 header grants "version 3 of the License … or (at your option) any late
 ## 2. Remaining Blocking Items
 
 Only three items block execution. Everything else has a default in this plan.
+
+**Status 2026-10-12:** B1 lifted by the human for this PR. B2 done (Rust stable installed). B3 resolved (SHAs in `ci.yml`, resolved with `gh api`).
 
 | # | Item | Why it blocks | Resolution |
 |---|---|---|---|

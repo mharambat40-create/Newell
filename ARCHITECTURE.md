@@ -103,7 +103,7 @@ The integration of the `brepkit` kernel must strictly follow the Anti-Corruption
 - **Strict Isolation:** The `brepkit` crate MUST ONLY be declared as a dependency in `crates/newell-kernel/Cargo.toml`. No other crate (`newell-model`, `newell-ui`, etc.) is allowed to import or know about `brepkit`.
 - **No Type Leaking (Wrapping):** `brepkit` specific types (e.g., topology structures, faces, edges) MUST NEVER appear in the public API signatures of `newell-kernel`. They must be encapsulated within Newell-owned wrapper structs (e.g., `NewellSolid`, `NewellFace`).
 - **Error Translation:** `newell-kernel` MUST intercept all native `brepkit` errors and map them to a domain-specific `NewellKernelError` enum using the `thiserror` crate.
-- **Version Pinning:** The `brepkit` dependency MUST be strictly pinned to an exact version in `Cargo.toml` (e.g., `brepkit = "=0.1.0"`). Implicit minor/patch updates are forbidden.
+- **Version Pinning:** The `brepkit` dependency MUST be strictly pinned to an exact version in `Cargo.toml` (e.g., `brepkit = "=x.y.z"`). Implicit minor/patch updates are forbidden. The exact version is chosen when M3.1 starts and recorded in an ADR.
 - **Golden File Validation:** Kernel updates must be validated against "Golden Files" (reference 3D models stored in `tests/fixtures/`). Any update to `brepkit` requires running geometric regression tests to ensure boolean and meshing algorithms remain mathematically consistent with the reference files.
 
 ## 6. Licensing Standard

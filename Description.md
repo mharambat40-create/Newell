@@ -96,7 +96,7 @@ Why:
 - `newell-kernel` translates BrepKIT errors into Newell errors and enforces Newell-wide units, tolerances and topology conventions.
 - BrepKIT is young and its robustness on booleans and fillets is not yet proven at scale. Robustness gaps must be handled with tests, defensive integration, reproducible bug cases and upstream fixes to BrepKIT — **never by introducing a fallback kernel**.
 
-Exchange-format operations provided by BrepKIT (for example through `brepkit-io`) are also accessed only through `newell-kernel`. `newell-io` owns Newell's file-format orchestration and native document serialization, but it must not depend on BrepKIT crates directly.
+Exchange-format operations provided by BrepKIT (for example through `brepkit-io`) are also accessed only through `newell-kernel`. A future file-I/O layer (not in this workspace; see `ARCHITECTURE.md` §1) owns Newell's file-format orchestration and native document serialization, but it must not depend on BrepKIT crates directly.
 
 ### 3.3 Threading model
 
@@ -151,7 +151,7 @@ This is the heart of a CAD application and the part with the most technical risk
 ### 4.6 File formats
 
 - **Native format:** stores the feature tree and parameters, not just the resulting geometry. It is text-based for readable diffs (for example RON or JSON), **versioned**, with migrations for older versions.
-- **Exchange formats:** STEP export first (the industry standard), STL/3MF for 3D printing. BrepKIT's `brepkit-io` crate lists STEP, IGES, STL, 3MF, OBJ, PLY and glTF; each format must be validated with round-trip tests before it is advertised as supported. Calls into `brepkit-io` are made through `newell-kernel`; `newell-io` must not import BrepKIT crates directly.
+- **Exchange formats:** STEP export first (the industry standard), STL/3MF for 3D printing. BrepKIT's `brepkit-io` crate lists STEP, IGES, STL, 3MF, OBJ, PLY and glTF; each format must be validated with round-trip tests before it is advertised as supported. Calls into `brepkit-io` are made through `newell-kernel`; the future file-I/O layer must not import BrepKIT crates directly.
 
 ---
 
