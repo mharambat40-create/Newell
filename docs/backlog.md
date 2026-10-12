@@ -1,11 +1,11 @@
 # Newell - Project Backlog
 
-## Milestone 1: Skeleton (Active)
-- [ ] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
-- [ ] M1.2: Setup testing architecture workspace-wide (`proptest`, `insta`, `thiserror`) and standard `tests/` directories.
-- [ ] M1.3: Setup `winit` window and basic `wgpu` surface in `crates/newell-app` and `crates/newell-render` (window with empty grid at 60 FPS).
+## Milestone 1: Skeleton
+- [x] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
+- [x] M1.2: Setup testing architecture workspace-wide (`proptest`, `insta`, `thiserror`) and standard `tests/` directories.
+- [x] M1.3: Setup `winit` window and basic `wgpu` surface in `crates/newell-app` and `crates/newell-render` (window with empty grid at 60 FPS).
 
-## Milestone 2: Grid UI
+## Milestone 2: Grid UI (Active)
 - [ ] M2.1: Define the `Cell` data structure (char, style, `widget_id`) and implement the flat 1D array buffer in `newell-ui`.
 - [ ] M2.2: Implement the core 2D ASCII Grid data structure and the text rendering pipeline logic.
 - [ ] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph rasterization (Texture Atlas) in `newell-render`.
