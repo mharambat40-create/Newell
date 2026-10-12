@@ -6,4 +6,14 @@
 // (at your option) any later version.
 //! Application entry point: window manager and event loop (ARCHITECTURE.md §1, §4.3).
 
-fn main() {}
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    match newell_app::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("newell: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}

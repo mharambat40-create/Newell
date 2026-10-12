@@ -10,9 +10,18 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "newell_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "newell"
 path = "src/main.rs"
+
+[dependencies]
+newell-render = { path = "../newell-render", version = "0.1.0" }
+thiserror.workspace = true
+winit = "0.30.13"
 
 [dev-dependencies]
 proptest.workspace = true

@@ -5,3 +5,10 @@
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 //! View: wgpu rendering pipeline for the viewport and ASCII overlay (ARCHITECTURE.md §1).
+
+mod error;
+mod renderer;
+pub mod surface;
+
+pub use error::RenderError;
+pub use renderer::{CLEAR_COLOR, FrameOutcome, Renderer};

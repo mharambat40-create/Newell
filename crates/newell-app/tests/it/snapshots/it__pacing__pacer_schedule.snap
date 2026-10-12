@@ -1,0 +1,9 @@
+---
+source: crates/newell-app/tests/it/pacing.rs
+expression: deadlines
+---
+[
+    16666666,
+    33333332,
+    99999996,
+]

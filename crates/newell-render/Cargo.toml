@@ -10,6 +10,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+thiserror.workspace = true
+wgpu = "26.0.1"
+
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
