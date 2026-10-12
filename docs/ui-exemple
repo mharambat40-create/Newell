@@ -29,7 +29,7 @@
 ║ Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [████████░ ] 82% ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
-"Task Bar"
+"Application Menu Bar"
 
 ╭─File──────╮
 │ New       │
@@ -69,7 +69,7 @@
 │About		│
 ╰───────────╯
 
-"Menu Bar"
+"Command Bar"
 
 ╭─Workbench─╮
 │Part design│
