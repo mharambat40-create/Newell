@@ -18,6 +18,33 @@ We use a 4-agent system. Each agent MUST adhere to its boundaries:
 - **Executor:** You write the actual Rust code. You MUST strictly follow the Architect's plan. You DO NOT know about the Auditor. You must write the tests, make them pass, and ensure the code compiles without errors.
 - **Auditor:** You clean up the Executor's code. You enforce idiomatic Rust, resolve Clippy warnings, remove duplications, and ensure the AGPL header is present. You MUST NOT change the runtime behavior or break tests.
 
+### 2.1 Auxiliary Agent: Explorer
+
+Explorer is an optional, read-only auxiliary agent.
+It is NOT a fifth primary agent and is NOT part of the
+mandatory execution pipeline.
+
+Responsibilities:
+- Inspect the repository structure and existing implementations.
+- Search the codebase and documentation.
+- Investigate dependencies, APIs, and architectural constraints.
+- Identify inconsistencies and technical risks.
+- Report findings to the requesting agent.
+
+Restrictions:
+- Explorer MUST NOT modify, create, or delete project files.
+- Explorer MUST NOT implement production code.
+- Explorer MUST NOT modify architectural decisions.
+- Explorer MUST NOT execute destructive commands.
+- Explorer MUST NOT commit, push, or merge changes.
+
+The mandatory workflow remains:
+
+Architect → Challenger → Executor → Auditor
+
+Explorer may assist any primary agent without changing
+the responsibilities or authority of that agent.
+
 ## 3. UI & Rendering Rules (wgpu)
 The interface is a 2D grid of characters. 
 
@@ -85,8 +112,9 @@ Because BrepKIT requires AGPL-3.0, Newell is strictly AGPL-3.0.
 
 ```rust
 // Newell - Parametric CAD Software
-// Copyright (C) 2026 [Your Name/Company]
+// Copyright (c) 2026 Martin Harambat
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
+```
