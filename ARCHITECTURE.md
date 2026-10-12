@@ -45,6 +45,74 @@ Architect → Challenger → Executor → Auditor
 Explorer may assist any primary agent without changing
 the responsibilities or authority of that agent.
 
+### 2.2 Workflow Orchestration & Human Control
+
+The human controls transitions between agent roles.
+
+Completing one role does NOT authorize starting the next role automatically.
+An agent or orchestrator MUST NOT invoke, background, or start another primary
+agent unless the human's current instruction explicitly requests that stage.
+
+In particular:
+
+- Architect MUST NOT automatically invoke Challenger.
+- Challenger MUST NOT automatically invoke Architect or Executor.
+- Executor MUST NOT automatically invoke Auditor.
+- Auditor MUST NOT automatically start another milestone or agent.
+- Explorer MUST NEVER invoke another agent.
+
+If the human asks an agent to prepare a prompt for another agent, the requested
+output is the prompt itself. Preparing a prompt does NOT authorize executing it,
+starting the target agent, creating files for the target agent, or advancing the
+pipeline.
+
+An agent may recommend the next role at the end of its work, but MUST wait for
+explicit human instruction before that role is started.
+
+The mandatory ordering remains:
+
+Architect → Challenger → Executor → Auditor
+
+This ordering constrains sequence; it does not imply automatic execution.
+
+### 2.3 Engineering Decision & Complexity Policy
+
+Newell follows a **minimum robust implementation** principle.
+
+For each milestone, implement the smallest maintainable design that completely
+satisfies the current milestone and the binding architecture. Do not introduce
+speculative abstractions, infrastructure, generic frameworks, or mechanisms
+intended only for future milestones unless they are required by an accepted
+current requirement.
+
+Ordinary technical implementation choices SHOULD be resolved autonomously by
+the responsible agent when a safe choice exists within the approved
+architecture and plan. The agent must document the choice and its rationale.
+
+Human approval is required when a decision would:
+
+- change a binding rule in this document;
+- change the approved functional scope;
+- change project licensing or introduce a significant licensing constraint;
+- create a significant security constraint or risk;
+- introduce a new architectural boundary;
+- contradict an approved ADR;
+- require an irreversible or externally visible action not already authorised.
+
+A technical choice is NOT a blocking issue merely because several valid
+implementations exist. When a reasonable default exists, the responsible agent
+should select it and document the decision.
+
+A dependency is NOT forbidden merely because it is not named in
+`ARCHITECTURE.md`. A dependency may be introduced when the approved plan allows
+it and it satisfies the project's architecture, MSRV, licensing, security, and
+maintenance requirements.
+
+Prefer a small, established, maintained dependency over a bespoke
+implementation of standard infrastructure when the dependency satisfies those
+constraints. Custom implementations require a concrete project-specific
+justification.
+
 ## 3. UI & Rendering Rules (wgpu)
 The interface is a 2D grid of characters. 
 
