@@ -6,11 +6,15 @@
 - [ ] M1.3: Setup `winit` window and basic `wgpu` surface in `crates/newell-app` and `crates/newell-render` (window with empty grid at 60 FPS).
 
 ## Milestone 2: Grid UI
-- [ ] M2.1: Load `assets/FiraCode-Regular.ttf` and implement glyph rasterization (Texture Atlas) in `newell-render`.
-- [ ] M2.2: Implement the core 2D ASCII Grid data structure and the text rendering pipeline.
-- [ ] M2.3: Implement the 6-pane responsive UI layout (Menu, Toolbar, Tree, Task, State, Viewport).
-- [ ] M2.4: Implement user-draggable panel resizing (character-by-character grid snapping).
-- [ ] M2.5: Implement hover in shader, hit testing, and keyboard navigation.
+- [ ] M2.1: Define the `Cell` data structure (char, style, `widget_id`) and implement the flat 1D array buffer in `newell-ui`.
+- [ ] M2.2: Implement the core 2D ASCII Grid data structure and the text rendering pipeline logic.
+- [ ] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph rasterization (Texture Atlas) in `newell-render`.
+- [ ] M2.4: Configure the `newell-render` pipeline to upload the flat buffer and draw the entire grid in a single `wgpu` draw call.
+- [ ] M2.5: Implement O(1) hit-testing math (division of mouse pixel coordinates by Fira Code cell dimensions).
+- [ ] M2.6: Implement sub-cellular hit-testing (modulo logic) on ASCII separator characters to expand button hitboxes to their visual borders.
+- [ ] M2.7: Implement hover in shader, map hit-testing events, and implement keyboard navigation.
+- [ ] M2.8: Implement the 6-pane responsive UI layout (Menu, Toolbar, Tree, Task, State, Viewport).
+- [ ] M2.9: Implement user-draggable panel resizing (character-by-character grid snapping).
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
