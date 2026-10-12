@@ -107,7 +107,11 @@ The integration of the `brepkit` kernel must strictly follow the Anti-Corruption
 - **Golden File Validation:** Kernel updates must be validated against "Golden Files" (reference 3D models stored in `tests/fixtures/`). Any update to `brepkit` requires running geometric regression tests to ensure boolean and meshing algorithms remain mathematically consistent with the reference files.
 
 ## 6. Licensing Standard
-Because BrepKIT requires AGPL-3.0, Newell is strictly AGPL-3.0.
+Newell is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version (**SPDX: `AGPL-3.0-or-later`**). The `LICENSE` file contains the full text of AGPL version 3; the project-specific notice below expressly permits later versions.
+
+- **Cargo metadata:** Each applicable `Cargo.toml` package license declaration MUST use `license = "AGPL-3.0-or-later"`.
+- **Changes to licensing:** Agents MUST NOT change the project's licensing terms without explicit human approval. Third-party dependency licenses MUST be checked independently.
+
 **Auditor Rule:** Every `.rs` file MUST begin with the following header:
 
 ```rust
