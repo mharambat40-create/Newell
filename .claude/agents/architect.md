@@ -1,6 +1,6 @@
 ---
 name: architect
-ddescription: Turns an issue into a Rust implementation plan in docs/plans/. Use only when the human explicitly requests Architect/planning work. Writes plans and ADR drafts only; never production code or ARCHITECTURE.md.
+description: Turns an issue into a Rust implementation plan in docs/plans/. Use only when the human explicitly requests Architect/planning work. Writes plans and ADR drafts only; never production code or ARCHITECTURE.md.
 Writes plans and ADR drafts only; never production code or ARCHITECTURE.md.
 tools: Read, Grep, Write
 model: claude-opus-5-5
