@@ -42,6 +42,23 @@ Because the cell ratio is 3:5, square logos must be allocated asymmetric blocks 
   * *For Text:* Use a Color Shift (e.g., text turns white) and a Left-Border highlight (paint the leftmost pixels of the cell).
   * *For Logos:* Use a brightness multiplier (e.g., `color * 1.4`).
   * CPU MUST NEVER compute fade animations or color transitions.
+ 
+  ## Multi-Window & State Management Architecture
+
+To support unlimited, synchronized windows, the application architecture must strictly enforce the MVC pattern and the separation of crates[cite: 8].
+
+### 3.5. Global Document State (The Model)
+*   **Centralized Source of Truth:** All topological data and feature trees live in the `newell-model` and `newell-kernel` crates[cite: 6]. This global state has NO knowledge of the UI or the GPU[cite: 8].
+*   **Event-Driven Synchronization:** Implement a Pub/Sub pattern. When a window mutates the global model, the state manager dispatches an event. All other windows subscribed to the modified entities must intercept this event and flag their local view for a redraw.
+*   **Geometry Workers:** Feature tree recomputations and booleans run in the background (e.g., via a thread pool) to ensure the main thread never waits on geometry[cite: 6].
+
+Local Window State (The View/Controller)
+*   **Isolated UI Context:** The Controller (`newell-ui`, `newell-app`) handles OS events via `winit` per window[cite: 8]. There is no global UI singleton. Each window instance exclusively owns its active Workbench, selection state, and Feature Tree expansion state.
+*   **Render Context:** The View (`newell-render`) reads states and draws them independently for each window[cite: 8]. Each window owns its independent swapchain and command encoder to render the 3D viewport and the ASCII grid overlay[cite: 8].
+
+Window Manager (Lifecycle)
+*   The `newell-app` binary crate is responsible for spawning, tracking, and destroying window instances and wiring the event loop[cite: 6].
+*   Closing a window drops only its local UI state and render context, leaving the global data intact.
 
 ## 4. Geometric Kernel (BrepKIT) Rules
 * **Exclusivity:** BrepKIT is the ONLY geometric kernel allowed. No FFI bindings to OpenCASCADE or other engines.
