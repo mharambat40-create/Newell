@@ -195,6 +195,10 @@ Functional Specifications
 - **3D picking:** selecting faces, edges and vertices in the viewport needs its own mechanism (for example an ID buffer rendered on the GPU). The O(1) grid lookup only covers the 2D UI.
 - **Accessibility:** a character grid is opaque to screen readers. At minimum, plan for high-contrast themes and configurable font size.
 
+### 5.5 UI Interaction Model: Flat Buffer & Hybrid Hit-Testing
+To maximize performance and UX (Fitts's Law compliance), the UI completely drops traditional DOM trees in favor of a memory-efficient Flat Buffer.
+- **O(1) Resolution:** Mouse clicks are resolved mathematically (`pixel_coord / cell_size`), ensuring zero CPU layout overhead and reserving maximum processing power for the BrepKIT geometry kernel.
+- **Sub-Cellular Precision:** Clicks on ASCII borders (e.g., `│`, `┬`) use modulo arithmetic to seamlessly trigger the correct adjacent button. This extends interactive hitboxes to their absolute visual limits without overlapping elements.
 ---
 
 ## 6. Agentic development workflow
