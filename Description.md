@@ -164,6 +164,13 @@ The interface uses neither the DOM nor complex graphical objects. It is a **char
   - a 2D ASCII interface, stored in a character array (O(1) lookup for clicks and hover);
   - overlaid on a 3D viewport.
 
+Multi-Window Support & Real-Time Synchronization
+Implement a robust multi-window system allowing users to open an unlimited number of concurrent windows to work on different parts, assemblies, or drawings simultaneously.
+Functional Specifications
+1. **Unlimited Window Instantiation:** The application must impose no hard limits on the number of open windows. There are no restrictions based on the active Workbench, document type, or specific part.
+2. **Real-Time Data Synchronization:** All windows must observe and mutate a single, shared global data model. Any geometric or topological modification made to a part in "Window A" must be instantaneously reflected in any other window displaying an assembly containing that part.
+3. **Contextual UI Independence:** While the core data model is shared globally, the UI state must be strictly local to each window. Each window will maintain its own `newell-ui` context, active Workbench, Feature Tree state, Status Bar, and `newell-render` viewport. This ensures that every byte of RAM and every CPU cycle goes to geometry, not to a bloated UI framework.
+
 ### 5.1 Hybrid typography
 
 - Text and interface are generated dynamically from a `.ttf` file, for crisp vector text at any resolution.
