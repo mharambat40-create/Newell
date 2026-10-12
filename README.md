@@ -11,13 +11,14 @@ Designed for extreme performance and a minimal memory footprint, Newell adopts a
 * **License:** **AGPL-3.0** (Open Source).
 
 ## The Agentic Workflow
-Newell's codebase is generated and refactored by a team of 5 AI Agents working in ephemeral sessions to prevent context drift:
+Newell's codebase is generated and refactored by four pipeline AI agents (Architect, Challenger, Executor, Auditor) and an optional read-only Explorer helper, working in ephemeral sessions to prevent context drift:
 
-1. **Explorer (Haiku):** Read-only conversational partner for project navigation.
-2. **Architect (Opus/Sonnet):** Translates concepts into Rust implementation plans.
-3. **Challenger (Sonnet):** Reviews plans for logical flaws and borrow-checker risks.
-4. **Executor (Sonnet):** The blind coder; strictly follows the plan and makes tests pass.
-5. **Auditor (Haiku/Sonnet):** Refactors green PRs (Clippy, docs, AGPL headers).
+1. **Architect (Opus 5.5):** Translates concepts into Rust implementation plans.
+2. **Challenger (Sonnet 5.5):** Reviews plans for logical flaws and borrow-checker risks.
+3. **Executor (Sonnet 5.5):** The blind coder; strictly follows the plan and makes tests pass.
+4. **Auditor (Sonnet 5.5):** Refactors green PRs (Clippy, docs, AGPL headers).
+
+**Explorer (optional helper, Haiku 5.5):** Read-only conversational partner for project navigation. It is not a pipeline stage.
 
 ## Documentation & AI Entry Points
 * **Project Vision & Roadmap:** See `Description.md` for the macro-level design and goals.

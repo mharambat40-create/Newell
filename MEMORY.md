@@ -4,7 +4,7 @@
 
 ## Current Status
 * **Active Milestone:** M1 (Skeleton & UI Rendering)
-* **Current Task:** Setup the wgpu rendering pipeline and load the `FiraCode.ttf` font.
+* **Current Task:** Complete M1.1 (workspace, CI/CD, `.claudesignore`) per `docs/plans/CleanTheProject.md`, then M1.2. Font: `assets/FiraCode-Regular.ttf`.
 
 ## Pitfalls & Lessons Learned (Do not repeat these mistakes)
 * **wgpu Cell Ratio:** The base font ratio is 3:5. Do not attempt to render square logos into 2x2 cells. Always allocate 5x3 cells for major tool icons.

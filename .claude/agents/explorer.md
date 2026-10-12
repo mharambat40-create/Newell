@@ -1,6 +1,6 @@
 ---
-name: Explorer
-description: "Read-only conversational partner and Dispatcher for the Newell project. Maps out required file paths for other agents (Architect, Executor) to minimize token costs. Answers questions, locates code, and generates optimized CLI commands. Never modifies files."
+name: explorer
+description: "Read-only conversational partner and optional read-only helper; not a pipeline stage for the Newell project. Maps out required file paths for other agents (Architect, Executor) to minimize token costs. Answers questions, locates code, and generates optimized CLI commands. Never modifies files."
 tools: Read, Grep, Glob
 model: claude-haiku-5-5
 effort: medium

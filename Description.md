@@ -71,8 +71,6 @@ newell/
 ├── crates/
 │   ├── newell-kernel/      # sole BrepKIT integration boundary and Newell geometry API
 │   ├── newell-model/       # document model: feature tree, parameters, undo/redo
-│   ├── newell-sketch/      # 2D sketches and geometric constraint solver
-│   ├── newell-io/          # native format + exchange orchestration via newell-kernel
 │   ├── newell-ui/          # character grid, layout, hit testing, UI state (no GPU)
 │   ├── newell-render/      # wgpu renderer: grid, glyphs, atlas, 3D viewport
 │   └── newell-app/         # binary: window, event loop, wiring
@@ -81,6 +79,8 @@ newell/
 ├── benches/                # performance benchmarks
 └── .github/                # CI, templates, CODEOWNERS (see §8)
 ```
+
+Further crates (for example sketching or file I/O) are added only through an amendment to `ARCHITECTURE.md` §1.
 
 **Dependency rule:** `newell-ui` and `newell-model` must never depend on `newell-render` or `wgpu`. That is what keeps UI and model logic testable without a GPU.
 
@@ -203,11 +203,11 @@ To maximize performance and UX (Fitts's Law compliance), the UI completely drops
 
 ## 6. Agentic development workflow
 
-Newell's code is generated, tested, and optimized by a "team" of 5 AI agents (Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5). Each agent runs in an ephemeral conversational session: no hidden/session state is trusted across sessions. Persistent project context is carried only through reviewed repository files such as `CLAUDE.md`, `ARCHITECTURE.md`, ADRs, plans and the deliberately short `MEMORY.md`.
+Newell's code is generated, tested, and optimized by a "team" of 4 AI agents, plus an optional read-only Explorer helper (Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5). Each agent runs in an ephemeral conversational session: no hidden/session state is trusted across sessions. Persistent project context is carried only through reviewed repository files such as `CLAUDE.md`, `ARCHITECTURE.md`, ADRs, plans and the deliberately short `MEMORY.md`.
 
 **Human role:** define the constraints, own the vision, approve plans, and merge pull requests. **Only the human merges into `main`.**
 
-### 6.1 The 5 agents
+### 6.1 The 4 agents
 
 | Agent | Model | Input | Output | Must not |
 |---|---|---|---|---|
@@ -215,7 +215,7 @@ Newell's code is generated, tested, and optimized by a "team" of 5 AI agents (Cl
 | **Challenger** | Sonnet 5.5 | The plan only (one-shot) | Written review: logical flaws, borrow checker conflicts, bottlenecks, missing tests | Rewrite the plan itself |
 | **Executor** | Sonnet 5.5 | Approved plan + targeted files + docs (e.g. BrepKIT) | Code + tests on a branch, PR opened | Modify tests to make them pass, touch files outside the plan, edit `ARCHITECTURE.md` |
 | **Auditor** | Sonnet 5.5 | Diff of the Executor's PR | Cleanup commits: duplication, idioms, Clippy, docs | Change behaviour (tests must stay identical and green) |
-| **Explorer** | Haiku 5.5 | Questions from the human or another agent; read access to the repository | Answers and discussion, with `path:line` references; can offer opinions, labelled as such | Edit, create or delete files; run commands; take decisions that belong to the human |
+**Explorer** (optional helper, Haiku 5.5): see `ARCHITECTURE.md` §2. It is not a pipeline stage.
 
 The Explorer is a read-only helper, not a pipeline stage. It can be used at any point (for example, to locate code before planning, or to discuss options with the human), and it never appears in the approval chain of §6.2.
 

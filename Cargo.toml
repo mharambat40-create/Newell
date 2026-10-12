@@ -6,9 +6,20 @@ members = [
     "crates/newell-model",
     "crates/newell-kernel",
 ]
-resolver = "2"
+resolver = "3"
 
-# Règles de l'Auditeur imposées à tout le projet
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-or-later"   # §1.1: to confirm in review
+publish = false
+
+[workspace.dependencies]
+thiserror = "2"
+proptest = "1.4"
+insta = "1.38"
+# brepkit is NEVER declared here. Only in crates/newell-kernel/Cargo.toml (M3.1), pinned =x.y.z.
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
@@ -18,8 +29,3 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
-
-# Dépendances de test (partagées par tous les crates)
-proptest = "1.4"
-insta = "1.38"
-thiserror = "1.0"
