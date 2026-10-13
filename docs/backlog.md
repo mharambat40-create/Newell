@@ -13,7 +13,7 @@
   columns, rectangular regions, clipping and box-drawing borders.
 - [x] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph
   rasterization and the glyph texture atlas in `newell-render`.
-- [ ] M2.4: Implement the `newell-render` ASCII pipeline so that the complete
+- [x] M2.4: Implement the `newell-render` ASCII pipeline so that the complete
   UI cell buffer is uploaded and rendered in a single GPU draw call.
 - [ ] M2.5: Implement O(1) pixel-to-cell hit-testing and sub-cell border
   routing for shared ASCII separators.
