@@ -9,6 +9,7 @@
 mod cell;
 mod error;
 mod grid;
+mod layout;
 mod metrics;
 mod style;
 mod widget_id;
@@ -16,6 +17,7 @@ mod widget_id;
 pub use cell::{Cell, CellContent};
 pub use error::UiError;
 pub use grid::{CellGrid, MAX_CELLS};
+pub use layout::{BorderLine, GridRect, draw_border};
 pub use metrics::GridMetrics;
 pub use style::StyleId;
 pub use widget_id::WidgetId;
