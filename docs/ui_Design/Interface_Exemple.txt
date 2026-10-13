@@ -1,0 +1,27 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║ File │ Edit │ View │ Help                                          [-] [□] [X] ║
+╠════════════════════════════════════════════════════════════════════════════════╣
+║ Workbench │ Sketch │ Create │ Operate │ Pattern │ Refine │ Construct │ Inspect ║
+╠═══════════════════════╦════════════════════════════════════════════════════════╣
+║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
+║ ├ □ Sketch_Profile_Ma.║                                               │       │║
+║ ├[-] Hub_Features     ║                                               │       │║
+║ │ ├ Extrude_Base      ║                                               ╰───────╯║
+║ │ ├ ■ Sketch_Hole     ║                             ╭─Extrude───┬─────────────╮║
+║ │ └ Extrude_Cut_Center║                             │   Solid   │   Surface   │║
+║ ├ Fillet_Inner        ║                             ├───────┬───┘╴╴╴┐╴╴╴╴╴╴╴╴╴┤║
+║ │ ─────────────────── ║                             │  New  │  Add  ┆  Remove │║
+║ ├ Chamfer_Edges       ║                             ├───────┘╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤║
+║ └ Pattern_Circular    ║                             │ Selection   [none      ]│║
+║                       ║                             │   ◀      Blind      ▶   │║
+╠═══════════════════════╣                             │ Depth       [0.0 mm   ☰]│║
+║[-]Elements            ║                             │ □ Invert                │║
+║ ├[-]Solid Bodies(2)   ║                             │ □ Starting Offset       │║
+║ │ ├ ■ Rim_Body        ║                             │ □ Symetric              │║
+║ │ └ □ Hub_Body        ║                             │ □ Second end position   │║
+║ ├ Surfaces(0)         ║                             │─────────────────────────│║
+║ └[+]Construct         ║                             │     OK     │   Cancel   │║
+║                       ║                             ╰─────────────────────────╯║
+╠═══════════════════════╩════════════════════════════════════════════════════════╣
+║ Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%      ║
+╚════════════════════════════════════════════════════════════════════════════════╝

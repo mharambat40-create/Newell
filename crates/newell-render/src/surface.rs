@@ -17,12 +17,15 @@ pub fn configurable_extent(width: u32, height: u32) -> Option<(u32, u32)> {
 /// What to do with the result of a surface acquire.
 #[derive(Debug)]
 pub enum FrameAction {
+    /// Draw and present this frame.
     Present,
     /// Present this frame, reconfigure before the next.
     PresentAndReconfigure,
     /// Reconfigure and skip this frame.
     Reconfigure,
+    /// Skip this frame without error.
     Skip,
+    /// Unrecoverable; surface it to the caller.
     Fatal(RenderError),
 }
 
@@ -62,6 +65,7 @@ impl SurfaceState {
         self.extent.is_some()
     }
 
+    /// Replaces the extent and marks a configure pending (if the new extent is valid).
     pub fn resize(&mut self, width: u32, height: u32) {
         *self = Self::new(width, height);
     }
@@ -71,6 +75,7 @@ impl SurfaceState {
         self.extent.filter(|_| self.needs_configure)
     }
 
+    /// Call after the surface has been configured with `pending_configure`'s extent.
     pub fn mark_configured(&mut self) {
         self.needs_configure = false;
     }

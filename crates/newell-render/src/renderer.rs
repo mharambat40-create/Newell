@@ -9,7 +9,7 @@
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
@@ -24,12 +24,16 @@ pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Result of a successful `Renderer::render` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
+    /// A frame was submitted and presented.
     Presented,
+    /// Nothing was drawn (inactive surface, or no texture available this frame).
     Skipped,
 }
 
+/// Owns the surface, device and queue, and draws the viewport.
 pub struct Renderer {
     // Declaration order is drop order: the surface (which holds the window handle)
     // goes before the device that created it.
@@ -64,7 +68,7 @@ impl Renderer {
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
 
         let (tx, gpu_errors) = mpsc::channel();
-        let error_tx: Sender<RenderError> = tx.clone();
+        let error_tx = tx.clone();
         // The default handler panics, which ARCHITECTURE.md §5 forbids.
         device.on_uncaptured_error(Box::new(move |error| {
             let _ = error_tx.send(error.into());

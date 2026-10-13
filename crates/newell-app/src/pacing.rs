@@ -25,14 +25,17 @@ impl FramePacer {
         }
     }
 
+    /// Time between frames.
     pub fn interval(&self) -> Duration {
         self.interval
     }
 
+    /// When the next frame is due.
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
+    /// True once `now` has reached the deadline.
     pub fn is_due(&self, now: Instant) -> bool {
         now >= self.deadline
     }

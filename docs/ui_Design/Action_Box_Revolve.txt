@@ -1,0 +1,106 @@
+"Revolve Action Box"
+╭─Revolve───┬─────────────╮
+│   Solid   │   Surface   │
+├───────┬───┘╴╴╴┐╴╴╴╴╴╴╴╴╴┤
+│  New  │  Add  ┆  Remove │
+├───────┘╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤
+│ Selection   [none      ]│
+│ Axis        [none      ]│
+│ ■ Full Revovle          │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+╭─Revolve───┬─────────────╮
+│   Solid   │   Surface   │
+├───────┬───┴───┐╴╴╴╴╴╴╴╴╴┤
+│  New  │  Add  │  Remove │
+│╴╴╴╴╴╴╴┴───────┘╴╴╴╴╴╴╴╴╴┤
+│ Selection   [none      ]│
+│ Axis        [none      ]│
+│ ■ Full Revovle          │
+│ ■ Merge with all        │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+╭─Revolve───┬─────────────╮
+│   Solid   │   Surface   │
+├───────┬───┘╴╴╴┬─────────┤
+│  New  ┆  Add  │  Remove │
+├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴┴─────────┤
+│ Selection   [none      ]│
+│ Axis        [none      ]│
+│ ■ Full Revovle          │
+│ ■ Merge with all        │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+Same for Surfaces
+
+"Full Revovle variants"
+│ ■ Full Revovle          │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+
+│ □ Full Revovle          │
+│   ◀      Blind      ▶   │
+│ Angle       [0.0 deg  ☰]│
+│ □ Invert                │
+│ □ Starting Offset       │
+│ □ Symetric              │
+
+│ □ Full Revovle          │
+│   ◀      Up to      ▶   │
+│ Selection   [none      ]│
+│ □ Invert                │
+│ □ Starting Offset       │
+
+"Starting Offset variants"
+│ □ Starting Offset       │
+
+│ ■ Starting Offset       │
+│   ◀      Blind      ▶   │
+│ Angle       [0.0 deg  ☰]│
+
+│ ■ Starting Offset       │
+│   ◀      Up to      ▶   │
+│ Selection   [none      ]│
+
+"Offset variants"
+│ □ Offset                │
+
+│ ■ Offset                │
+│   ◀      Blind      ▶   │
+│ Angle       [0.0 deg  ☰]│
+
+│ ■ Offset                │
+│   ◀      Up to      ▶   │
+│ Selection   [none      ]│
+
+"Second end position variants"
+│ □ Second end position   │
+
+│ ■ Second end position   │
+│   ◀      Blind      ▶   │
+│ Angle       [0.0 deg  ☰]│
+
+│ ■ Second end position   │
+│   ◀      Up to      ▶   │
+│ Selection   [none      ]│
+
+"Symetric variants"
+│ □ Symetric              │
+│ □ Second end position   │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+│ ■ Symetric              │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+
+"Merge with all variants"
+│ ■ Merge with all        │
+
+│ □ Merge with all        │
+│ Merge scope [none      ]│
