@@ -386,7 +386,13 @@ pub fn hit_test(
     position_px: UiPoint,
     metrics: GridMetrics,
     grid: &CellGrid,
-) -> Option<WidgetId>;
+) -> Option<HitTestResult>;
+
+pub struct HitTestResult {
+    pub col: u32,
+    pub row: u32,
+    pub widget_id: Option<WidgetId>,
+}
 ```
 
 Prefer a Newell-owned `UiPoint` over coupling `newell-ui` directly to `winit`.
@@ -1298,6 +1304,18 @@ Complete when:
 - row/column maps directly to cell/widget;
 - shared-border routing works through modulo logic;
 - no bounding-box iteration exists in the normal path.
+
+Accepted M2.5 decision (binding for M2.6+):
+
+- `Cell` contains both `widget_id` and `shared_border`.
+- When `shared_border` is `Some`, it takes precedence over `widget_id`.
+- Shared-border routing is by sub-cell position: vertical borders use local x,
+  horizontal borders use local y; `low` = left/upper, `high` = right/lower.
+- This preserves O(1) routing without neighbour scans or a side table.
+- Accepted trade-off: the CPU-side `Cell` grows. `GpuCell` is unchanged.
+- Layout composition order: (1) draw visual borders, then (2) stamp
+  shared-border interaction metadata. `draw_border` clears `widget_id` and
+  `shared_border` on the cells it rewrites.
 
 ### M2.6 — Interaction state
 

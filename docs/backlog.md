@@ -15,7 +15,7 @@
   rasterization and the glyph texture atlas in `newell-render`.
 - [x] M2.4: Implement the `newell-render` ASCII pipeline so that the complete
   UI cell buffer is uploaded and rendered in a single GPU draw call.
-- [ ] M2.5: Implement O(1) pixel-to-cell hit-testing and sub-cell border
+- [x] M2.5: Implement O(1) pixel-to-cell hit-testing and sub-cell border
   routing for shared ASCII separators.
 - [ ] M2.6: Implement the core grid-native interaction state:
   focus, hover, pressed, selected, disabled, expanded and checked.
