@@ -1312,7 +1312,9 @@ Accepted M2.5 decision (binding for M2.6+):
 - Shared-border routing is by sub-cell position: vertical borders use local x,
   horizontal borders use local y; `low` = left/upper, `high` = right/lower.
 - This preserves O(1) routing without neighbour scans or a side table.
-- Accepted trade-off: the CPU-side `Cell` grows. `GpuCell` is unchanged.
+- Accepted trade-off: the CPU-side `Cell` grows. `GpuCell` carries the owning widget
+  (`widget` + `flags`, with `WIDGET_PRESENT` / `WIDGET_LEFT_EDGE`) for shader-side hover.
+  A shared-border cell has no GPU owner (see M2.6).
 - Layout composition order: (1) draw visual borders, then (2) stamp
   shared-border interaction metadata. `draw_border` clears `widget_id` and
   `shared_border` on the cells it rewrites.
@@ -1330,6 +1332,21 @@ Complete when:
 - checked
 
 are represented consistently and tested.
+
+Accepted M2.6 decisions:
+
+- `InteractionState { hovered, focused, pressed }` and
+  `WidgetState { selected, disabled, expanded, checked }` live in `newell-ui`.
+  Only `hovered` is uploaded to the GPU (via the uniform buffer). `focused` and
+  `pressed` are not uploaded yet.
+- Hover is resolved by the M2.5 `hit_test` and applied in the shader. The overlay
+  stays one draw call and hover changes do not re-upload cells.
+- Per-row `WIDGET_LEFT_EDGE`: the hover left-border stripe is drawn on the first
+  owned cell of each row run, not once per widget.
+- Shared-border hover is **deferred to M2.7**. If a widget's visual left edge is a
+  shared border, M2.6 currently highlights the first owned cell one cell inside the
+  border. M2.7 must decide whether shared border cells remain visually neutral or
+  participate in hover styling. Current rendering is unchanged by this note.
 
 ### M2.7 — Widget primitives
 

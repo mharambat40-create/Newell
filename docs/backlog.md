@@ -17,7 +17,7 @@
   UI cell buffer is uploaded and rendered in a single GPU draw call.
 - [x] M2.5: Implement O(1) pixel-to-cell hit-testing and sub-cell border
   routing for shared ASCII separators.
-- [ ] M2.6: Implement the core grid-native interaction state:
+- [x] M2.6: Implement the core grid-native interaction state:
   focus, hover, pressed, selected, disabled, expanded and checked.
   Hover visual effects remain shader-side as required by ARCHITECTURE.md.
 - [ ] M2.7: Implement reusable ASCII widget primitives:
