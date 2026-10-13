@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 ab_glyph.workspace = true
+newell-ui = { path = "../newell-ui", version = "0.1.0" }
 thiserror.workspace = true
 wgpu = "26.0.1"
 

@@ -13,8 +13,14 @@ use std::sync::mpsc::{self, Receiver};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
+use newell_ui::{CellGrid, GridMetrics};
+
 use crate::RenderError;
+use crate::glyph_atlas::{GlyphAtlas, load_font};
 use crate::surface::{FrameAction, SurfaceState, classify};
+use crate::ui::UiOverlay;
+
+const FONT: &[u8] = include_bytes!("../../../assets/FiraCode-Regular.ttf");
 
 /// Placeholder dark neutral; theming is not in scope.
 pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -33,7 +39,7 @@ pub enum FrameOutcome {
     Skipped,
 }
 
-/// Owns the surface, device and queue, and draws the viewport.
+/// Owns the surface, device and queue, and draws the viewport and the ASCII overlay.
 pub struct Renderer {
     // Declaration order is drop order: the surface (which holds the window handle)
     // goes before the device that created it.
@@ -42,6 +48,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     state: SurfaceState,
+    ui: UiOverlay,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
 }
@@ -100,12 +107,15 @@ impl Renderer {
             alpha_mode,
             view_formats: Vec::new(),
         };
+        let atlas = GlyphAtlas::build(&load_font(FONT.to_vec())?)?;
+        let ui = UiOverlay::new(&device, &queue, format, atlas);
         Ok(Self {
             surface,
             device,
             queue,
             config,
             state: SurfaceState::new(width, height),
+            ui,
             gpu_errors,
         })
     }
@@ -113,6 +123,12 @@ impl Renderer {
     /// Physical pixels. A zero dimension (minimised) deactivates the surface without error.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.state.resize(width, height);
+    }
+
+    /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of `metrics`
+    /// physical pixels. The whole grid is uploaded; it is drawn by one draw call.
+    pub fn set_ui_grid(&mut self, grid: &CellGrid, metrics: GridMetrics) {
+        self.ui.set_grid(&self.device, &self.queue, grid, metrics);
     }
 
     /// Acquires, clears to `CLEAR_COLOR`, submits, presents. Returns `Skipped` when the
@@ -127,6 +143,7 @@ impl Renderer {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.state.mark_configured();
+            self.ui.set_viewport(&self.queue, width, height);
         }
 
         let (frame, acquire) = match self.surface.get_current_texture() {
@@ -165,6 +182,24 @@ impl Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         }));
+        // Separate overlay pass: the viewport pass above stays untouched.
+        let mut overlay = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ascii ui"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.ui.draw(&mut overlay);
+        drop(overlay);
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.check_gpu_errors()?;

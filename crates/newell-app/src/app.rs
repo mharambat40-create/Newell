@@ -13,7 +13,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
-use newell_render::Renderer;
+use newell_render::{GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, Renderer};
+use newell_ui::{GridMetrics, demo_grid};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -79,6 +80,14 @@ impl ApplicationHandler for App {
         match Renderer::new(window.clone(), size.width, size.height) {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(error) => return self.fail(event_loop, error),
+        }
+        // M2.4 validation content; the real shell composition arrives with M2.13.
+        if let (Some(renderer), Ok(grid), Ok(metrics)) = (
+            &mut self.renderer,
+            demo_grid(),
+            GridMetrics::new(GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT),
+        ) {
+            renderer.set_ui_grid(&grid, metrics);
         }
         window.request_redraw();
         self.window = Some(window);

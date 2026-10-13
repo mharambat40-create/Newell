@@ -9,3 +9,4 @@ mod glyph;
 mod gpu;
 mod harness;
 mod surface;
+mod ui_gpu;

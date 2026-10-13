@@ -7,6 +7,7 @@
 //! Controller: input handling and flat 1D UI cell state (ARCHITECTURE.md §1, §3.4).
 
 mod cell;
+mod demo;
 mod error;
 mod grid;
 mod layout;
@@ -15,6 +16,7 @@ mod style;
 mod widget_id;
 
 pub use cell::{Cell, CellContent};
+pub use demo::demo_grid;
 pub use error::UiError;
 pub use grid::{CellGrid, MAX_CELLS};
 pub use layout::{BorderLine, GridRect, draw_border};

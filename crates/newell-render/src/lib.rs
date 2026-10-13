@@ -10,6 +10,7 @@ mod error;
 pub mod glyph_atlas;
 mod renderer;
 pub mod surface;
+pub mod ui;
 
 pub use error::RenderError;
 pub use glyph_atlas::{

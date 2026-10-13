@@ -995,6 +995,7 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "newell-render",
+ "newell-ui",
  "proptest",
  "thiserror 2.0.21",
  "winit",
@@ -1022,6 +1023,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "insta",
+ "newell-ui",
  "proptest",
  "thiserror 2.0.21",
  "wgpu",
