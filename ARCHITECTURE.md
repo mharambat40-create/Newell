@@ -114,7 +114,23 @@ constraints. Custom implementations require a concrete project-specific
 justification.
 
 ## 3. UI & Rendering Rules (wgpu)
-The interface is a 2D grid of characters. 
+The interface is a 2D grid of characters.
+
+### 3.0 UI Design Specification
+
+Detailed UI/UX behaviour, component semantics, and reference ASCII interface
+states are maintained under `docs/ui_design/`.
+
+`docs/ui_design/README.md` is the canonical UI/UX specification subordinate to
+this document.
+
+Other files under `docs/ui_design/` are reference interface states,
+interaction examples, and ASCII mock-ups. They illustrate the intended
+behaviour but MUST NOT override `ARCHITECTURE.md` or
+`docs/ui_design/README.md`.
+
+Implementation plans under `docs/plans/` MUST reference the relevant
+`docs/ui_design/` specifications instead of duplicating UI rules.
 
 ### 3.1 Typography & Ratio
 - The base grid cell ratio is assumed to be **3:5** (Width:Height).
@@ -132,7 +148,15 @@ Because the cell ratio is 3:5, square logos must be allocated asymmetric blocks 
 - **Shader Rule:** The wgpu Fragment Shader MUST use "Scale to Fit" logic. It receives the allocated grid area and the 256x256 texture UVs, and centers the square texture within the rectangular bounds perfectly, leaving transparent gaps. The Executor (CPU logic) must NEVER calculate sub-pixel offsets.
 
 ### 3.4 UI State & Hit-Testing Rules
-- **No DOM / Tree Structures:** The `newell-ui` state MUST be a flat 1D array of cells. Each cell contains its character, color data, and a `widget_id`.
+- **No DOM / Retained Widget Trees:** The rendered UI representation produced
+  by `newell-ui` MUST be a flat 1D array of cells.
+
+  High-level Controller state MAY be stored in plain Newell-owned structs and
+  enums for command state, focus, selection, tree expansion, panel state,
+  overlays, and similar interaction data.
+
+  Such state MUST NOT form a retained DOM-style widget tree and MUST NOT be
+  used for bounding-box iteration during normal hit-testing.
 - **O(1) Hit-Testing:** Pointer interaction MUST be calculated via direct mathematical division (pixels to grid coordinates). Iterating through bounding boxes for hit-testing is strictly FORBIDDEN.
 - **Sub-Cell Modulo Logic:** For shared ASCII separator characters, the Controller MUST compute the modulo of the pixel coordinate to determine which half of the cell was clicked, routing the interaction to the correct adjacent `widget_id`.
 - **Single GPU Draw Call:** `newell-render` MUST consume this flat array and render the entire ASCII UI overlay in a single `wgpu` draw call to maintain the lowest possible rendering overhead.
