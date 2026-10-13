@@ -7,8 +7,13 @@
 //! View: wgpu rendering pipeline for the viewport and ASCII overlay (ARCHITECTURE.md §1).
 
 mod error;
+pub mod glyph_atlas;
 mod renderer;
 pub mod surface;
 
 pub use error::RenderError;
+pub use glyph_atlas::{
+    GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs,
+    load_font,
+};
 pub use renderer::{CLEAR_COLOR, FrameOutcome, Renderer};

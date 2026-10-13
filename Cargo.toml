@@ -15,6 +15,7 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
+ab_glyph = "0.2.32"
 thiserror = "2"
 proptest = "1.12"
 insta = "1.49"

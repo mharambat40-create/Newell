@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+ab_glyph.workspace = true
 thiserror.workspace = true
 wgpu = "26.0.1"
 

@@ -1020,6 +1020,7 @@ dependencies = [
 name = "newell-render"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "insta",
  "proptest",
  "thiserror 2.0.21",

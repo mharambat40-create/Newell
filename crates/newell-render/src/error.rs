@@ -26,6 +26,12 @@ pub enum RenderError {
     /// Device loss is reported, not recovered, in M1.3.
     #[error("GPU device lost: {0}")]
     DeviceLost(String),
+    /// The font bytes are not a parsable font.
+    #[error("font load failed: {0}")]
+    FontLoad(#[from] ab_glyph::InvalidFont),
+    /// A glyph required by the canonical atlas is absent from the font.
+    #[error("font has no glyph for {0:?}")]
+    MissingGlyph(char),
 }
 
 impl From<wgpu::Error> for RenderError {
