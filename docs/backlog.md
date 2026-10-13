@@ -11,7 +11,7 @@
   implement the flat 1D UI cell buffer in `newell-ui`.
 - [x] M2.2: Implement the character-grid layout engine, including rows,
   columns, rectangular regions, clipping and box-drawing borders.
-- [ ] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph
+- [x] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph
   rasterization and the glyph texture atlas in `newell-render`.
 - [ ] M2.4: Implement the `newell-render` ASCII pipeline so that the complete
   UI cell buffer is uploaded and rendered in a single GPU draw call.
