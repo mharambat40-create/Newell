@@ -20,7 +20,7 @@
 - [x] M2.6: Implement the core grid-native interaction state:
   focus, hover, pressed, selected, disabled, expanded and checked.
   Hover visual effects remain shader-side as required by ARCHITECTURE.md.
-- [ ] M2.7: Implement reusable ASCII widget primitives:
+- [x] M2.7: Implement reusable ASCII widget primitives:
   labels, separators, buttons, checkboxes, segmented selectors,
   cyclic left/right selectors, numeric/text fields and tree rows.
 - [ ] M2.8: Implement overlay primitives:

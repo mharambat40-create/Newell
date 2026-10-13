@@ -1363,6 +1363,34 @@ Complete when reusable composition helpers exist for:
 
 No retained widget instances are introduced.
 
+Accepted M2.7 decisions:
+
+- Primitives live in `newell-ui::widgets` as pure `draw_*` functions writing into a
+  `CellGrid` inside a `GridRect`, clipped to the rect and grid. Styles come from
+  `WidgetStyles` (placeholder palette slots); focus/press/selected/disabled are
+  composed as style, hover is never composed (shader-side).
+- Interactive primitives stamp caller-supplied `WidgetId`s on every cell they own
+  (blanks included). Disabled controls keep their ids.
+- **Shared-border hover: the border stays visually neutral (option A).** A shared
+  border cell has `shared_border` routing and no GPU owner, so it never paints the
+  hover stripe; the neighbouring control's stripe is painted on its first owned cell,
+  one cell inside the border. Rationale: a shared cell has two owners by sub-cell half
+  (ARCHITECTURE.md §3.4) but the GPU cell carries one, so border hover would need a
+  second pixel-level routing mechanism in the shader; and the border is structure, not
+  text (§3.5 stripe is a text-cell treatment). Pointer routing across the border is
+  unchanged (M2.5).
+- Segmented active-segment rule: separators are `│`; the separators touching the active
+  segment are `║`. A segmented selector needs width `>= 2n - 1`.
+- Cyclic selector: `◀` / `▶` own their cells, the value is unowned; `cycle_next` /
+  `cycle_prev` wrap. The selector type is the caller's choice, never derived from count.
+- Tree row: one id per row; guides `├ └ │` muted; marker `[-]`/`[+]` (branch) or `□`/`■`
+  (leaf, from `WidgetState::checked`; meaning still open, README §12.2).
+- **Disabled hover (Controller policy, recorded for later composition).** Disabled
+  controls may retain their `WidgetId` for deterministic hit-testing and rendering, but
+  Controller code MUST NOT set them as hovered, focused or pressed interaction targets.
+  Disabled state therefore takes precedence over pointer interaction policy. No global
+  disabled-widget registry is added; `InteractionState` is unchanged.
+
 ### M2.8 — Overlay primitives
 
 Complete when:

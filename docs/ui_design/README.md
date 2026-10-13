@@ -354,6 +354,7 @@ them deliberately.
   decision belongs to the widget milestones that first need them.
 - **Heavy lines.** The SelectionPanel scrollbar uses `┃`. Heavy lines are not in
   the M2.2 border vocabulary.
-- **Active-segment rule.** The references show the active segment through box
-  edges. The exact glyph rule is derived when the segmented-selector primitive is
-  implemented (M2.7).
+- **Active-segment rule.** Resolved in M2.7: segment separators are `│`, and the
+  separators touching the active segment are `║`, so the active segment is boxed by
+  double edges without relying on colour. The dotted `╴` runs in the references are not
+  part of the M2.7 vocabulary.
