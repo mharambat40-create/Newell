@@ -9,7 +9,7 @@
 
 - [x] M2.1: Define the core `Cell`, style and `widget_id` representation and
   implement the flat 1D UI cell buffer in `newell-ui`.
-- [ ] M2.2: Implement the character-grid layout engine, including rows,
+- [x] M2.2: Implement the character-grid layout engine, including rows,
   columns, rectangular regions, clipping and box-drawing borders.
 - [ ] M2.3: Load `assets/FiraCode-Regular.ttf` and implement glyph
   rasterization and the glyph texture atlas in `newell-render`.
