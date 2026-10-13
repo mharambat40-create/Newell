@@ -1,6 +1,7 @@
 [package]
 name = "newell-render"
 version = "0.1.0"
+description = "wgpu rendering of the ASCII grid and 3D viewport."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,3 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+wgpu = "26.0.1"
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

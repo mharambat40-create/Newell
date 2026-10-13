@@ -8,8 +8,23 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    "CC0-1.0",
 ]
+private = { ignore = true }
 
 [advisories]
 unmaintained = "workspace"
 yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    { crate = "opencascade" },
+    { crate = "opencascade-sys" },
+    { crate = "brepkit", wrappers = ["newell-kernel"] },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

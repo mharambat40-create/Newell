@@ -1,6 +1,7 @@
 [package]
 name = "newell-kernel"
 version = "0.1.0"
+description = "Anti-corruption layer over the BrepKIT kernel."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,4 +10,6 @@ publish.workspace = true
 [lints]
 workspace = true
 
-[dependencies]
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

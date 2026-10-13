@@ -1,0 +1,8 @@
+---
+source: crates/newell-render/tests/it/harness.rs
+expression: "(1u32, \"canary\")"
+---
+(
+    1,
+    "canary",
+)

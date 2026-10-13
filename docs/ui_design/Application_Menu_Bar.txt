@@ -1,0 +1,39 @@
+"Application Menu Bar"
+
+╭─File──────╮
+│ New       │
+│ Open      │
+│ Recent    │
+│ Save      │
+│ Save As   │
+│ Import    │
+│ Export    │
+│ Option    │
+╰───────────╯
+╭─Edit──────╮
+│ Undo      │
+│ Redo      │
+│ Recompute │
+╰───────────╯
+╭─View──────────────╮
+│ ◀  Perspective  ▶ │
+│ ◀    Shaded     ▶ │
+│ ■ Tree panel      │
+│ ■ Task bar        │
+│ ■ Status bar      │
+│ ■ Navigation cube │
+│ □ Grid Overlay    │
+│ [N]ormal to       │
+│ Reset Cam         │
+│ Fullscreen        │
+╰───────────────────╯
+◀  Perspective  ▶ ◀ Orthographic  ▶
+◀    Points     ▶ ◀  Wireframe    ▶ ◀  Hidden line  ▶ ◀  No shading   ▶ ◀    Shaded     ▶ ◀   Flat line   ▶
+╭─Help──────╮
+│Tutorial	│
+│Docs		│
+│Shortcuts	│
+│Bug		│
+│Update		│
+│About		│
+╰───────────╯
