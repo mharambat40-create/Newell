@@ -6,7 +6,7 @@
 // (at your option) any later version.
 //! A single UI grid cell.
 
-use crate::{StyleId, WidgetId};
+use crate::{SharedBorder, StyleId, WidgetId};
 
 /// What a cell displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,12 +18,16 @@ pub enum CellContent {
     Glyph(char),
 }
 
-/// One cell of the flat UI grid: content, style, and owning widget (if any).
+/// One cell of the flat UI grid: content, style, owning widget (if any), and
+/// optional shared-border routing targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cell {
     pub content: CellContent,
     pub style: StyleId,
     pub widget_id: Option<WidgetId>,
+    /// When set, this cell is a separator shared by two adjacent regions and
+    /// hit-testing routes by sub-cell position instead of using `widget_id`.
+    pub shared_border: Option<SharedBorder>,
 }
 
 #[cfg(test)]
@@ -36,6 +40,7 @@ mod tests {
         assert_eq!(c.content, CellContent::Empty);
         assert_eq!(c.style, StyleId::DEFAULT);
         assert_eq!(c.widget_id, None);
+        assert_eq!(c.shared_border, None);
     }
 
     #[test]
@@ -44,6 +49,7 @@ mod tests {
             content: CellContent::Glyph('A'),
             style: StyleId::new(3),
             widget_id: Some(WidgetId::new(9)),
+            shared_border: None,
         };
         let without = Cell {
             widget_id: None,

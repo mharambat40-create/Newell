@@ -168,6 +168,7 @@ fn put(grid: &mut CellGrid, col: u32, row: u32, new: Arms, style: StyleId) {
         cell.content = CellContent::Glyph(c);
         cell.style = style;
         cell.widget_id = None;
+        cell.shared_border = None;
     }
 }
 
@@ -175,7 +176,11 @@ fn put(grid: &mut CellGrid, col: u32, row: u32, new: Arms, style: StyleId) {
 ///
 /// The outline lies inside `rect`. Rects narrower or shorter than two cells
 /// have no interior-bounded outline and draw nothing. Cells written take
-/// `style` and `widget_id = None`; all other cells are untouched.
+/// `style`, `widget_id = None` and `shared_border = None`; all other cells are
+/// untouched.
+///
+/// Interaction metadata is set afterwards, not here: layout composition draws
+/// visual borders first, then stamps `shared_border` onto separator cells.
 pub fn draw_border(grid: &mut CellGrid, rect: GridRect, line: BorderLine, style: StyleId) {
     if rect.width() < 2 || rect.height() < 2 {
         return;
@@ -220,7 +225,7 @@ pub fn draw_border(grid: &mut CellGrid, rect: GridRect, line: BorderLine, style:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, WidgetId};
+    use crate::{BorderAxis, Cell, SharedBorder, WidgetId};
 
     fn rows(g: &CellGrid) -> Vec<String> {
         (0..g.rows())
@@ -380,6 +385,7 @@ mod tests {
             content: CellContent::Glyph('Z'),
             style: StyleId::new(7),
             widget_id: Some(WidgetId::new(3)),
+            shared_border: None,
         };
         let mut g = grid(4, 4);
         for r in 0..4 {
@@ -402,6 +408,29 @@ mod tests {
         assert_eq!(corner.style, StyleId::new(2));
         assert_eq!(corner.widget_id, None);
         assert_eq!(corner.content, CellContent::Glyph('┌'));
+    }
+
+    #[test]
+    fn draw_border_clears_shared_border_on_rewritten_cells_only() {
+        let sep = SharedBorder {
+            axis: BorderAxis::Vertical,
+            low: Some(WidgetId::new(1)),
+            high: Some(WidgetId::new(2)),
+        };
+        let mut g = grid(4, 4);
+        for r in 0..4 {
+            for c in 0..4 {
+                g.get_mut(c, r).unwrap().shared_border = Some(sep);
+            }
+        }
+        draw_border(&mut g, rect(0, 0, 4, 4), BorderLine::Single, ST);
+        for r in 0..4 {
+            for c in 0..4 {
+                let on_edge = c == 0 || c == 3 || r == 0 || r == 3;
+                let expected = if on_edge { None } else { Some(sep) };
+                assert_eq!(g.get(c, r).unwrap().shared_border, expected, "({c}, {r})");
+            }
+        }
     }
 
     #[test]

@@ -103,6 +103,7 @@ mod tests {
             content: CellContent::Glyph(ch),
             style: StyleId::new(style),
             widget_id: None,
+            shared_border: None,
         }
     }
 
