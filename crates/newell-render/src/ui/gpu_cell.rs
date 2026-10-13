@@ -307,6 +307,58 @@ mod tests {
     }
 
     #[test]
+    fn shared_border_left_edge_stays_neutral_and_stripe_moves_inside() {
+        // M2.7 rule: a control whose visual left edge is a shared border does not paint
+        // the stripe on the border; the stripe sits on its first owned cell.
+        use newell_ui::{
+            InteractionState, Segment, Segmented, WidgetContext, WidgetState, WidgetStyles,
+            draw_segmented,
+        };
+        let atlas = atlas();
+        let (left, right) = (WidgetId::new(1), WidgetId::new(2));
+        let segments = [
+            Segment {
+                id: left,
+                label: "Solid",
+            },
+            Segment {
+                id: right,
+                label: "Surface",
+            },
+        ];
+        let styles = WidgetStyles::default();
+        let inter = InteractionState::default();
+        let mut grid = CellGrid::new(15, 1).unwrap();
+        draw_segmented(
+            &mut grid,
+            &WidgetContext {
+                styles: &styles,
+                interaction: &inter,
+            },
+            newell_ui::GridRect::new(0, 0, 15, 1),
+            &Segmented {
+                segments: &segments,
+                active: 0,
+                state: WidgetState::default(),
+            },
+        );
+        let bytes = cells_to_bytes(&grid, &atlas);
+        let cell = |col: usize| {
+            let o = col * GPU_CELL_BYTES;
+            let word = |i: usize| u32::from_le_bytes(bytes[o + i..o + i + 4].try_into().unwrap());
+            (word(8), word(12)) // (widget, flags)
+        };
+        let edge = WIDGET_PRESENT | WIDGET_LEFT_EDGE;
+        assert_eq!(cell(0), (1, edge));
+        assert_eq!(cell(6), (1, WIDGET_PRESENT));
+        // The shared border: no owner, no stripe, so it never highlights on hover.
+        assert_eq!(cell(7), (0, 0));
+        // The right control's stripe is one cell inside the border.
+        assert_eq!(cell(8), (2, edge));
+        assert_eq!(cell(9), (2, WIDGET_PRESENT));
+    }
+
+    #[test]
     fn shared_border_cell_has_no_gpu_owner() {
         use newell_ui::{BorderAxis, SharedBorder};
         let mut c = owned('│', 9);

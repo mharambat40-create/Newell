@@ -16,6 +16,7 @@ mod layout;
 mod metrics;
 mod style;
 mod widget_id;
+mod widgets;
 
 pub use cell::{Cell, CellContent};
 pub use demo::demo_grid;
@@ -27,3 +28,8 @@ pub use layout::{BorderLine, GridRect, draw_border};
 pub use metrics::GridMetrics;
 pub use style::StyleId;
 pub use widget_id::WidgetId;
+pub use widgets::{
+    Cyclic, Segment, Segmented, TreeNodeKind, TreeRow, WidgetContext, WidgetStyles, cycle_next,
+    cycle_prev, draw_button, draw_checkbox, draw_cyclic, draw_label, draw_numeric_field,
+    draw_segmented, draw_separator, draw_text_field, draw_tree_row,
+};
