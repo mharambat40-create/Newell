@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
-use newell_ui::{CellGrid, GridMetrics};
+use newell_ui::{CellGrid, GridMetrics, WidgetId};
 
 use crate::RenderError;
 use crate::glyph_atlas::{GlyphAtlas, load_font};
@@ -129,6 +129,12 @@ impl Renderer {
     /// physical pixels. The whole grid is uploaded; it is drawn by one draw call.
     pub fn set_ui_grid(&mut self, grid: &CellGrid, metrics: GridMetrics) {
         self.ui.set_grid(&self.device, &self.queue, grid, metrics);
+    }
+
+    /// Sets the hovered widget (`None` clears it). Only the shader's hover uniform changes; the
+    /// grid is not re-uploaded and the draw is still one call.
+    pub fn set_hovered(&mut self, hovered: Option<WidgetId>) {
+        self.ui.set_hovered(&self.queue, hovered);
     }
 
     /// Acquires, clears to `CLEAR_COLOR`, submits, presents. Returns `Skipped` when the

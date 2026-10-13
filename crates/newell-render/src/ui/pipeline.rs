@@ -6,13 +6,13 @@
 // (at your option) any later version.
 //! GPU side of the ASCII overlay: atlas texture, sampler, cell buffer, pipeline, one draw.
 
-use newell_ui::{CellGrid, GridMetrics};
+use newell_ui::{CellGrid, GridMetrics, WidgetId};
 use wgpu::util::DeviceExt;
 
-use super::gpu_cell::{GPU_CELL_BYTES, cells_to_bytes};
+use super::gpu_cell::{GPU_CELL_BYTES, cells_to_bytes, encode_widget};
 use crate::glyph_atlas::{GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, GlyphAtlas};
 
-const UNIFORM_BYTES: usize = 40;
+const UNIFORM_BYTES: usize = 48;
 /// Vertices per cell quad (two triangles).
 const QUAD_VERTICES: u32 = 6;
 
@@ -29,6 +29,7 @@ pub struct UiOverlay {
     cell_px: (u32, u32),
     viewport_px: (u32, u32),
     srgb_target: bool,
+    hovered: Option<WidgetId>,
 }
 
 impl UiOverlay {
@@ -147,7 +148,7 @@ impl UiOverlay {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: GPU_CELL_BYTES as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
+                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32, 3 => Uint32],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -178,6 +179,7 @@ impl UiOverlay {
             cell_px: (GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT),
             viewport_px: (1, 1),
             srgb_target: format.is_srgb(),
+            hovered: None,
         }
     }
 
@@ -217,6 +219,15 @@ impl UiOverlay {
         self.write_uniforms(queue);
     }
 
+    /// Sets the hovered widget (`None` clears it). Rewrites only the small uniform buffer: no
+    /// cell upload, no atlas work, no extra draw call. The visual effect is applied by the shader.
+    pub fn set_hovered(&mut self, queue: &wgpu::Queue, hovered: Option<WidgetId>) {
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.write_uniforms(queue);
+        }
+    }
+
     fn write_uniforms(&self, queue: &wgpu::Queue) {
         let floats = [
             self.viewport_px.0 as f32,
@@ -234,6 +245,9 @@ impl UiOverlay {
         }
         bytes.extend_from_slice(&self.cols.to_le_bytes());
         bytes.extend_from_slice(&u32::from(self.srgb_target).to_le_bytes());
+        let (hover_widget, hover_flags) = encode_widget(self.hovered);
+        bytes.extend_from_slice(&hover_widget.to_le_bytes());
+        bytes.extend_from_slice(&hover_flags.to_le_bytes());
         queue.write_buffer(&self.uniforms, 0, &bytes);
     }
 
