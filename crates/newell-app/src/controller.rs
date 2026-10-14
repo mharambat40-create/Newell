@@ -10,7 +10,7 @@
 //! It contains no `winit` or GPU types, so it is testable without a window or an adapter.
 
 use newell_ui::{
-    CellGrid, GridMetrics, ShellKey, ShellState, UiError, UiPoint, WidgetId, hit_test,
+    CellGrid, GridMetrics, Separator, ShellKey, ShellState, UiError, UiPoint, WidgetId, hit_test,
 };
 
 /// What the caller must do after an input.
@@ -46,6 +46,8 @@ pub struct ShellController {
     grid: CellGrid,
     metrics: GridMetrics,
     cursor: Option<UiPoint>,
+    /// The separator being dragged (pointer capture): temporary interaction state.
+    drag: Option<Separator>,
 }
 
 impl ShellController {
@@ -61,6 +63,7 @@ impl ShellController {
             grid,
             metrics,
             cursor: None,
+            drag: None,
         })
     }
 
@@ -91,10 +94,33 @@ impl ShellController {
     /// The pointer moved to `position` (`None`: it left the window).
     pub fn pointer_moved(&mut self, position: Option<UiPoint>) -> Update {
         self.cursor = position;
-        Update {
-            grid: false,
-            hover: self.resolve_hover(),
-        }
+        let acted = match (self.drag, position) {
+            (Some(separator), Some(p)) => self
+                .shell
+                .drag_separator(separator, p.x / self.metrics.cell_width_px()),
+            _ => false,
+        };
+        self.refresh(acted)
+    }
+
+    /// The primary button was released: any separator drag ends.
+    pub fn pointer_released(&mut self) {
+        self.drag = None;
+    }
+
+    /// `true` while a separator is being dragged.
+    #[must_use]
+    pub const fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// The window is now `width_px` x `height_px` physical pixels: the shell is re-laid out on
+    /// the whole cells that fit (see [`GridMetrics::grid_size`]). A size that does not change
+    /// the cell grid does nothing.
+    pub fn resize(&mut self, width_px: u32, height_px: u32) -> Update {
+        let (cols, rows) = self.metrics.grid_size(width_px, height_px);
+        let acted = self.shell.resize(cols, rows);
+        self.refresh(acted)
     }
 
     /// The primary button was pressed at the last known pointer position.
@@ -102,6 +128,10 @@ impl ShellController {
         let hit = self
             .cursor
             .and_then(|p| hit_test(p, self.metrics, &self.grid));
+        if let Some(separator) = hit.and_then(|h| self.shell.separator_at(h.col, h.row)) {
+            self.drag = Some(separator);
+            return Update::default();
+        }
         let acted = self.shell.click(hit);
         self.refresh(acted)
     }

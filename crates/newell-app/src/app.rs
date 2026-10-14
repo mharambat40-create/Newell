@@ -82,6 +82,15 @@ impl App {
         if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
             let size = window.inner_size();
             renderer.resize(size.width, size.height);
+            self.resize_shell(size.width, size.height);
+        }
+    }
+
+    /// Re-lays out the shell on the whole cells of the new window size and uploads the grid.
+    fn resize_shell(&mut self, width: u32, height: u32) {
+        if let Some(shell) = &mut self.shell {
+            let update = shell.resize(width, height);
+            self.apply(update);
         }
     }
 }
@@ -104,13 +113,11 @@ impl ApplicationHandler for App {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(error) => return self.fail(event_loop, error),
         }
-        // The grid is sized once from the initial window; responsive resizing is M2.14.
         let metrics = match GridMetrics::new(GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT) {
             Ok(metrics) => metrics,
             Err(error) => return self.fail(event_loop, error),
         };
-        let cols = size.width / GLYPH_CELL_WIDTH;
-        let rows = size.height / GLYPH_CELL_HEIGHT;
+        let (cols, rows) = metrics.grid_size(size.width, size.height);
         let shell = match ShellController::new(cols, rows, metrics) {
             Ok(shell) => shell,
             Err(error) => return self.fail(event_loop, error),
@@ -134,7 +141,10 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
                 }
-                window.request_redraw();
+                self.resize_shell(size.width, size.height);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             // A Resized may not follow; re-read the physical size.
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -164,6 +174,15 @@ impl ApplicationHandler for App {
                 if let Some(shell) = &mut self.shell {
                     let update = shell.pointer_pressed();
                     self.apply(update);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(shell) = &mut self.shell {
+                    shell.pointer_released();
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),

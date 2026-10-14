@@ -44,7 +44,7 @@ pub use overlays::{
     OverlayStack, ScrollList, ScrollState, SelectionPanel, center_modal, compose_overlays,
     draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
 };
-pub use shell::{ShellKey, ShellState};
+pub use shell::{Separator, ShellKey, ShellState};
 pub use style::StyleId;
 pub use widget_id::WidgetId;
 pub use widgets::{

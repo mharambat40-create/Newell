@@ -9,7 +9,7 @@
 //! [`ShellState`] owns the UI-only state of one window: the MenuBar and CommandBar
 //! [`MenuState`]s (M2.9), the mock tree expansion, the Extrude panel (M2.11), the
 //! SelectionPanel and FormulaEditor (M2.12), the interaction state and the overlay stack.
-//! [`ShellState::compose`] regenerates the one flat [`CellGrid`] from it. There is no widget
+//! [`ShellState::compose`] regenerates the one flat [`crate::CellGrid`] from it. There is no widget
 //! tree, no second interaction system and no geometry: every control routes to a primitive
 //! that already exists, by [`WidgetId`].
 //!
@@ -65,7 +65,9 @@ use crate::{
     MenuIds, MenuKey, MenuResult, MenuState, Mnemonic, ModalKey, OverlayStack, PanelRowKind,
     ROW_ID_STRIDE, SelectionPanel, WidgetId, cycle_next, cycle_prev,
 };
-use compose::Layout;
+use compose::{PanelWidths, action_width, nav_width};
+
+pub use compose::Separator;
 
 const MENU_BAR_BASE: u32 = 1_000_000;
 const COMMAND_BAR_BASE: u32 = MENU_BAR_BASE + MenuIds::SPAN;
@@ -130,6 +132,7 @@ fn tree_decode(id: WidgetId) -> Option<(Tree, usize)> {
 pub struct ShellState {
     cols: u32,
     rows: u32,
+    widths: PanelWidths,
     menu_bar: MenuState,
     command_bar: MenuState,
     /// Mnemonic token typed so far in an open menu (see [`ShellState::typed_char`]).
@@ -153,6 +156,7 @@ impl ShellState {
         let mut state = Self {
             cols,
             rows,
+            widths: PanelWidths::default(),
             menu_bar: MenuState::default(),
             command_bar: MenuState::default(),
             typed: String::new(),
@@ -174,6 +178,74 @@ impl ShellState {
     #[must_use]
     pub const fn size(&self) -> (u32, u32) {
         (self.cols, self.rows)
+    }
+
+    /// Re-targets the shell to a grid of `cols` x `rows` cells (the whole-cell size of the OS
+    /// window). Only the layout changes: every other piece of state, and the panel widths the
+    /// user chose, are kept, and open menus and modals are re-placed for the new bounds.
+    /// Returns `true` if the size changed (recompose the grid). Any size is valid, zero included.
+    pub fn resize(&mut self, cols: u32, rows: u32) -> bool {
+        if (cols, rows) == (self.cols, self.rows) {
+            return false;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.sync();
+        true
+    }
+
+    /// NavigationPanel width in cells, frame included, as laid out on the current grid.
+    #[must_use]
+    pub fn nav_width(&self) -> u32 {
+        self.layout().nav
+    }
+
+    /// ActionPanel width in cells, frame included, as laid out on the current grid.
+    #[must_use]
+    pub fn action_width(&self) -> u32 {
+        self.layout().action
+    }
+
+    /// Asks for a NavigationPanel `wanted` cells wide; the width is clamped to the grid
+    /// (at least 8 cells, at most half the grid). Returns `true` if the laid-out width changed.
+    pub fn set_nav_width(&mut self, wanted: u32) -> bool {
+        let before = self.nav_width();
+        self.widths.nav = nav_width(self.cols, wanted);
+        self.nav_width() != before
+    }
+
+    /// Asks for an ActionPanel `wanted` cells wide, clamped to the viewport. Returns `true`
+    /// if the laid-out width changed.
+    pub fn set_action_width(&mut self, wanted: u32) -> bool {
+        let before = self.action_width();
+        let inner = self.layout().viewport.inset(1).width();
+        self.widths.action = action_width(inner, wanted);
+        self.action_width() != before
+    }
+
+    /// The separator under cell `(col, row)`, if one can be dragged now: not while a modal or
+    /// a menu owns input.
+    #[must_use]
+    pub fn separator_at(&self, col: u32, row: u32) -> Option<Separator> {
+        if self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active() {
+            return None;
+        }
+        let rows = self.extrude.compose().map(|p| p.rows.len());
+        self.layout().separator_at(col, row, rows)
+    }
+
+    /// Drags `separator` to character column `col` (any column, even off the grid: the
+    /// width is clamped). Returns `true` if the layout changed.
+    pub fn drag_separator(&mut self, separator: Separator, col: u32) -> bool {
+        match separator {
+            Separator::Navigation => self.set_nav_width(col.saturating_add(1)),
+            Separator::Action => {
+                let right = self.layout().viewport.inset(1).right();
+                let wanted =
+                    u32::try_from(right.saturating_sub(u64::from(col))).unwrap_or(u32::MAX);
+                self.set_action_width(wanted)
+            }
+        }
     }
 
     /// Hover, focus and press state (hover is applied by the shader, not composed).
@@ -261,7 +333,7 @@ impl ShellState {
     /// and modals are opened or dismissed; focus follows the active owner and is restored
     /// when a modal closes. Called after every input.
     fn sync(&mut self) {
-        let layout = Layout::new(self.cols, self.rows);
+        let layout = self.layout();
         let bounds = layout.grid;
         if self.modal_open() {
             self.menu_bar.close();
@@ -579,5 +651,7 @@ impl ShellState {
     }
 }
 
+#[cfg(test)]
+mod resize_tests;
 #[cfg(test)]
 mod tests;

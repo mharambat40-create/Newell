@@ -224,3 +224,95 @@ fn every_shell_glyph_is_in_the_atlas_set() {
     c.key(ShellKey::Tab);
     check(&c);
 }
+
+// ---- M2.14: responsive resizing and separator dragging ----
+
+#[test]
+fn resize_recomputes_whole_cells_from_pixels() {
+    let mut c = controller();
+    let update = c.resize(100 * W + W - 1, 30 * H + H - 1);
+    assert!(update.grid);
+    assert_eq!((c.grid().cols(), c.grid().rows()), (100, 30));
+    assert_eq!(c.grid(), &c.shell().compose().unwrap());
+    // A size that leaves the cell grid unchanged uploads nothing.
+    assert_eq!(c.resize(100 * W + 1, 30 * H + 1), NOTHING);
+}
+
+#[test]
+fn resize_to_zero_and_back_restores_the_grid() {
+    let mut c = controller();
+    let original = c.grid().clone();
+    assert!(c.resize(0, 0).grid);
+    assert_eq!((c.grid().cols(), c.grid().rows()), (0, 0));
+    // Less than one cell wide is still zero columns; only the rows change.
+    c.resize(W - 1, 5 * H);
+    assert_eq!((c.grid().cols(), c.grid().rows()), (0, 5));
+    c.resize(82 * W, 25 * H);
+    assert_eq!(c.grid(), &original);
+}
+
+#[test]
+fn dragging_the_navigation_separator_snaps_to_columns() {
+    let mut c = controller();
+    // The NavigationPanel's right border is column 24.
+    c.pointer_moved(at(24, 10));
+    assert_eq!(c.pointer_pressed(), NOTHING);
+    assert!(c.dragging());
+    let update = c.pointer_moved(at(30, 10));
+    assert!(update.grid);
+    assert_eq!(c.shell().nav_width(), 31);
+    // Within the same column nothing changes, wherever in the cell the pointer is.
+    let again = c.pointer_moved(Some(UiPoint {
+        x: 30 * W + W - 1,
+        y: 10 * H,
+    }));
+    assert!(!again.grid);
+    assert_eq!(c.grid(), &c.shell().compose().unwrap());
+    c.pointer_released();
+    assert!(!c.dragging());
+    assert!(!c.pointer_moved(at(40, 10)).grid, "no drag after release");
+    assert_eq!(c.shell().nav_width(), 31);
+}
+
+#[test]
+fn dragging_outside_the_window_clamps() {
+    let mut c = controller();
+    c.pointer_moved(at(24, 10));
+    c.pointer_pressed();
+    assert!(c.pointer_moved(Some(UiPoint { x: u32::MAX, y: 0 })).grid);
+    assert_eq!(c.shell().nav_width(), 41);
+    // Leaving the window keeps the capture.
+    c.pointer_moved(None);
+    assert!(c.dragging());
+    c.pointer_released();
+}
+
+#[test]
+fn dragging_the_action_separator_resizes_the_panel() {
+    let mut c = controller();
+    c.pointer_moved(at(54, 15));
+    c.pointer_pressed();
+    assert!(c.dragging());
+    assert!(c.pointer_moved(at(50, 15)).grid);
+    assert_eq!(c.shell().action_width(), 31);
+    c.pointer_released();
+}
+
+#[test]
+fn pressing_elsewhere_starts_no_drag() {
+    let mut c = controller();
+    c.pointer_moved(at(40, 10));
+    c.pointer_pressed();
+    assert!(!c.dragging());
+}
+
+#[test]
+fn a_drag_survives_a_resize() {
+    let mut c = controller();
+    c.pointer_moved(at(24, 10));
+    c.pointer_pressed();
+    c.resize(120 * W, 40 * H);
+    assert!(c.dragging());
+    assert!(c.pointer_moved(at(50, 10)).grid);
+    assert_eq!(c.shell().nav_width(), 51);
+}

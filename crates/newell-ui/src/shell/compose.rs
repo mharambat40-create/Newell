@@ -14,8 +14,10 @@ use crate::{
     draw_menu_popup, draw_tree_row, title_rect,
 };
 
-/// Width of the NavigationPanel, frame included, when the grid is wide enough.
-const NAV_WIDTH: u32 = 25;
+/// Default NavigationPanel width, frame included.
+pub(super) const NAV_WIDTH: u32 = 25;
+/// Narrowest NavigationPanel, frame included (a smaller grid caps it at half its width).
+const NAV_MIN: u32 = 8;
 /// Rows above the body: MenuBar and CommandBar frames sharing their middle border.
 const TOP_ROWS: u32 = 4;
 /// Rows of the StatusBar frame.
@@ -23,13 +25,54 @@ const STATUS_ROWS: u32 = 3;
 /// NavCube placeholder size, frame included.
 const CUBE_WIDTH: u32 = 9;
 const CUBE_HEIGHT: u32 = 4;
-/// Extrude ActionPanel width, frame included (`Interface_Exemple.txt`).
-const PANEL_WIDTH: u32 = 27;
+/// Default Extrude ActionPanel width, frame included (`Interface_Exemple.txt`).
+pub(super) const PANEL_WIDTH: u32 = 27;
+/// Narrowest ActionPanel, frame included (a narrower viewport caps it at its width).
+const PANEL_MIN: u32 = 16;
 /// Title row, separator and the two frame rows around the panel's body rows.
 const PANEL_CHROME_ROWS: u32 = 4;
 /// Window controls drawn at the right end of the MenuBar, with a trailing space.
 const WINDOW_CONTROLS: &str = "[-] [□] [X] ";
 const WINDOW_CONTROLS_WIDTH: u32 = 12;
+
+/// The user-chosen widths of the two resizable panels, in whole cells. They are wishes: the
+/// widths actually used are clamped to the current grid by [`Layout`], so a window that shrinks
+/// and grows back restores them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PanelWidths {
+    pub nav: u32,
+    pub action: u32,
+}
+
+impl Default for PanelWidths {
+    fn default() -> Self {
+        Self {
+            nav: NAV_WIDTH,
+            action: PANEL_WIDTH,
+        }
+    }
+}
+
+/// NavigationPanel width actually used on a grid `cols` wide: at least [`NAV_MIN`] and at most
+/// half the grid, and never more than the grid on a tiny one.
+pub(super) fn nav_width(cols: u32, wanted: u32) -> u32 {
+    let half = cols / 2;
+    wanted.clamp(NAV_MIN.min(half), half)
+}
+
+/// ActionPanel width actually used in a viewport interior `inner` cells wide.
+pub(super) fn action_width(inner: u32, wanted: u32) -> u32 {
+    wanted.clamp(PANEL_MIN.min(inner), inner)
+}
+
+/// A draggable vertical separator. Dragging snaps to a character column and resizes the panel
+/// on its right (`Navigation`: the NavigationPanel's right border) or the ActionPanel on its
+/// left (`Action`: the panel's left border).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Separator {
+    Navigation,
+    Action,
+}
 
 /// The framed regions of the shell, in whole cells. Neighbouring frames share their
 /// border cells, so [`draw_border`] merges the junctions (`╠ ╦ ╩ ╣`). Regions of a grid too
@@ -43,11 +86,15 @@ pub(super) struct Layout {
     pub elements: GridRect,
     pub viewport: GridRect,
     pub status: GridRect,
+    /// Effective NavigationPanel width (frame included).
+    pub nav: u32,
+    /// Effective ActionPanel width (frame included).
+    pub action: u32,
 }
 
 impl Layout {
-    pub(super) fn new(cols: u32, rows: u32) -> Self {
-        let nav = NAV_WIDTH.min(cols / 2);
+    pub(super) fn new(cols: u32, rows: u32, widths: PanelWidths) -> Self {
+        let nav = nav_width(cols, widths.nav);
         let status_top = rows.saturating_sub(STATUS_ROWS);
         // Body frames run from row `TOP_ROWS` to the status frame's top row, inclusive.
         let body = status_top.saturating_sub(TOP_ROWS - 1);
@@ -60,19 +107,22 @@ impl Layout {
                 body - features_h + 1,
             )
         };
+        let viewport = GridRect::new(
+            nav.saturating_sub(1),
+            TOP_ROWS,
+            cols.saturating_sub(nav.saturating_sub(1)),
+            body,
+        );
         Self {
             grid: GridRect::new(0, 0, cols, rows),
             menu: GridRect::new(0, 0, cols, 3),
             command: GridRect::new(0, 2, cols, 3),
             features: GridRect::new(0, TOP_ROWS, nav, features_h),
             elements: GridRect::new(0, elements_top, nav, elements_h),
-            viewport: GridRect::new(
-                nav.saturating_sub(1),
-                TOP_ROWS,
-                cols.saturating_sub(nav.saturating_sub(1)),
-                body,
-            ),
+            viewport,
             status: GridRect::new(0, status_top, cols, STATUS_ROWS),
+            nav,
+            action: action_width(viewport.inset(1).width(), widths.action),
         }
     }
 
@@ -84,6 +134,24 @@ impl Layout {
     /// The single row of the CommandBar frame.
     pub(super) fn command_bar(&self) -> GridRect {
         self.command.inset(1)
+    }
+
+    /// The separator under cell `(col, row)`, by arithmetic on the layout (no cell scan). The
+    /// NavigationPanel's right border spans the body rows; the ActionPanel's left border spans
+    /// the panel (`action_rows` body rows) when it is open.
+    pub(super) fn separator_at(
+        &self,
+        col: u32,
+        row: u32,
+        action_rows: Option<usize>,
+    ) -> Option<Separator> {
+        let in_rows =
+            |r: &GridRect| u64::from(row) >= u64::from(r.row()) && u64::from(row) < r.bottom();
+        if self.nav >= 2 && col == self.nav - 1 && in_rows(&self.viewport) {
+            return Some(Separator::Navigation);
+        }
+        let panel = self.action_panel(action_rows?);
+        (panel.width() >= 2 && col == panel.col() && in_rows(&panel)).then_some(Separator::Action)
     }
 
     /// The Extrude ActionPanel: right-aligned, `rows` body rows tall, clipped to the viewport.
@@ -100,12 +168,16 @@ impl Layout {
             .1
             .split_top(height)
             .0
-            .split_right(PANEL_WIDTH)
+            .split_right(self.action)
             .0
     }
 }
 
 impl ShellState {
+    pub(super) fn layout(&self) -> Layout {
+        Layout::new(self.cols, self.rows, self.widths)
+    }
+
     /// Composes the whole shell: frames, bars, trees, viewport, NavCube, the Extrude
     /// ActionPanel, then the open overlays on top. The output depends only on this state.
     ///
@@ -118,7 +190,7 @@ impl ShellState {
             styles: &styles,
             interaction: &self.interaction,
         };
-        let layout = Layout::new(self.cols, self.rows);
+        let layout = self.layout();
         self.draw_chrome(&mut grid, &ctx, &layout);
         if let Some(panel) = self.extrude.compose() {
             panel.draw(&mut grid, &ctx, layout.action_panel(panel.rows.len()));
@@ -246,7 +318,7 @@ impl ShellState {
     /// then the Extrude ActionPanel controls. This is the keyboard focus ring; it is read
     /// from the composed `grid` only when Tab is pressed, never for pointer hit-testing.
     pub(super) fn focus_ring(&self, grid: &CellGrid) -> Vec<WidgetId> {
-        let layout = Layout::new(self.cols, self.rows);
+        let layout = self.layout();
         let mut ring = Vec::new();
         collect_ids(grid, layout.features.inset(1), &mut ring);
         collect_ids(grid, layout.elements.inset(1), &mut ring);

@@ -4,6 +4,7 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
+use super::compose::Layout;
 use super::data::{self, progress_bar, visible_rows};
 use super::*;
 use crate::{CellContent, CellGrid, GridMetrics, UiPoint, hit_test};
@@ -785,7 +786,7 @@ fn tiny_and_degenerate_grids_are_safe() {
 fn huge_grids_do_not_overflow() {
     let s = ShellState::new(u32::MAX, u32::MAX);
     assert!(s.compose().is_err());
-    let layout = Layout::new(u32::MAX, u32::MAX);
+    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default());
     assert!(layout.viewport.width() > 0);
     let _ = layout.action_panel(usize::MAX);
 }
