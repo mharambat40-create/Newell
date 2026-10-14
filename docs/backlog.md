@@ -39,7 +39,7 @@
   No geometric operation is performed.
 - [x] M2.12: Implement the Formula editor and Selection panel as UI-only
   overlays. Formula evaluation and real model selection remain out of scope.
-- [ ] M2.13: Compose the complete reference Newell application shell:
+- [x] M2.13: Compose the complete reference Newell application shell:
   application menu bar, contextual command bar, Features tree,
   Elements tree, 3D viewport area, static NavCube placeholder,
   Action Panel and status bar.
