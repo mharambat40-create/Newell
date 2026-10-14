@@ -39,8 +39,9 @@ pub use menu::{
 };
 pub use metrics::GridMetrics;
 pub use overlays::{
-    ListItem, ModalLayout, Overlay, OverlayKind, OverlayStack, ScrollList, ScrollState,
-    center_modal, compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
+    FormulaEditor, ListItem, ModalKey, ModalLayout, ModalStatus, Overlay, OverlayKind,
+    OverlayStack, ScrollList, ScrollState, SelectionPanel, center_modal, compose_overlays,
+    draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
 };
 pub use style::StyleId;
 pub use widget_id::WidgetId;

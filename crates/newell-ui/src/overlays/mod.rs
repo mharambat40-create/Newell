@@ -29,15 +29,21 @@
 //!   Escape/Cancel focus return remain Controller logic.
 
 mod actions;
+mod formula;
 mod list;
+mod modal;
 mod place;
+mod selection;
 
 use crate::widgets::{WidgetContext, cell};
 use crate::{BorderLine, Cell, CellContent, CellGrid, GridRect, StyleId, WidgetId, draw_border};
 
 pub use actions::draw_ok_cancel;
+pub use formula::FormulaEditor;
 pub use list::{ListItem, ScrollList, ScrollState, draw_scroll_list};
+pub use modal::{ModalKey, ModalStatus};
 pub use place::{ModalLayout, center_modal, modal_layout, place_popup};
+pub use selection::SelectionPanel;
 
 /// Kind of an overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
