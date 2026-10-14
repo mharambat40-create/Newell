@@ -70,7 +70,7 @@ Same for Surfaces
 │ │ □ Start Offset            │
 
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Depth [+|0.0 mm       ☰]│
+│ │ └ Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ Start Offset ◀ Up to ▶  │
 │ │ └ Target  [Select…       ]│
@@ -79,7 +79,7 @@ Same for Surfaces
 │ │ □ End Offset              │
 
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Depth [+|0.0 mm       ☰]│
+│ │ └ Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ End Offset   ◀ Up to ▶  │
 │ │ └ Target  [Select…       ]│
@@ -88,7 +88,7 @@ Same for Surfaces
 │   └ □ End Offset            │
 
 │   └ ■ End Offset ◀ Blind ▶  │
-│     └ Depth [0.0 deg      ☰]│
+│     └ Dist  [0.0 deg      ☰]│
 
 │   └ ■ End Offset ◀ Up to ▶  │
 │     └ Target[Select…       ]│
