@@ -9,6 +9,7 @@
 mod cell;
 mod demo;
 mod error;
+mod extrude;
 mod grid;
 mod hit_test;
 mod interaction;
@@ -23,6 +24,10 @@ mod widgets;
 pub use cell::{Cell, CellContent};
 pub use demo::demo_grid;
 pub use error::UiError;
+pub use extrude::{
+    ExtrudeGeometryType, ExtrudeOffsetMode, ExtrudeResultMode, ExtrudeStatus, ExtrudeTermination,
+    ExtrudeUi, ExtrudeValues, MockSelection,
+};
 pub use grid::{CellGrid, MAX_CELLS};
 pub use hit_test::{BorderAxis, HitTestResult, SharedBorder, UiPoint, hit_test};
 pub use interaction::{InteractionState, WidgetState};
