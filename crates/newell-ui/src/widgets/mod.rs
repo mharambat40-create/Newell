@@ -40,6 +40,7 @@
 
 mod button;
 mod field;
+mod panel;
 mod selector;
 mod tree;
 
@@ -50,6 +51,7 @@ use crate::{SharedBorder, WidgetState};
 
 pub use button::{draw_button, draw_checkbox, draw_label, draw_separator};
 pub use field::{draw_numeric_field, draw_text_field};
+pub use panel::{ActionPanel, PanelRow, PanelRowKind, ROW_ID_STRIDE};
 pub use selector::{
     Cyclic, Segment, Segmented, cycle_next, cycle_prev, draw_cyclic, draw_segmented,
 };
