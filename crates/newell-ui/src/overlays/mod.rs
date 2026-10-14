@@ -41,6 +41,7 @@ use crate::{BorderLine, Cell, CellContent, CellGrid, GridRect, StyleId, WidgetId
 pub use actions::draw_ok_cancel;
 pub use formula::FormulaEditor;
 pub use list::{ListItem, ScrollList, ScrollState, draw_scroll_list};
+pub(crate) use modal::step_focus;
 pub use modal::{ModalKey, ModalStatus};
 pub use place::{ModalLayout, center_modal, modal_layout, place_popup};
 pub use selection::SelectionPanel;

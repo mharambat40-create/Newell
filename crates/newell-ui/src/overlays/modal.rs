@@ -47,7 +47,7 @@ pub enum ModalStatus {
 /// The control after `current` in `ring` (or before it when `forward` is `false`), wrapping
 /// at both ends. A `current` that is not in the ring starts from the first entry going
 /// forward and from the last going backward. An empty ring yields `None`.
-pub(super) fn step_focus(
+pub(crate) fn step_focus(
     ring: &[WidgetId],
     current: Option<WidgetId>,
     forward: bool,

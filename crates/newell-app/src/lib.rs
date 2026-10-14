@@ -7,6 +7,8 @@
 //! Controller and window manager (ARCHITECTURE.md §1, §4.3).
 
 mod app;
+pub mod controller;
+pub mod input;
 pub mod pacing;
 
 /// Fatal application errors. Crate-local by design (no global error type).
@@ -18,6 +20,8 @@ pub enum AppError {
     Window(#[from] winit::error::OsError),
     #[error(transparent)]
     Render(#[from] newell_render::RenderError),
+    #[error(transparent)]
+    Ui(#[from] newell_ui::UiError),
 }
 
 /// Opens the window and runs the event loop until it is closed or a fatal error occurs.

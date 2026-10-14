@@ -14,14 +14,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use newell_render::{GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, Renderer};
-use newell_ui::{GridMetrics, demo_grid};
+use newell_ui::GridMetrics;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::AppError;
+use crate::controller::{ShellController, Update};
+use crate::input::{translate_key, ui_point};
 use crate::pacing::FramePacer;
 
 const TARGET_FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(59);
@@ -32,6 +35,8 @@ pub(crate) struct App {
     // Field order is drop order: the renderer (surface) is dropped before the window.
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
+    shell: Option<ShellController>,
+    modifiers: ModifiersState,
     pacer: FramePacer,
     error: Option<AppError>,
 }
@@ -41,6 +46,8 @@ impl App {
         Self {
             renderer: None,
             window: None,
+            shell: None,
+            modifiers: ModifiersState::empty(),
             pacer: FramePacer::new(TARGET_FPS, Instant::now()),
             error: None,
         }
@@ -53,6 +60,22 @@ impl App {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl Into<AppError>) {
         self.error = Some(error.into());
         event_loop.exit();
+    }
+
+    /// Uploads what `update` says changed and asks for a redraw.
+    fn apply(&mut self, update: Update) {
+        if !update.any() {
+            return;
+        }
+        if let (Some(renderer), Some(shell)) = (&mut self.renderer, &self.shell) {
+            if update.grid {
+                renderer.set_ui_grid(shell.grid(), shell.metrics());
+            }
+            renderer.set_hovered(shell.hovered());
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     fn resize_to_window(&mut self) {
@@ -81,14 +104,21 @@ impl ApplicationHandler for App {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(error) => return self.fail(event_loop, error),
         }
-        // M2.4 validation content; the real shell composition arrives with M2.13.
-        if let (Some(renderer), Ok(grid), Ok(metrics)) = (
-            &mut self.renderer,
-            demo_grid(),
-            GridMetrics::new(GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT),
-        ) {
-            renderer.set_ui_grid(&grid, metrics);
+        // The grid is sized once from the initial window; responsive resizing is M2.14.
+        let metrics = match GridMetrics::new(GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT) {
+            Ok(metrics) => metrics,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        let cols = size.width / GLYPH_CELL_WIDTH;
+        let rows = size.height / GLYPH_CELL_HEIGHT;
+        let shell = match ShellController::new(cols, rows, metrics) {
+            Ok(shell) => shell,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_ui_grid(shell.grid(), metrics);
         }
+        self.shell = Some(shell);
         window.request_redraw();
         self.window = Some(window);
     }
@@ -111,6 +141,44 @@ impl ApplicationHandler for App {
                 self.resize_to_window();
                 if let Some(window) = &self.window {
                     window.request_redraw();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = ui_point(position.x, position.y);
+                if let Some(shell) = &mut self.shell {
+                    let update = shell.pointer_moved(point);
+                    self.apply(update);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(shell) = &mut self.shell {
+                    let update = shell.pointer_moved(None);
+                    self.apply(update);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(shell) = &mut self.shell {
+                    let update = shell.pointer_pressed();
+                    self.apply(update);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let keys = translate_key(
+                    &event.logical_key,
+                    event.physical_key,
+                    event.text.as_deref(),
+                    self.modifiers,
+                );
+                if let Some(shell) = &mut self.shell {
+                    let update = keys
+                        .into_iter()
+                        .fold(Update::default(), |acc, key| acc.merge(shell.key(key)));
+                    self.apply(update);
                 }
             }
             WindowEvent::RedrawRequested => {
