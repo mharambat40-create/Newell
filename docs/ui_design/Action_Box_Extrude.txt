@@ -1,111 +1,116 @@
 "Extrude Action Box"
-╭─Extrude───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┘╴╴╴┐╴╴╴╴╴╴╴╴╴┤
-│  New  │  Add  ┆  Remove │
-├───────┘╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤
-│ Selection   [none      ]│
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
-│ □ Invert                │
-│ □ Starting Offset       │
-│ □ Symetric              │
-│ □ Second end position   │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-╭─Extrude───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┴───┐╴╴╴╴╴╴╴╴╴┤
-│  New  │  Add  │  Remove │
-│╴╴╴╴╴╴╴┴───────┘╴╴╴╴╴╴╴╴╴┤
-│ Selection   [none      ]│
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
-│ □ Invert                │
-│ □ Starting Offset       │
-│ □ Symetric              │
-│ □ Second end position   │
-│ ■ Merge with all        │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-╭─Extrude───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┘╴╴╴┬─────────┤
-│  New  ┆  Add  │  Remove │
-├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴┴─────────┤
-│ Selection   [none      ]│
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
-│ □ Invert                │
-│ □ Starting Offset       │
-│ □ Symetric              │
-│ □ Second end position   │
-│ ■ Merge with all        │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
+╭─Extrude─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   ┆  Remove   │
+├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Extend   ◀     Blind     ▶  │
+│ │ Depth   [+|0.0 mm       ☰]│
+│ │ Along     [Select…       ]│
+│ │ □ Starting Offset         │
+│ └ □ End Offset              │
+│ □ Symetric                  │
+│ □ Second end position       │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Extrude─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   │  Remove   │
+│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Extend   ◀     Blind     ▶  │
+│ │ Depth   [+|0.0 mm       ☰]│
+│ │ Along     [Select…       ]│
+│ │ □ Starting Offset         │
+│ └ □ End Offset              │
+│ □ Symetric                  │
+│ □ Second end position       │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Extrude─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┬───────────┤
+│  New  ┆   Add   │  Remove   │
+├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
+│ Profile     [Select…       ]│
+│ Extend   ◀     Blind     ▶  │
+│ │ Depth   [+|0.0 mm       ☰]│
+│ │ Along     [Select…       ]│
+│ │ □ Starting Offset         │
+│ └ □ End Offset              │
+│ □ Symetric                  │
+│ □ Second end position       │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
 Same for Surfaces
 
-"End position variants"
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
-│ Direction   [Normal to ]│
+"Invert variants"
+│ □ Invert                    │
 
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
-│ □ Offset                │
+│ ■ Invert                    │
 
-"Starting Offset variants"
-│ □ Starting Offset       │
+"Extend variants"
+│ Extend   ◀     Blind     ▶  │
+│ │ Depth   [+|0.0 mm       ☰]│
+│ │ Along     [Select…       ]│
+│ └ □ Starting Offset         │
 
-│ ■ Starting Offset       │
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
+│ Extend   ◀     Up to     ▶  │
+│ Selection   [Select…       ]│
+│ □ Offset                    │
 
-│ ■ Starting Offset       │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+"Start Offset variants"
+│ │ □ Start Offset            │
 
-"Offset variants"
-│ □ Offset                │
+│ │ ■ Start Offset ◀ Blind ▶  │
+│ │ └ Dist  [+|0.0 mm       ☰]│
 
-│ ■ Offset                │
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
+│ │ ■ Start Offset ◀ Up to ▶  │
+│ │ └ Target  [Select…       ]│
 
-│ ■ Offset                │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+"End Offset variants 1"
+│ │ □ End Offset              │
+
+│ │ ■ End Offset   ◀ Blind ▶  │
+│ │ └ Dist  [+|0.0 mm       ☰]│
+
+│ │ ■ End Offset   ◀ Up to ▶  │
+│ │ └ Target  [Select…       ]│
+
+"End Offset variants 2"
+│   └ □ End Offset            │
+
+│   └ ■ End Offset ◀ Blind ▶  │
+│     └ Dist  [0.0 mm       ☰]│
+
+│   └ ■ End Offset ◀ Up to ▶  │
+│     └ Target[Select…       ]│
 
 "Symetric variants"
-│ □ Symetric              │
-│ □ Second end position   │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-│ ■ Symetric              │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
+│ □ Symetric                  │
+│ □ 2nd side                  │
 
-"Second end position variants"
-│ □ Second end position   │
+│ ■ Symetric                  │
 
-│ ■ Second end position   │
-│   ◀      Blind      ▶   │
-│ Depth       [0.0 mm   ☰]│
+"2nd side variants"
+│ └ □ 2nd side                │
 
-│ ■ Second end position   │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+│ └ ■ 2nd side     ◀ Blind ▶  │
+│   └ Depth [+|0.0 mm       ☰]│
 
-│ ■ Second end position   │
-│   ◀   Through all   ▶   │
+│ └ ■ 2nd side     ◀ Up to ▶  │
+│   │ Target  [Select…       ]│
+│   └ □ End Offset            │
 
 "Merge with all variants"
-│ ■ Merge with all        │
+│ ■ Merge with all            │
 
-│ □ Merge with all        │
-│ Merge scope [none      ]│
+│ □ Merge with all            │
+│ └ Targets   [Select…       ]│

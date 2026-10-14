@@ -1,0 +1,93 @@
+"Loft Action Box"
+╭─Loft────────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   ┆  Remove   │
+├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ □ Start type                │
+│ □ End type                  │
+│ □ Guide                     │
+│ □ Path                      │
+│ □ Connection                │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Loft────────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   │  Remove   │
+│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ □ Start type                │
+│ □ End type                  │
+│ □ Guide                     │
+│ □ Path                      │
+│ □ Connection                │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Loft────────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┬───────────┤
+│  New  ┆   Add   │  Remove   │
+├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
+│ Profile     [Select…       ]│
+│ □ Start type                │
+│ □ End type                  │
+│ □ Guide                     │
+│ □ Path                      │
+│ □ Connection                │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+Same for Surfaces
+
+"Start Type variants"
+│ □ Start type                │
+
+│ ■ Start type   ◀ Normal  ▶  │
+│ └ Magnitude [0.0          ☰]│
+
+│ ■ Start type   ◀ Tengent ▶  │
+│ └ Magnitude [0.0          ☰]│
+
+│ ■ Start type   ◀  Match  ▶  │
+│ └ Entity    [Select…       ]│
+
+"End Type variants"
+│ □ End type                  │
+
+│ ■ End type     ◀ Normal  ▶  │
+│ └ Magnitude [0.0          ☰]│
+
+│ ■ End type     ◀ Tengent ▶  │
+│ └ Magnitude [0.0          ☰]│
+
+│ ■ End type     ◀  Match  ▶  │
+│ └ Entity    [Select…       ]│
+
+"Guide variants"
+│ □ Guide                     │
+
+│ ■ Guide     [Select…       ]│
+
+"Path variants"
+│ □ Path                      │
+
+│ ■ Path      [Select…       ]│
+
+"Connection variants"
+│ □ Connection                │
+
+│ ■ Connection                │
+│ │ Start     [Select…       ]│
+│ └ End       [Select…       ]│
+
+"Merge with all variants"
+│ ■ Merge with all            │
+
+│ □ Merge with all            │
+│ └ Targets   [Select…       ]│
