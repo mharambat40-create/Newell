@@ -1,0 +1,71 @@
+"Sweep Action Box"
+╭─Sweep───────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   ┆  Remove   │
+├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Path        [Select…       ]│
+│ □ Full path                 │
+│ □ Keep orientation          │
+│ □ Scale                     │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Sweep───────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   │  Remove   │
+│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Path        [Select…       ]│
+│ □ Full path                 │
+│ □ Keep orientation          │
+│ □ Scale                     │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Sweep───────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┬───────────┤
+│  New  ┆   Add   │  Remove   │
+├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
+│ Profile     [Select…       ]│
+│ Path        [Select…       ]│
+│ □ Full path                 │
+│ □ Keep orientation          │
+│ □ Scale                     │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+Same for Surfaces
+
+"Full path variants"
+│ □ Full path                 │
+
+│ ■ Full path                 │
+
+"Keep orientation variants"
+│ □ Keep orientation          │
+
+│ ■ Keep orientation          │
+│ └ □ Twist                   │
+
+
+"Twist variants"
+│ └ □ Twist                   │
+
+│ └ ■ Twist [+|0.0 deg      ☰]│
+
+"Scale variants"
+│ □ Scale                     │
+
+│ ■ Scale     [0.0          ☰]│
+
+"Merge with all variants"
+│ ■ Merge with all            │
+
+│ □ Merge with all            │
+│ └ Targets   [Select…       ]│
