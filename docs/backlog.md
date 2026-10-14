@@ -26,7 +26,7 @@
 - [x] M2.8: Implement overlay primitives:
   popup menus, modal panels, scrolling selection lists and
   OK/Cancel confirmation areas.
-- [ ] M2.9: Implement menu and keyboard interaction:
+- [x] M2.9: Implement menu and keyboard interaction:
   application menus, contextual command menus, keyboard mnemonics,
   focus traversal and command activation.
 - [x] M2.10: Implement the dynamic Action Panel framework.
