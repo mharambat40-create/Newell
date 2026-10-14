@@ -23,13 +23,13 @@
 - [x] M2.7: Implement reusable ASCII widget primitives:
   labels, separators, buttons, checkboxes, segmented selectors,
   cyclic left/right selectors, numeric/text fields and tree rows.
-- [ ] M2.8: Implement overlay primitives:
+- [x] M2.8: Implement overlay primitives:
   popup menus, modal panels, scrolling selection lists and
   OK/Cancel confirmation areas.
 - [ ] M2.9: Implement menu and keyboard interaction:
   application menus, contextual command menus, keyboard mnemonics,
   focus traversal and command activation.
-- [ ] M2.10: Implement the dynamic Action Panel framework.
+- [x] M2.10: Implement the dynamic Action Panel framework.
   The panel must support conditional sections and progressive disclosure
   driven entirely by UI command state.
 - [ ] M2.11: Implement the reference Extrude Action Panel as a UI-only mock:
