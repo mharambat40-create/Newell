@@ -13,6 +13,7 @@ mod grid;
 mod hit_test;
 mod interaction;
 mod layout;
+mod menu;
 mod metrics;
 mod overlays;
 mod style;
@@ -26,6 +27,11 @@ pub use grid::{CellGrid, MAX_CELLS};
 pub use hit_test::{BorderAxis, HitTestResult, SharedBorder, UiPoint, hit_test};
 pub use interaction::{InteractionState, WidgetState};
 pub use layout::{BorderLine, GridRect, draw_border};
+pub use menu::{
+    CycleStep, MAX_ENTRIES, MAX_MENUS, MAX_MNEMONIC, MenuAction, MenuCheckbox, MenuCycle, MenuDef,
+    MenuEntry, MenuIds, MenuItem, MenuKey, MenuResult, MenuState, MenuTarget, Mnemonic,
+    draw_menu_bar, draw_menu_popup, popup_size, title_rect,
+};
 pub use metrics::GridMetrics;
 pub use overlays::{
     ListItem, ModalLayout, Overlay, OverlayKind, OverlayStack, ScrollList, ScrollState,
