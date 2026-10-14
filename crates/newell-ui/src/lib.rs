@@ -14,6 +14,7 @@ mod hit_test;
 mod interaction;
 mod layout;
 mod metrics;
+mod overlays;
 mod style;
 mod widget_id;
 mod widgets;
@@ -26,6 +27,10 @@ pub use hit_test::{BorderAxis, HitTestResult, SharedBorder, UiPoint, hit_test};
 pub use interaction::{InteractionState, WidgetState};
 pub use layout::{BorderLine, GridRect, draw_border};
 pub use metrics::GridMetrics;
+pub use overlays::{
+    ListItem, ModalLayout, Overlay, OverlayKind, OverlayStack, ScrollList, ScrollState,
+    center_modal, compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
+};
 pub use style::StyleId;
 pub use widget_id::WidgetId;
 pub use widgets::{
