@@ -32,7 +32,7 @@
 - [x] M2.10: Implement the dynamic Action Panel framework.
   The panel must support conditional sections and progressive disclosure
   driven entirely by UI command state.
-- [ ] M2.11: Implement the reference Extrude Action Panel as a UI-only mock:
+- [x] M2.11: Implement the reference Extrude Action Panel as a UI-only mock:
   Solid/Surface, New/Add/Remove, Selection, Blind/Up-to/Through-all,
   Depth, Invert, Starting Offset, Symmetric, Second End Position,
   Merge options and OK/Cancel.
