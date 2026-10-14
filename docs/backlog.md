@@ -45,7 +45,7 @@
   Action Panel and status bar.
 - [x] M2.14: Implement responsive character-grid layout and user-resizable
   panel boundaries with whole-cell snapping.
-- [ ] M2.15: Add deterministic UI-state tests and reference cell-buffer
+- [x] M2.15: Add deterministic UI-state tests and reference cell-buffer
   snapshots for the application shell, menus and Action Panel variants.
 
 ## Milestone 3: Viewport & Kernel Boundary
