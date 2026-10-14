@@ -1,106 +1,103 @@
 "Revolve Action Box"
-╭─Revolve───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┘╴╴╴┐╴╴╴╴╴╴╴╴╴┤
-│  New  │  Add  ┆  Remove │
-├───────┘╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤
-│ Selection   [none      ]│
-│ Axis        [none      ]│
-│ ■ Full Revovle          │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-╭─Revolve───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┴───┐╴╴╴╴╴╴╴╴╴┤
-│  New  │  Add  │  Remove │
-│╴╴╴╴╴╴╴┴───────┘╴╴╴╴╴╴╴╴╴┤
-│ Selection   [none      ]│
-│ Axis        [none      ]│
-│ ■ Full Revovle          │
-│ ■ Merge with all        │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-╭─Revolve───┬─────────────╮
-│   Solid   │   Surface   │
-├───────┬───┘╴╴╴┬─────────┤
-│  New  ┆  Add  │  Remove │
-├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴┴─────────┤
-│ Selection   [none      ]│
-│ Axis        [none      ]│
-│ ■ Full Revovle          │
-│ ■ Merge with all        │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
+╭─Revolve─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   ┆  Remove   │
+├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Axis        [Select…       ]│
+│ ■ Full Revolve              │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Revolve─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤
+│  New  │   Add   │  Remove   │
+│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤
+│ Profile     [Select…       ]│
+│ Axis        [Select…       ]│
+│ ■ Full Revolve              │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+╭─Revolve─────┬───────────────╮
+│    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┬───────────┤
+│  New  ┆   Add   │  Remove   │
+├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
+│ Profile     [Select…       ]│
+│ Axis        [Select…       ]│
+│ ■ Full Revolve              │
+│ ■ Merge with all            │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
 Same for Surfaces
 
-"Full Revovle variants"
-│ ■ Full Revovle          │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
+"Full Revolve variants"
+│ ■ Full Revolve              │
 
-│ □ Full Revovle          │
-│   ◀      Blind      ▶   │
-│ Angle       [0.0 deg  ☰]│
-│ □ Invert                │
-│ □ Starting Offset       │
-│ □ Symetric              │
+│ □ Full Revolve   ◀ Blind ▶  │
+│ │ Angle   [+|0.0 deg      ☰]│
+│ │ □ Start Offset            │
+│ │ □ Symetric                │
+│ └ □ 2nd side                │
 
-│ □ Full Revovle          │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
-│ □ Invert                │
-│ □ Starting Offset       │
+│ □ Full Revolve   ◀ Up to ▶  │
+│ │ Target    [Select…       ]│
+│ │ □ Start Offset            │
+│ │ □ End Offset              │
+│ │ □ Symetric                │
+│ └ □ 2nd side                │
 
-"Starting Offset variants"
-│ □ Starting Offset       │
+    
+"Start Offset variants"
+│ │ □ Start Offset            │
 
-│ ■ Starting Offset       │
-│   ◀      Blind      ▶   │
-│ Angle       [0.0 deg  ☰]│
+│ │ ■ Start Offset ◀ Blind ▶  │
+│ │ └ Angle [+|0.0 deg      ☰]│
 
-│ ■ Starting Offset       │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+│ │ ■ Start Offset ◀ Up to ▶  │
+│ │ └ Target  [Select…       ]│
 
-"Offset variants"
-│ □ Offset                │
+"End Offset variants 1"
+│ │ □ End Offset              │
 
-│ ■ Offset                │
-│   ◀      Blind      ▶   │
-│ Angle       [0.0 deg  ☰]│
+│ │ ■ End Offset   ◀ Blind ▶  │
+│ │ └ Angle   [0.0 deg      ☰]│
 
-│ ■ Offset                │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+│ │ ■ End Offset   ◀ Up to ▶  │
+│ │ └ Target  [Select…       ]│
 
-"Second end position variants"
-│ □ Second end position   │
+"End Offset variants 2"
+│   └ □ End Offset            │
 
-│ ■ Second end position   │
-│   ◀      Blind      ▶   │
-│ Angle       [0.0 deg  ☰]│
+│   └ ■ End Offset ◀ Blind ▶  │
+│     └ Angle [0.0 deg      ☰]│
 
-│ ■ Second end position   │
-│   ◀      Up to      ▶   │
-│ Selection   [none      ]│
+│   └ ■ End Offset ◀ Up to ▶  │
+│     └ Target[Select…       ]│
+
+"2nd side variants"
+│ └ □ 2nd side                │
+
+│ └ ■ 2nd side     ◀ Blind ▶  │
+│   └ Angle [+|0.0 deg      ☰]│
+
+│ └ ■ 2nd side     ◀ Up to ▶  │
+│   │ Target  [Select…       ]│
+│   └ □ End Offset            │
 
 "Symetric variants"
-│ □ Symetric              │
-│ □ Second end position   │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
-│ ■ Symetric              │
-│─────────────────────────│
-│     OK     │   Cancel   │
-╰─────────────────────────╯
+│ │ □ Symetric                │
+│ └ □ 2nd side                │
+
+│ └ ■ Symetric                │
 
 "Merge with all variants"
-│ ■ Merge with all        │
+│ ■ Merge with all            │
 
-│ □ Merge with all        │
-│ Merge scope [none      ]│
+│ □ Merge with all            │
+│ └ Targets   [Select…       ]│
