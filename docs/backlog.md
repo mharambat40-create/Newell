@@ -43,7 +43,7 @@
   application menu bar, contextual command bar, Features tree,
   Elements tree, 3D viewport area, static NavCube placeholder,
   Action Panel and status bar.
-- [ ] M2.14: Implement responsive character-grid layout and user-resizable
+- [x] M2.14: Implement responsive character-grid layout and user-resizable
   panel boundaries with whole-cell snapping.
 - [ ] M2.15: Add deterministic UI-state tests and reference cell-buffer
   snapshots for the application shell, menus and Action Panel variants.
