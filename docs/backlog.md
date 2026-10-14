@@ -37,7 +37,7 @@
   Depth, Invert, Starting Offset, Symmetric, Second End Position,
   Merge options and OK/Cancel.
   No geometric operation is performed.
-- [ ] M2.12: Implement the Formula editor and Selection panel as UI-only
+- [x] M2.12: Implement the Formula editor and Selection panel as UI-only
   overlays. Formula evaluation and real model selection remain out of scope.
 - [ ] M2.13: Compose the complete reference Newell application shell:
   application menu bar, contextual command bar, Features tree,
