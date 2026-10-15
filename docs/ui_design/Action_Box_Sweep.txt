@@ -51,13 +51,13 @@ Same for Surfaces
 │ □ Keep orientation          │
 
 │ ■ Keep orientation          │
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 
 
 "Twist variants"
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 
-│ └ ■ Twist [+|0.0 deg      ☰]│
+│ ╰╴■ Twist [+|0.0 deg      ☰]│
 
 "Scale variants"
 │ □ Scale                     │
@@ -68,4 +68,4 @@ Same for Surfaces
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
