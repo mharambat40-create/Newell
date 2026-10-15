@@ -18,6 +18,7 @@
 ╭─View──────────────╮
 │ ◀  Perspective  ▶ │
 │ ◀    Shaded     ▶ │
+│ UI Scale ◀ 100% ▶ │
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
@@ -29,6 +30,7 @@
 ╰───────────────────╯
 ◀  Perspective  ▶ ◀ Orthographic  ▶
 ◀    Points     ▶ ◀  Wireframe    ▶ ◀  Hidden line  ▶ ◀  No shading   ▶ ◀    Shaded     ▶ ◀   Flat line   ▶
+◀  50% ▶ ◀  75% ▶ ◀ 100% ▶ ◀ 125% ▶ ◀ 150% ▶
 ╭─Help──────╮
 │Tutorial	│
 │Docs		│
