@@ -1,11 +1,21 @@
 # Newell — Milestone 2 UI Framework Plan
 
 **Milestone:** M2 — ASCII UI Framework & Application Shell  
-**Status:** Planned  
+**Status:** M2.1–M2.15 complete; M2.16–M2.24 amended (§19, M2.16–M2.24)  
 **Implementation scope:** `newell-ui`, `newell-render`, `newell-app`  
 **Architecture authority:** `ARCHITECTURE.md`
 
 This document is an implementation plan. It does not override `ARCHITECTURE.md` or the UI design specification.
+
+> **Amendment (M2.16–M2.24, 2026-10-15).** Sections of this plan written for
+> M2.1–M2.15 are historical and are intentionally not rewritten. Where they
+> mention hover (`InteractionState.hovered`, hover uniform, hover stripe, §4.5,
+> §6.6, §7.2, §10.3, §11.3, §13.5, §16.6, M2.5–M2.7), a 3:5 cell, the
+> `║` active-segment separator or palette/muted style slots, they are
+> **superseded** by `ARCHITECTURE.md` §3.1, §3.1.1, §3.5, §3.6, ADR 0003 and the
+> M2.16–M2.24 sections below. Do not implement the superseded text. The one
+> exception is the M2.7 `║` active-segment separator, which stays as a
+> **temporary accepted deviation** until M2.21 (`ARCHITECTURE.md` §3.5).
 
 ---
 
@@ -14,12 +24,12 @@ This document is an implementation plan. It does not override `ARCHITECTURE.md` 
 Milestone 2 uses the following source order:
 
 1. `ARCHITECTURE.md`
-2. `docs/ui_design/README.md`
+2. `docs/ui_design/README_UI.md`
 3. Relevant ASCII reference states under `docs/ui_design/`
 4. This implementation plan
 5. Existing implementation details, where they do not conflict with the above
 
-If an ASCII reference conflicts with `docs/ui_design/README.md`, the README wins.
+If an ASCII reference conflicts with `docs/ui_design/README_UI.md`, the README wins.
 
 If any UI document conflicts with `ARCHITECTURE.md`, `ARCHITECTURE.md` wins.
 
@@ -37,7 +47,7 @@ They may describe:
 - user-action sequences;
 - state transitions.
 
-Shared component semantics belong in `docs/ui_design/README.md`, not duplicated across every ASCII mock-up.
+Shared component semantics belong in `docs/ui_design/README_UI.md`, not duplicated across every ASCII mock-up.
 
 ---
 
@@ -377,7 +387,7 @@ pub struct GridMetrics {
 }
 ```
 
-The intended logical ratio remains 3:5.
+The cell ratio is 4:9 (`cell_width_px = 4k`, `cell_height_px = 9k`, reference 20 × 45). This supersedes the original 3:5 (M2.16 amendment). Metrics are defined once and shared by the glyph atlas, renderer and hit-testing (`ARCHITECTURE.md` §3.1).
 
 ### 6.5 Hit testing
 
@@ -582,7 +592,7 @@ M2.2 should express borders logically using Unicode box-drawing semantics.
 
 M2.3 should first test those glyphs through the selected font pipeline.
 
-Do **not** commit to a procedural box-drawing rasterizer before a visual test demonstrates that Fira Code cannot produce acceptable joins at Newell's 3:5 cell metrics.
+Do **not** commit to a procedural box-drawing rasterizer before a visual test demonstrates that Fira Code cannot produce acceptable joins at Newell's 4:9 cell metrics (`ARCHITECTURE.md` §3.1; Fira Code's overshoot has been verified to cover the 4:9 cell).
 
 If a procedural solution becomes necessary, it must preserve:
 
@@ -797,8 +807,13 @@ M2.3 should:
 
 - load Fira Code;
 - determine glyph metrics;
-- rasterise only required glyphs initially;
-- maintain deterministic glyph atlas placement;
+- rasterise exactly the required atlas set (`ARCHITECTURE.md` §3.1) once per `k`,
+  at atlas creation; the atlas is never modified afterwards (no on-demand
+  rasterisation, no eviction, no re-packing);
+- maintain deterministic glyph atlas placement (a pure function of font,
+  required set and `k`);
+- draw every character outside the required set as `?`;
+- rasterise every glyph, `?` included, with the same integer-`k` uniform scale;
 - support ASCII UI and required Unicode symbols used by the reference designs.
 
 The glyph atlas is distinct from the future logo atlas.
@@ -814,7 +829,9 @@ Therefore:
 - do not add a PNG decoding dependency for a placeholder;
 - defer logo-atlas implementation until the first sub-milestone that actually renders logos.
 
-When introduced, the logo atlas must follow `ARCHITECTURE.md` exactly.
+When introduced, the logo atlas must follow `ARCHITECTURE.md` exactly. That includes
+the logo resampling exception of §3.3: logos are always downscaled by the shader
+with their own filtered sampler, while text glyphs stay nearest-neighbour.
 
 ---
 
@@ -1184,7 +1201,7 @@ This list is milestone-level and should be narrowed by each sub-milestone before
 
 ```text
 docs/plans/M2-ui-framework.md
-docs/ui_design/README.md
+docs/ui_design/README_UI.md
 docs/ui_design/*                 # reference ASCII states, only when design work requires edits
 docs/backlog.md                  # milestone tracking only after acceptance
 ```
@@ -1483,6 +1500,460 @@ Complete when:
 
 ---
 
+### M2.16–M2.24 amendment: dependencies and cross-cutting rules
+
+```text
+M2.16 ─► M2.17 ─► M2.18 ─► M2.19 ─► M2.20 ─► M2.21 ─► M2.22
+  │         │        │                          │
+  │         │        └────────────────► M2.23 ◄─┘ (needs M2.21 Extrude fields)
+  └─────────┴──────────────────────────────────────────► M2.24 (last)
+```
+
+- M2.16 is the foundation: 4:9 metrics, uniform glyph scale, monochrome pair
+  uniform, hover removal. Nothing later may reintroduce a ratio, colour or hover
+  assumption.
+- M2.17 needs M2.16 metrics and owns the **automatic per-monitor adaptation**:
+  it derives `effective_k` from the monitor, mode and `preferred_scale_percent`,
+  at start-up and on every monitor, resolution, display-scale, fullscreen or
+  preference change, with one atomic transition and a safe window fit
+  (`ARCHITECTURE.md` §3.1.1). M2.18 needs M2.17 and M2.16 (`k`-derived metrics,
+  theme uniform); it adds **only the View menu selector** of the preference (and
+  the Theme and Fullscreen rows). There is no rule that production stays at
+  `k = 5` until M2.18, and M2.18 holds no `k`, monitor or window-fit logic.
+- M2.19–M2.22 compose reference ASCII exactly and depend on M2.16 (state
+  visuals) and M2.18 only for the View/Theme chrome they sit inside. M2.22
+  depends on M2.21 (shared Action Box grammar). M2.23 depends on M2.21 (numeric
+  field rows) and M2.12 (existing FormulaEditor overlay). M2.24 is last.
+- Every milestone keeps: one UI draw call, O(1) hit-testing, flat cell buffer,
+  monochrome `#000000`/`#FFFFFF`, no hover, and no state visual that is not a
+  documented ASCII structure (`ARCHITECTURE.md` §3.5).
+- Canonical `.txt` references are not edited by these milestones. The approved
+  edits (UI Scale value line, canonical 31-cell Boolean footer, space-only Help
+  popup, `Sketch` popup, `▏` in `Special_ASCII.txt`) are already applied by the
+  architecture amendment.
+- Reference sizes: shell 82 × 28 (`Interface_Exemple.txt`, unchanged); minimum
+  window grid 82 × 30. The two extra rows belong to the flexible central body;
+  snapshots at 82 × 30 are compared with the reference by the two-step rule of
+  `README_UI.md` §25 (M2.15 and M2.24 snapshots).
+- Defaults of every new window: `preferred_scale_percent` 100%, Light theme, neither
+  inherited nor detected from the OS (`ARCHITECTURE.md` §3.1.1, §3.6).
+
+### M2.16 — Typography, monochrome rendering, hover removal
+
+Scope:
+
+- Cell geometry 4:9, `k = 5` (20 × 45). One `k`-derived metrics value replaces
+  the 24 × 40 constants in `newell-ui` and `newell-render`; no other literal W/H.
+- Glyph atlas builder takes the metrics as input. Uniform scale
+  `s = W / advance`, line box `L = 8k`, `top = k div 2`,
+  `baseline_y = top + 6k`, pen origin at cell x = 0, clipping at the cell edge.
+  `GLYPH_WIDEN` and every per-glyph or horizontal factor are deleted.
+- Shader: nearest-neighbour atlas sampling, one texel per screen pixel; the
+  atlas is a coverage mask; output colour is only the theme foreground or
+  background (or a coverage blend of the two). Theme pair is a uniform; the
+  default is Light (`#000000` on `#FFFFFF`). No per-cell colour.
+- Hover removal: delete `hovered`, the hover uniform/ID/flag, the left-edge
+  stripe, the logo brightness multiplier and pointer-motion redraws. Press,
+  drag, scroll, keyboard focus, selection and disabled semantics remain.
+- State visuals: delete the `>`/`<` marker pass (`mark_states`,
+  `STATE_MARK_LEADING/TRAILING`) and any fg/bg inversion of widgets. Remove
+  palette/muted/grey style slots; `Style` resolves to foreground or background
+  only. Focus/pressed/selected stay as logical state with no visual unless an
+  ASCII structure exists (`README_UI.md` §5.10).
+- The M2.7 segmented selector keeps its `║` active-segment separators; this is
+  a temporary accepted deviation ended by M2.21 (`ARCHITECTURE.md` §3.5). They are
+  not extended to new widgets.
+- Glyph coverage versus atlas coverage (`ARCHITECTURE.md` §3.1): the atlas is
+  built for the required atlas set (printable ASCII, every character of
+  `docs/ui_design/*.txt`, `▏`); an unsupported character is drawn as `?`.
+- Defaults at this stage: `k = 5` fixed (no monitor derivation before M2.17), Light theme.
+- Not in scope: runtime `k` change, per-monitor derivation, atlas regeneration on
+  scale change and window changes (all M2.17); the UI Scale selector and the
+  theme *control* (M2.18).
+
+Acceptance:
+
+- No `3:5`, `24`, `40` or widening constant remains outside historical docs.
+- Metrics for all six `k` = 2…7 (§3.1 table, including `k = 2`: 8 × 18, `L = 16`,
+  `top = 1`, `baseline_y = 13`) are unit-tested as pure arithmetic.
+- Box-drawing continuity (horizontal and vertical joins across adjacent cells)
+  is tested on the rasterised atlas for each `k` in 2…7, even though runtime
+  uses `k = 5`; the builder is parameterised only so the test can exercise it.
+- Negative test: pointer motion without a press changes no UI state and
+  produces an identical cell buffer and frame.
+- Monochrome test: every UI pixel is `#000000`, `#FFFFFF` or a coverage blend
+  of the two, in both themes.
+- Font coverage test: every character of the required atlas set is present in
+  `assets/FiraCode-Regular.ttf`; atlas coverage test: each is rasterised for
+  every `k` in 2…7. Any character outside the required set (including one the
+  font contains, such as `é`) is drawn as `?`; rendering text with unknown
+  characters leaves the atlas bytes, size and slot map unchanged (determinism).
+- Block-element tiling test: `█` (and `░ ▒ ▓`) tile horizontally across five
+  cells with no gap for each `k`; vertical coverage is exactly the line box `L`
+  (`ARCHITECTURE.md` §3.1); no test requires vertical tiling.
+- Hit-test round trip: for every cell, the pixel at its corners and centre maps
+  back to that cell with the same W and H as the renderer.
+- Snapshots are regenerated once for the 4:9 geometry; no snapshot content
+  changes because of hover removal other than removed markers.
+
+### M2.17 — Frameless window, automatic per-monitor scale and 82 × 30 minimum grid
+
+Scope:
+
+- **Automatic per-monitor UI scale** (`ARCHITECTURE.md` §3.1.1; ADR 0003 D3, D13).
+  UI Scale is a user preference; the cell size adapts to the monitor. Three
+  separate per-window values: `preferred_scale_percent` (60/80/100/120/140;
+  fixed at the default 100 until the M2.18 control exists, but every function
+  takes it as a parameter and is tested with all five), `monitor_reference_scale`
+  (`k_fit(windowed) ≤ 3 ? max(k_fit(windowed) − 1, 2) : min(k_fit(windowed), 5)`;
+  amended 2026-10-16, Full HD → 2, no monitor name tested) and `effective_k`
+  (`clamp(k_req, 2, clamp(k_fit(mode), 2, 7))`,
+  `k_req = (reference × percent + 50) / 100`), with
+  `k_fit(mode) = min(⌊w/328⌋, ⌊avail_h/270⌋)`, `avail_h = h − h/16` windowed and
+  `h` fullscreen. Pure integer functions in `newell-ui` (no `winit` types).
+  Unknown monitor: reference 5, `k_cap` 7, re-derived when a snapshot becomes
+  available. The estimate is not a work-area measurement and monitor size is
+  never assumed to equal the work area.
+- **Start-up.** Derive `k` before the window is created from the primary monitor
+  (`ActiveEventLoop`, `winit` 0.30), build the `k`-derived metrics and atlas, and
+  create the window with explicit `PhysicalSize` initial and minimum dimensions
+  (initial = the 82 × 30 minimum `328k × 270k`; `LogicalSize` is never used).
+  After creation the window's own monitor is read back and the derivation is
+  repeated once if it differs from the primary monitor.
+- **Re-evaluation triggers** (all six of §3.1.1): start-up; window moves to
+  another monitor; monitor resolution change; macOS display scale change;
+  fullscreen enter/exit (application- or OS-initiated); preference change (stub
+  until M2.18). `winit` has no monitor-change event: keep a monitor snapshot
+  `(handle, physical size, scale_factor bits)` compared on `Moved`,
+  `ScaleFactorChanged`, `Resized`, `Focused(true)`, fullscreen changes and at most
+  every 500 ms. A window `Resized` is never itself a trigger.
+- **Atomic transition** (`ARCHITECTURE.md` §3.1.1 *Transition*), one event-loop
+  turn, one `ScaleState` value published together: cell metrics, glyph atlas,
+  `CellGrid` and flat cell buffer, GPU buffers/uniforms/bind groups, window
+  minimum size, pointer-mapping metrics. Phase A prepares everything with no
+  live state touched and abandons the whole transition on any failure (log once
+  per input tuple, no retry until an input changes); Phase B cancels press/drag
+  and resize gestures, clears the stored pointer position, swaps the one value,
+  then `set_min_inner_size` → `request_inner_size` → `set_outer_position`. The
+  atlas is rebuilt only when `k` changes (fast path otherwise). Frame
+  presentation is gated for at most 250 ms until the matching `Resized`.
+- **No oscillation / no recursive resize.** `effective_k` depends only on
+  (monitor snapshot, mode, preference); window size and position are outputs.
+  Idempotent re-derivation; `expected_inner_size` + generation so the echoes of
+  the transition's own `Resized`/`Moved`/`ScaleFactorChanged` never start a
+  transition; the `ScaleFactorChanged` size writer writes the expected size (or
+  the unchanged physical size), never `winit`'s logical conversion; a monitor
+  change during a window drag is applied once after 150 ms without `Moved`
+  (`ControlFlow::WaitUntil`); at most one corrective size/position request per
+  input tuple, then log once and accept.
+- **Safe window fit and repositioning** (`fit_window`, pure, `newell-ui`): keep
+  `desired_cols × desired_rows` (updated only by user resizes, maximise and
+  restore, never by derived changes); clamp to
+  `[82, ⌊mon_w/W⌋] × [30, ⌊usable_h/H⌋]` whole cells; shift the position the
+  minimum distance so the whole outer rectangle lies inside the usable rectangle
+  (monitor minus `h/16` at the top); no-fit case (`k_fit < 2`): 82 × 30 at
+  `k = 2`, top-left of the usable rectangle, log once. Fullscreen enter stores
+  the windowed grid and position; exit restores through the same fit; fullscreen
+  is refused (logged once) when 656 × 540 does not fit the monitor. Size,
+  position and monitor are read back after every change.
+- Documented behaviour, not a defect: a small monitor clamps several preferences
+  to one `effective_k` (1920 × 1080 windowed: 60/80/100/120/140% give `k` = 2/2/2/2/3).
+- Native decorations off. The OS title bar and controls are replaced by the
+  in-grid MenuBar row, including `[-] [□] [X]` (`Interface_Exemple.txt`).
+- Window controls are ordinary grid hit targets (minimise, maximise/restore,
+  close). The window stays manually resizable and movable (`ARCHITECTURE.md`
+  §3.1.1 *Window move and resize*, `README_UI.md` §25.1). Moving uses
+  `drag_window`. Resizing first calls `drag_resize_window`; every call returns a
+  `Result` that is handled, never unwrapped. `drag_resize_window` always returns
+  `NotSupported` on macOS (verified in `winit` 0.30.13): this is logged once per
+  window, remembered, and the press starts the **application-managed resize**:
+  snapshot (outer position, inner size, zone, grab point) on press; on every
+  `CursorMoved` re-derive the target from the snapshot and
+  `outer_position() + pointer` (never accumulate); round to whole cells; clamp
+  to `82·W × 30·H` and the surface limit; when the snapped target changes,
+  `request_inner_size(PhysicalSize)` then `set_outer_position(PhysicalPosition)`
+  (this order, because macOS derives the vertical flip from the current frame);
+  cancel on release (also outside the window), `Focused(false)`,
+  `ScaleFactorChanged`, `CloseRequested`, maximise/fullscreen, UI Scale change,
+  `Escape` or an `outer_position()` error. Resize zones are the outer frame ring
+  (cells with no `widget_id`); a cell with a `widget_id` always wins; inactive
+  while maximised or fullscreen. Safe `winit` API only: no `unsafe`, no raw
+  handles, no platform shims. Known limitation (reported, not hidden): west and
+  north zones need two non-atomic calls; they are verified manually
+  (`README_UI.md` §25.1) and any failure is reported to the human.
+- Pure, testable logic in `newell-ui` (no `winit` types): `resize_zone`
+  (zone from pixel, surface size and metrics) and `resize_target` (snapshot +
+  screen pointer + metrics + limits → origin and size). The `winit` calls and
+  the small state machine live in `newell-app`.
+- Minimum inner size enforcement: set with `set_min_inner_size(PhysicalSize)`
+  where supported, **re-applied** after `ScaleFactorChanged` (which also keeps
+  the physical surface size through the size writer) and after a monitor change
+  (`current_monitor()` checked after `Moved`/`ScaleFactorChanged`) and by every
+  transition. The applied result is never assumed.
+- Layout composes `max(82, ⌊w/W⌋) × max(30, ⌊h/H⌋)` cells; a surface smaller than
+  the minimum (asynchronous resize, rounding at a fractional scale factor, an OS
+  that ignores the minimum) is cropped by the renderer, with no panic, no
+  zero-size surface and no change of ratio.
+- **Post-creation and post-transition verification:** read back inner size,
+  outer size, outer position and current monitor; treat the first matching
+  `Resized` event as authoritative; at most one corrective request, then log once
+  if the window is smaller than the minimum or its outer rectangle exceeds the
+  usable rectangle. If even `k = 2` does not fit the monitor (`k_fit < 2`), keep
+  `k = 2`, keep 82 × 30 and log the physical limitation once per monitor
+  snapshot.
+- Pointer events use physical coordinates only (macOS Retina: no `scale_factor`
+  arithmetic in the grid path).
+- Not in scope: the View menu UI Scale selector, Theme row and `Fullscreen` menu
+  item (M2.18). M2.17 contains no widget for the preference.
+
+Acceptance:
+
+- **Derivation unit tests (pure arithmetic).** For each monitor of the
+  `ARCHITECTURE.md` §3.1.1 example table (1366×768, 1920×1080, 1920×1200,
+  2560×1440, 2560×1664, 3024×1964, 3840×2160), both modes and all five
+  percentages, `effective_k` equals the table; in particular 2560×1664 at 100%
+  → `k = 5` (20×45) and 1920×1080 at 100% → `k = 2` (8×18); the unknown-monitor
+  case; `k_fit < 2` runs at `k = 2`; the reference is 2 for every `k_fit ≤ 3`,
+  `min(k_fit, 5)` above, and the derivation reads no monitor name (a test passes
+  the same size with different names and gets the same result); `k_req` is monotone in the percentage; no
+  rounding tie exists (exhaustive over reference 2…5 × five percentages);
+  `effective_k` never leaves 2…7 and never exceeds `k_cap`; several percentages
+  clamp to the same `k` on a small monitor (documented behaviour); every `k` gives
+  exactly `W = 4k`, `H = 9k` (ratio 4:9).
+- **Preference unchanged:** a sequence of monitor, resolution, display-scale and
+  fullscreen changes leaves `preferred_scale_percent` unchanged and returns to the
+  original `effective_k` when the original inputs return.
+- **Transition tests.** Metrics, atlas, `CellGrid`, GPU buffers, minimum size and
+  pointer mapping carry the same `k` after every transition (no observer sees a
+  mixed state); a failure injected in each Phase A step leaves the old state
+  intact and is not retried until an input changes; the atlas is rebuilt only
+  when `k` changes; a hit-test round trip is correct on the new metrics; the
+  stored pointer position is cleared and a pending press is cancelled and its
+  release ignored.
+- **Oscillation tests (event-sequence simulation, no real window).** The echo
+  events of a transition (`Resized`, `Moved`, `ScaleFactorChanged`) start no
+  second transition; the same input tuple twice is a no-op; a monitor change
+  during a simulated drag is applied once after 150 ms; a move back and forth
+  across the boundary during one drag gives at most one transition; at most one
+  corrective request per input tuple; an OS that ignores or adjusts the request
+  ends in logged acceptance, not a loop.
+- **`fit_window` tests.** Moving a 100 × 40 grid from `k = 5` to `k = 2` on
+  1920×1080: columns/rows clamped to whole cells inside the usable rectangle,
+  never below 82 × 30; the rectangle is moved the minimum distance; return to the
+  larger monitor restores the desired grid; the no-fit case; negative origins and
+  `i32`/`u32` extremes saturate without panic; the MenuBar row stays inside the
+  monitor; fullscreen enter/exit restores the windowed grid; fullscreen refused
+  below 656 × 540.
+- Initial and minimum sizes equal `328k × 270k` for the derived `k` and are
+  passed as `PhysicalSize`.
+- Layout never composes a grid below 82 × 30 and fails closed (clamps/crops) on a
+  smaller resize request; a surface of exactly `328k × 270k` gives exactly
+  82 × 30 and one pixel less still composes 82 × 30.
+- A `NotSupported` result from `drag_resize_window` is handled without panic,
+  logged once per window, and switches that window to the application-managed
+  resize; `Ignored`/`Os` errors are logged and do nothing; `drag_window` likewise.
+- `resize_zone` tests: each of the 8 zones and the interior at k = 2, 3, 5, 7; the
+  leftover pixels right of/below the last cell belong to east/south; a surface
+  cropped below the minimum; a corner is exactly one cell; a cell carrying a
+  `widget_id` (including `[-] [□] [X]`, a popup clipped over the ring, a menu
+  item in row 1) never yields a zone.
+- `resize_target` tests: east/south/south-east change only the size and keep the
+  origin; west/north keep the opposite edge fixed; sizes are whole cells and
+  never below 82 × 30 (the origin stops moving at the minimum); the surface
+  limit; negative origins and `i32`/`u32` extremes saturate without panic; the
+  result is a pure function of the snapshot and pointer (same inputs, same
+  output regardless of previously applied sizes).
+- State-machine tests: a press in a zone sets no widget pressed state; the
+  release is consumed and never activates a control; each cancel trigger ends the
+  resize and sends no further request; no request is sent while the snapped
+  target is unchanged; inactive while maximised or fullscreen; a press on a
+  MenuBar inert cell calls `drag_window`, not a resize.
+- The macOS manual checklists of `README_UI.md` §25.1 (edge resize) and the
+  multi-monitor checklist (MacBook Air Retina ↔ external 1920×1080) are run and
+  their result is recorded in the Executor report; unresolved items are reported
+  as limitations.
+- Window controls and drag/resize regions resolve by O(1) division;
+  `[-] [□] [X]` cells keep their documented positions in an 82-column grid.
+
+### M2.18 — MenuBar, UI Scale selector and Light/Dark theme controls
+
+Scope (user-facing controls only; every `k`, monitor, window-fit and transition
+rule belongs to M2.17):
+
+- MenuBar File/Edit/View/Help with the exact reference menus, including the
+  View menu and the space-only Help popup in `Application_Menu_Bar.txt`.
+- `UI Scale ◀ 100% ▶`: a cyclic selector over the five preference values
+  60/80/100/120/140. It **shows and stores `preferred_scale_percent`**, never the
+  derived `effective_k`, so it reads `100%` on every monitor. `◀`/`▶` wrap; **no
+  value is skipped or hidden**, even when the current monitor clamps several to
+  the same `k`. A step stores the new preference and calls the M2.17 transition;
+  if `effective_k` does not change nothing visible happens and no transition runs.
+  The control contains no `k` arithmetic, no monitor logic and no window fit.
+- `Theme [ ◐ Light ]` / `[ ◑ Dark  ]` toggles the uniform pair; no atlas or
+  cell-buffer regeneration. Light is the initial theme of every window.
+- `Fullscreen` asks the M2.17 fullscreen gate (full monitor, refusal logged once
+  when 656 × 540 does not fit; leaving restores the windowed fit); the item adds
+  no sizing logic.
+- View items `Tree panel`, `Task bar`, `Status bar`, `Navigation cube`,
+  `Fullscreen` act on UI state. `Perspective`, `Shaded`, `Grid Overlay`,
+  `[N]ormal to`, `Reset Cam` hold UI state only; there is no camera before M3.
+- Open menus stay open and are recomposed at their new position after any
+  transition (menu state survives the M2.17 transition).
+
+Acceptance:
+
+- The row shows the stored preference on both a Retina and a 1080p monitor and
+  does not change when the window moves between them (stub monitor snapshots in
+  tests, manual check with real monitors).
+- `◀`/`▶` visit all five values in order and wrap, on a monitor that maps most of them
+  to one `k` (1920 × 1080: `k` = 2/2/2/2/3, so the first four steps change only the
+  stored preference and run no transition, and the step to 140% runs exactly one).
+- A step that changes `effective_k` calls the M2.17 transition exactly once;
+  a press cancelled by it does not activate on release; a second click acts on
+  the control now under the pointer.
+- Theme change leaves the cell buffer byte-identical and the atlas untouched.
+- Snapshots contain the reference rows `│ UI Scale ◀ 100% ▶ │` and
+  `│ Theme [ ◐ Light ] │` (Dark: `[ ◑ Dark  ]`) and the Help popup of
+  `Application_Menu_Bar.txt` row for row; the five `UI Scale` states of
+  `Application_Menu_Bar.txt` render exactly.
+- Fullscreen item: refused below 656 × 540 with one log entry; otherwise the
+  M2.17 derivation applies (1920 × 1080 → `k_fit(fs) = 4`).
+
+### M2.19 — CommandBar and centered menus
+
+Scope: CommandBar row and the Workbench/Sketch/Create/Operate/Pattern/Refine/
+Construct/Inspect menus exactly as in `Command_Bar.txt` (the `Sketch` popup
+`╭─Sketch─────────╮ / │ [N]ew Sketch   │ / ╰────────────────╯` is UI-only and
+mock-only: no sketch geometry), mnemonics (`[E]xtrude`, `[Mi]rror`, …) scoped to
+the open popup, and keyboard activation through the same logical state as the
+pointer.
+
+Placement: CommandBar popups are centred in the whole composed grid by
+`README_UI.md` §29.1:
+`col = ⌊(grid_cols − popup_width) / 2⌋`, `row = ⌊(grid_rows − popup_height) / 2⌋`,
+with a negative difference clamped to 0 (clipped at the right/bottom edge, never
+at the left/top). The popup is composed last, in the foreground. Existing modal
+and keyboard routing (M2.8/M2.9) is unchanged. MenuBar popups are not centred.
+
+Acceptance: popup cells equal the `.txt` rows; at 82 × 30 the Workbench popup
+(18 × 11) is at col 32, row 9 and the Sketch popup (18 × 3) at col 32, row 13;
+a grid smaller than the popup clamps to 0 without panic; covered cells do not
+reach the underlying widgets.
+
+### M2.20 — TreeView layout, playhead, separators and Rename
+
+Scope: Features and Elements trees as in `Interface_Exemple.txt` (`╰╴` last
+child, `[-]`/`[+]`, `□`/`■`, the `│ ─────────────────── ` playhead separator
+row), the Unicode ellipsis truncation of `README_UI.md` §26 (keep the leading
+characters, final available cell is `…` U+2026, one scalar = one cell),
+whole-cell separators between panels, and the `Rename` modal
+(`Interface_Elements.txt`, "Validation Operation Box"; `Enter Name` shares the
+same interaction). Selection and expansion are logical state drawn only by the
+documented glyphs. `Rename` opens on a **double-click** (left button) of a
+user-named Feature or Element row name (`README_UI.md` §23): two presses on the
+same name `widget_id` within 500 ms (recognised by the Controller; `winit` 0.30
+has no click count), no other target pressed in between; markers, checkboxes,
+category headers and the playhead row are not targets. No keyboard shortcut in
+M2.20; any later one must be documented in `README_UI.md` first.
+
+Acceptance: tree rows match the reference cell-for-cell at 82 columns, including
+the truncated `Sketch_Profile_Ma…` row; `…` is in the atlas for every `k`; the
+playhead row is not a selectable feature; Rename starts with the full existing
+name (not the `…` text), OK/Cancel restore focus. Double-click tests: two presses
+within 500 ms on the same name open the modal; 501 ms, a different row, an
+intervening press elsewhere, or a press on `[-]`/`[+]`/`□`/`■`/a header do not;
+the first press still only selects.
+
+### M2.21 — Exact Action Box grammar and Extrude
+
+Scope: the 31-cell fixed-width Action Box (`README_UI.md` §2) composed from
+semantic state, with variant substitution (§2.4), exact branch topology and the
+segmented-selector border topology of `Action_Box_Extrude.txt` /
+`Interface_Elements.txt` "Head Action Box variants". The `║` active-segment
+separator from M2.7 is replaced by the documented topology; this ends the
+temporary accepted deviation (`ARCHITECTURE.md` §3.5). Extrude: every state in
+§7–§8 of `README_UI.md`, including the `Selection` row of `Up to`,
+`Extend = Through all` and the `Invert` row placed under `Through all`
+(`README_UI.md` §8.9). Composition follows `README_UI.md` §2.6: the complete
+base boxes are the authority, the `"... variants"` snippets are partial
+excerpts, a variant replaces only its own line or branch, and no documented
+sibling control (`Profile`, `Symetric`, `2nd side`/`Second end position`,
+`Merge with all`/`Targets`, OK/Cancel) is ever deleted. `Extend = Blind` is the
+complete base box (`Depth`, `Along`, `Starting Offset`, `End Offset`); `Up to`
+and `Through all` are their snippets; an expanded offset that is the last child
+uses the documented prefix transformation of §2.6. `Action_Box_Extrude.txt` is
+not edited. The open reference points of §2.6 (label drift `Starting
+Offset`/`Start Offset`, no `End Offset` under `Up to`/`Through all`, no expanded
+`Offset`) are reproduced as written and reported, not resolved here.
+
+Acceptance: composed rows equal the reference rows character-for-character for
+all documented states; no undocumented rows appear (§32, §39). Tests: for each
+Extend type, each offset state and `Symetric`/`2nd side`/`Merge with all` on and
+off, the siblings are present with unchanged text and column; switching `Extend`
+never removes `Profile`, `Symetric`, `Second end position`, `Merge with all` or
+OK/Cancel; the `Blind` default equals the first base box row for row; last-child
+offsets are 31 cells wide and differ from the non-last form only in prefix
+cells 1–6; the canonical `.txt` files are byte-identical before and after.
+
+### M2.22 — Revolve, Loft, Sweep and Boolean Action Boxes
+
+Scope: `Action_Box_Revolve/Loft/Sweep/Boolean.txt` through the M2.21 grammar. The
+Boolean `Add` footer is now the canonical 31-cell
+`│      OK      │    Cancel    │` (README §17); every Boolean row is exactly 31
+cells wide.
+
+### M2.23 — Numeric fields and FormulaEditor
+
+Scope: editable `[+|0.0 mm       ☰]` fields (direction prefix, magnitude, unit,
+`☰` as its own interaction region), the text-editing caret `▏` and keyboard
+editing, the FormulaEditor overlay from M2.12 aligned with
+`Interface_Elements.txt`. Formula evaluation stays out of scope. Selection-field
+`☰` and the profile handle `☰` keep their different meanings (`README_UI.md`
+§5.6).
+
+Caret (`ARCHITECTURE.md` §3.5, `README_UI.md` §5.11): `▏` appears only while a
+field is actively edited, is composed into the flat cell buffer (no second draw
+call), is drawn in the foreground colour, does not blink, and never changes the
+edited text value. It occupies its own cell between characters; with text area
+width `N`, caret index `c`, the visible window starts at
+`s = max(0, c + 1 − N)`, so a full field scrolls and clips whole cells (suffix
+first) and the caret stays visible and never overwrites a delimiter, prefix or
+`☰`.
+
+Acceptance: field cells are fixed-width and never resize with the value;
+`+|`/`-|`, value and `☰` are separate hit regions; caret tests cover empty text,
+caret in the middle, text of `N − 1`, `N` and `N + 1` characters with the caret
+at the start and at the end, the ` mm` suffix clipping, and that the committed
+value never contains `▏`.
+
+### M2.24 — Live FPS, progress bar and final UI fidelity
+
+Scope: StatusBar `Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%`
+with a live frame-rate value and the 21 progress states of `Interface_Elements.txt`
+(5 cells, 5% steps, `░ ▒ ▓ █`), plus a final cell-for-cell fidelity pass of the
+82 × 28 reference at `k = 5` and snapshots at the 82 × 30 minimum.
+
+The frame-rate segment is fixed-width (`README_UI.md` §27): exactly 7 cells,
+a 3-cell right-aligned space-padded numeric field then `fps` then one blank, so
+the digit count never moves the separators, `Progress …` or the right border.
+Value rule: round to nearest, NaN/infinite/negative → `0`, above 999 → `999`
+(saturated, field never widens). At `98` the row equals `Interface_Exemple.txt`.
+Other status text stays free text clipped whole-cell at the right border.
+Progress cells are `L`-tall block elements, an accepted limitation
+(`ARCHITECTURE.md` §3.1).
+
+Acceptance: FPS is measured, not assigned (the composition function takes it as
+an input, snapshots inject `98`); table test for `0, 5, 98, 99, 100, 144, 999,
+1000, 123456, -3, NaN, ∞` giving the 7-cell strings of §27, with the cells
+outside the field byte-identical across all values; updating it dirties only
+the status cells;
+every progress state renders exactly; the whole-application snapshot at each
+theme matches `Interface_Exemple.txt` at 82 × 28 content and, at 82 × 30, by the
+two-step rule of `README_UI.md` §25 (rows 26–27 removed equal the reference; the
+two rows equal the blank body-row template); no difference is invented.
+
+---
+
 ## 20. Risks and Deferred Work
 
 ### 20.1 Cell representation may evolve
@@ -1533,7 +2004,7 @@ Their real model/kernel binding belongs to later milestones.
 
 ### Resolved decisions
 
-- UI specification source is now `docs/ui_design/README.md`.
+- UI specification source is now `docs/ui_design/README_UI.md`.
 - ASCII states are reference designs under `docs/ui_design/`.
 - High-level UI state may use plain structs/enums.
 - The flat 1D cell array is the rendered UI representation, not the entirety of Controller state.
@@ -1546,6 +2017,24 @@ Their real model/kernel binding belongs to later milestones.
 - No placeholder logo atlas is required.
 - No runtime-generated logo atlas is allowed as a substitute for the architecture-defined PNG atlas.
 - Logo work is deferred until needed.
+- UI Scale is a user preference (60/80/100/120/140%); the cell size `k` adapts
+  automatically to the monitor (`ARCHITECTURE.md` §3.1.1, ADR 0003 D3/D13):
+  `preferred_scale_percent`, `monitor_reference_scale` and `effective_k` are
+  separate; the View menu always shows the preference; a small monitor may map
+  several percentages to one `k`; `k = 2` (8 × 18) is the smallest cell (second
+  amendment of ADR 0003, 2026-10-16: Full HD 100% = `k = 2`). The automatic mechanism is M2.17; the View menu
+  selector is M2.18. Approved by the human (2026-10-16).
+- Frameless window: manual resizing is kept through the application-managed
+  resize of M2.17 (native `drag_resize_window` first); west/north zones are a
+  reported, manually verified limitation.
+- Status-bar FPS is a fixed 7-cell segment (3-cell right-aligned field,
+  saturating at 999); the `▏` caret is approved for M2.23 (no blink, composed
+  into the cell buffer, no extra draw call).
+- The glyph atlas is deterministic (required set per `k`, never modified; `?`
+  for everything else); filtered sampling is for logo textures only.
+- `Rename` opens on double-click in M2.20; no keyboard shortcut.
+- Extrude: complete base boxes outrank partial snippets; siblings are never
+  deleted by a variant substitution (`README_UI.md` §2.6).
 
 ### Before M2.3
 

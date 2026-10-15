@@ -6,84 +6,38 @@
 // (at your option) any later version.
 //! CPU-side preparation of the GPU cell buffer. No GPU access, so it is testable without a device.
 
-use newell_ui::{Cell, CellContent, CellGrid, StyleId, WidgetId};
+use newell_ui::{Cell, CellContent, CellGrid};
 
-use crate::glyph_atlas::{GlyphAtlas, GlyphRect};
+use crate::glyph_atlas::GlyphAtlas;
 
 /// `GpuCell::glyph` value for a cell that draws nothing.
 pub const EMPTY_GLYPH: u32 = u32::MAX;
 
-/// Size of one serialised [`GpuCell`]: four little-endian `u32`s.
-pub const GPU_CELL_BYTES: usize = 16;
-
-/// `GpuCell::flags` / hover-uniform flag: the `widget` field holds a real `WidgetId`.
-///
-/// `WidgetId` uses the whole `u32` range, so "no widget" cannot be a reserved ID value; it is
-/// the absence of this flag instead (and then `widget` is always 0).
-pub const WIDGET_PRESENT: u32 = 1;
-/// `GpuCell::flags`: the cell is the first cell of its widget on its row (the cell to its left
-/// has a different owner, or there is none). The hover left-border stripe is drawn only here.
-pub const WIDGET_LEFT_EDGE: u32 = 2;
-
-/// Encodes an optional `WidgetId` as `(widget, flags)`; `None` is `(0, 0)`.
-pub const fn encode_widget(widget: Option<WidgetId>) -> (u32, u32) {
-    match widget {
-        Some(id) => (id.get(), WIDGET_PRESENT),
-        None => (0, 0),
-    }
-}
-
-/// The widget a cell is rendered as belonging to. A shared-border cell is structural, so it
-/// has no GPU owner: it never shows hover (routing for the pointer is still `hit_test`'s job).
-fn gpu_owner(cell: &Cell) -> Option<WidgetId> {
-    if cell.shared_border.is_some() {
-        None
-    } else {
-        cell.widget_id
-    }
-}
+/// Size of one serialised [`GpuCell`]: one little-endian `u32`.
+pub const GPU_CELL_BYTES: usize = 4;
 
 /// Character drawn for a glyph that is not in the atlas.
 const FALLBACK_GLYPH: char = '?';
 
-/// Placeholder text palette (sRGB, RGBA). Theming is not in scope for M2.4.
-const PALETTE: [[u8; 4]; 4] = [
-    [0xD8, 0xD8, 0xDC, 0xFF], // 0: default text
-    [0xFF, 0xFF, 0xFF, 0xFF], // 1: bright
-    [0x80, 0x80, 0x88, 0xFF], // 2: dim
-    [0x4F, 0xC1, 0xE9, 0xFF], // 3: accent
-];
-
-/// Text colour for a style. Styles outside the palette use the default colour.
-pub fn resolve_style(style: StyleId) -> [u8; 4] {
-    PALETTE
-        .get(usize::from(style.get()))
-        .copied()
-        .unwrap_or(PALETTE[0])
-}
-
-/// What the shader needs for one cell: where its glyph lives in the atlas and its colour.
+/// What the shader needs for one cell: where its glyph lives in the atlas.
+///
+/// The UI is strictly monochrome (`ARCHITECTURE.md` §3.6): a cell never carries a colour or a
+/// style. Every glyph is drawn in the theme foreground over the theme background, so the
+/// cell's `StyleId` does not reach the GPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuCell {
     /// Atlas slot origin in pixels, `x | y << 16`, or [`EMPTY_GLYPH`].
     pub glyph: u32,
-    /// sRGB RGBA8, red in the lowest byte.
-    pub color: u32,
-    /// Raw `WidgetId`, meaningful only if [`WIDGET_PRESENT`] is set in `flags`; otherwise 0.
-    pub widget: u32,
-    /// [`WIDGET_PRESENT`] | [`WIDGET_LEFT_EDGE`].
-    pub flags: u32,
 }
 
-fn pack_origin(rect: &GlyphRect) -> Option<u32> {
+fn pack_origin(rect: &crate::glyph_atlas::GlyphRect) -> Option<u32> {
     let x = u16::try_from(rect.x).ok()?;
     let y = u16::try_from(rect.y).ok()?;
     Some(u32::from(x) | (u32::from(y) << 16))
 }
 
 impl GpuCell {
-    /// `left` is the cell immediately to the left, if any (used only for the left-edge flag).
-    pub fn from_cell(cell: &Cell, left: Option<&Cell>, atlas: &GlyphAtlas) -> Self {
+    pub fn from_cell(cell: &Cell, atlas: &GlyphAtlas) -> Self {
         let glyph = match cell.content {
             CellContent::Empty => EMPTY_GLYPH,
             CellContent::Glyph(ch) => atlas
@@ -92,42 +46,19 @@ impl GpuCell {
                 .and_then(|info| pack_origin(&info.rect))
                 .unwrap_or(EMPTY_GLYPH),
         };
-        let owner = gpu_owner(cell);
-        let (widget, mut flags) = encode_widget(owner);
-        if owner.is_some() && left.and_then(gpu_owner) != owner {
-            flags |= WIDGET_LEFT_EDGE;
-        }
-        Self {
-            glyph,
-            color: u32::from_le_bytes(resolve_style(cell.style)),
-            widget,
-            flags,
-        }
+        Self { glyph }
     }
 
     pub fn to_bytes(self) -> [u8; GPU_CELL_BYTES] {
-        let mut out = [0u8; GPU_CELL_BYTES];
-        for (chunk, value) in
-            out.chunks_exact_mut(4)
-                .zip([self.glyph, self.color, self.widget, self.flags])
-        {
-            chunk.copy_from_slice(&value.to_le_bytes());
-        }
-        out
+        self.glyph.to_le_bytes()
     }
 }
 
 /// Serialises the whole grid, row-major, `GPU_CELL_BYTES` per cell. Linear in the cell count.
 pub fn cells_to_bytes(grid: &CellGrid, atlas: &GlyphAtlas) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(grid.cells().len() * GPU_CELL_BYTES);
-    let cols = grid.cols().max(1) as usize;
-    for (i, cell) in grid.cells().iter().enumerate() {
-        let left = if i % cols == 0 {
-            None
-        } else {
-            grid.cells().get(i - 1)
-        };
-        bytes.extend_from_slice(&GpuCell::from_cell(cell, left, atlas).to_bytes());
+    for cell in grid.cells() {
+        bytes.extend_from_slice(&GpuCell::from_cell(cell, atlas).to_bytes());
     }
     bytes
 }
@@ -135,11 +66,12 @@ pub fn cells_to_bytes(grid: &CellGrid, atlas: &GlyphAtlas) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::glyph_atlas::{GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, load_font};
+    use crate::glyph_atlas::load_font;
+    use newell_ui::{DEFAULT_K, GridMetrics, StyleId, WidgetId};
 
     fn atlas() -> GlyphAtlas {
         let font = load_font(include_bytes!("../../../../assets/FiraCode-Regular.ttf").to_vec());
-        GlyphAtlas::build(&font.unwrap()).unwrap()
+        GlyphAtlas::build(&font.unwrap(), GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap()
     }
 
     fn origin(packed: u32) -> (u32, u32) {
@@ -157,7 +89,7 @@ mod tests {
 
     #[test]
     fn empty_cell_is_transparent_sentinel() {
-        let g = GpuCell::from_cell(&Cell::default(), None, &atlas());
+        let g = GpuCell::from_cell(&Cell::default(), &atlas());
         assert_eq!(g.glyph, EMPTY_GLYPH);
     }
 
@@ -165,7 +97,7 @@ mod tests {
     fn glyph_cell_points_at_its_atlas_slot() {
         let atlas = atlas();
         for ch in ['A', 'a', '0', ' ', '─', '╬'] {
-            let g = GpuCell::from_cell(&cell(ch, 0), None, &atlas);
+            let g = GpuCell::from_cell(&cell(ch, 0), &atlas);
             let rect = atlas.get(ch).unwrap().rect;
             assert_eq!(origin(g.glyph), (rect.x, rect.y), "{ch:?}");
         }
@@ -175,46 +107,60 @@ mod tests {
     fn every_slot_is_inside_the_atlas_and_packs_losslessly() {
         let atlas = atlas();
         for info in atlas.glyphs() {
-            let g = GpuCell::from_cell(&cell(info.ch, 0), None, &atlas);
+            let g = GpuCell::from_cell(&cell(info.ch, 0), &atlas);
             let (x, y) = origin(g.glyph);
             assert_ne!(g.glyph, EMPTY_GLYPH);
-            assert!(x + GLYPH_CELL_WIDTH <= atlas.width(), "{:?}", info.ch);
-            assert!(y + GLYPH_CELL_HEIGHT <= atlas.height(), "{:?}", info.ch);
+            let layout = atlas.layout();
+            assert!(x + layout.cell_width <= atlas.width(), "{:?}", info.ch);
+            assert!(y + layout.cell_height <= atlas.height(), "{:?}", info.ch);
         }
     }
 
     #[test]
     fn unknown_glyph_falls_back_to_question_mark() {
         let atlas = atlas();
-        let g = GpuCell::from_cell(&cell('\u{1F600}', 0), None, &atlas);
-        assert_eq!(g, GpuCell::from_cell(&cell('?', 0), None, &atlas));
+        let g = GpuCell::from_cell(&cell('\u{1F600}', 0), &atlas);
+        assert_eq!(g, GpuCell::from_cell(&cell('?', 0), &atlas));
     }
 
     #[test]
-    fn style_mapping_is_deterministic_with_default_fallback() {
-        assert_eq!(resolve_style(StyleId::DEFAULT), PALETTE[0]);
-        assert_eq!(resolve_style(StyleId::new(1)), PALETTE[1]);
-        assert_eq!(resolve_style(StyleId::new(3)), PALETTE[3]);
-        assert_eq!(resolve_style(StyleId::new(4)), PALETTE[0]);
-        assert_eq!(resolve_style(StyleId::new(u16::MAX)), PALETTE[0]);
-        let g = GpuCell::from_cell(&cell('A', 3), None, &atlas());
-        assert_eq!(g.color.to_le_bytes(), PALETTE[3]);
+    fn unknown_text_leaves_the_atlas_unchanged() {
+        // `é` is in the font but not in the required set: it is drawn as `?`, and building the
+        // cell buffer only reads the atlas (bytes, size and slot map stay identical).
+        let atlas = atlas();
+        let before = atlas.clone();
+        let g = GpuCell::from_cell(&cell('é', 0), &atlas);
+        assert_eq!(g, GpuCell::from_cell(&cell('?', 0), &atlas));
+        assert_eq!(atlas, before);
     }
 
     #[test]
-    fn bytes_are_little_endian_glyph_then_color() {
-        let g = GpuCell {
-            glyph: 0x0028_0018,
-            color: 0x4433_2211,
-            widget: 0x0000_00AB,
-            flags: 3,
-        };
+    fn styles_never_reach_the_gpu() {
+        // Monochrome: every style slot serialises identically.
+        let atlas = atlas();
+        let plain = GpuCell::from_cell(&cell('A', 0), &atlas);
+        for style in [1, 2, 3, 4, u16::MAX] {
+            assert_eq!(GpuCell::from_cell(&cell('A', style), &atlas), plain);
+        }
+    }
+
+    #[test]
+    fn widget_ownership_never_reaches_the_gpu() {
+        // Pointer routing is a CPU concern: the same glyph with and without an owner
+        // serialises identically.
+        let atlas = atlas();
+        let mut owned = cell('x', 0);
+        owned.widget_id = Some(WidgetId::new(7));
         assert_eq!(
-            g.to_bytes(),
-            [
-                0x18, 0x00, 0x28, 0x00, 0x11, 0x22, 0x33, 0x44, 0xAB, 0, 0, 0, 3, 0, 0, 0
-            ]
+            GpuCell::from_cell(&owned, &atlas),
+            GpuCell::from_cell(&cell('x', 0), &atlas)
         );
+    }
+
+    #[test]
+    fn bytes_are_the_little_endian_glyph() {
+        let g = GpuCell { glyph: 0x0028_0018 };
+        assert_eq!(g.to_bytes(), [0x18, 0x00, 0x28, 0x00]);
     }
 
     #[test]
@@ -229,13 +175,10 @@ mod tests {
         assert_eq!(a, cells_to_bytes(&grid, &atlas));
         // Row-major: (1, 1) is cell 6; its neighbours stay empty.
         let at = |i: usize| a[i * GPU_CELL_BYTES..(i + 1) * GPU_CELL_BYTES].to_vec();
-        assert_eq!(
-            at(6),
-            GpuCell::from_cell(&cell('┌', 2), None, &atlas).to_bytes()
-        );
+        assert_eq!(at(6), GpuCell::from_cell(&cell('┌', 2), &atlas).to_bytes());
         assert_eq!(
             at(5),
-            GpuCell::from_cell(&Cell::default(), None, &atlas).to_bytes()
+            GpuCell::from_cell(&Cell::default(), &atlas).to_bytes()
         );
     }
 
@@ -245,129 +188,5 @@ mod tests {
         for (c, r) in [(0, 0), (0, 4), (4, 0)] {
             assert!(cells_to_bytes(&CellGrid::new(c, r).unwrap(), &atlas).is_empty());
         }
-    }
-
-    fn owned(ch: char, id: u32) -> Cell {
-        Cell {
-            widget_id: Some(WidgetId::new(id)),
-            ..cell(ch, 0)
-        }
-    }
-
-    #[test]
-    fn none_widget_encoding_is_explicit_zero() {
-        assert_eq!(encode_widget(None), (0, 0));
-        let g = GpuCell::from_cell(&cell('A', 0), None, &atlas());
-        assert_eq!((g.widget, g.flags), (0, 0));
-    }
-
-    #[test]
-    fn every_widget_id_is_distinct_from_none() {
-        for raw in [0, 1, 7, u32::MAX - 1, u32::MAX] {
-            let (widget, flags) = encode_widget(Some(WidgetId::new(raw)));
-            assert_eq!((widget, flags), (raw, WIDGET_PRESENT));
-            assert_ne!(flags, encode_widget(None).1, "id {raw} collides with None");
-        }
-    }
-
-    #[test]
-    fn left_edge_marks_first_cell_of_each_widget_run() {
-        let atlas = atlas();
-        let mut grid = CellGrid::new(6, 1).unwrap();
-        for (col, id) in [(0, 1), (1, 1), (2, 2), (4, 1), (5, 1)] {
-            *grid.get_mut(col, 0).unwrap() = owned('x', id);
-        }
-        let bytes = cells_to_bytes(&grid, &atlas);
-        let flags = |col: usize| {
-            let o = col * GPU_CELL_BYTES + 12;
-            u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap())
-        };
-        let edge = WIDGET_PRESENT | WIDGET_LEFT_EDGE;
-        assert_eq!(
-            [flags(0), flags(1), flags(2), flags(3), flags(4), flags(5)],
-            [edge, WIDGET_PRESENT, edge, 0, edge, WIDGET_PRESENT]
-        );
-    }
-
-    #[test]
-    fn left_edge_does_not_wrap_across_rows() {
-        let atlas = atlas();
-        let mut grid = CellGrid::new(2, 2).unwrap();
-        for (col, row) in [(1, 0), (0, 1)] {
-            *grid.get_mut(col, row).unwrap() = owned('x', 5);
-        }
-        let g = GpuCell::from_cell(grid.get(0, 1).unwrap(), None, &atlas);
-        assert_eq!(g.flags, WIDGET_PRESENT | WIDGET_LEFT_EDGE);
-        let bytes = cells_to_bytes(&grid, &atlas);
-        let o = 2 * GPU_CELL_BYTES + 12; // cell (0, 1)
-        assert_eq!(
-            u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()),
-            WIDGET_PRESENT | WIDGET_LEFT_EDGE
-        );
-    }
-
-    #[test]
-    fn shared_border_left_edge_stays_neutral_and_stripe_moves_inside() {
-        // M2.7 rule: a control whose visual left edge is a shared border does not paint
-        // the stripe on the border; the stripe sits on its first owned cell.
-        use newell_ui::{
-            InteractionState, Segment, Segmented, WidgetContext, WidgetState, WidgetStyles,
-            draw_segmented,
-        };
-        let atlas = atlas();
-        let (left, right) = (WidgetId::new(1), WidgetId::new(2));
-        let segments = [
-            Segment {
-                id: left,
-                label: "Solid",
-            },
-            Segment {
-                id: right,
-                label: "Surface",
-            },
-        ];
-        let styles = WidgetStyles::default();
-        let inter = InteractionState::default();
-        let mut grid = CellGrid::new(15, 1).unwrap();
-        draw_segmented(
-            &mut grid,
-            &WidgetContext {
-                styles: &styles,
-                interaction: &inter,
-            },
-            newell_ui::GridRect::new(0, 0, 15, 1),
-            &Segmented {
-                segments: &segments,
-                active: 0,
-                state: WidgetState::default(),
-            },
-        );
-        let bytes = cells_to_bytes(&grid, &atlas);
-        let cell = |col: usize| {
-            let o = col * GPU_CELL_BYTES;
-            let word = |i: usize| u32::from_le_bytes(bytes[o + i..o + i + 4].try_into().unwrap());
-            (word(8), word(12)) // (widget, flags)
-        };
-        let edge = WIDGET_PRESENT | WIDGET_LEFT_EDGE;
-        assert_eq!(cell(0), (1, edge));
-        assert_eq!(cell(6), (1, WIDGET_PRESENT));
-        // The shared border: no owner, no stripe, so it never highlights on hover.
-        assert_eq!(cell(7), (0, 0));
-        // The right control's stripe is one cell inside the border.
-        assert_eq!(cell(8), (2, edge));
-        assert_eq!(cell(9), (2, WIDGET_PRESENT));
-    }
-
-    #[test]
-    fn shared_border_cell_has_no_gpu_owner() {
-        use newell_ui::{BorderAxis, SharedBorder};
-        let mut c = owned('│', 9);
-        c.shared_border = Some(SharedBorder {
-            axis: BorderAxis::Vertical,
-            low: Some(WidgetId::new(1)),
-            high: Some(WidgetId::new(2)),
-        });
-        let g = GpuCell::from_cell(&c, None, &atlas());
-        assert_eq!((g.widget, g.flags), (0, 0));
     }
 }

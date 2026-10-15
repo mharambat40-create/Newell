@@ -161,7 +161,7 @@ The interface uses neither the DOM nor complex graphical objects. It is a **char
 
 - **Technology:** Rust + `wgpu` (low-level hardware acceleration), `winit` for windowing and input.
 - **Layout:**
-  - a 2D ASCII interface, stored in a character array (O(1) lookup for clicks and hover);
+  - a 2D ASCII interface, stored in a character array (O(1) lookup for clicks and other pointer interactions);
   - overlaid on a 3D viewport.
 
 Multi-Window Support & Real-Time Synchronization
@@ -174,22 +174,26 @@ Functional Specifications
 ### 5.1 Hybrid typography
 
 - Text and interface are generated dynamically from a `.ttf` file, for crisp vector text at any resolution.
-- Tool logos (Extrude, Sketch, Line, etc.) are rendered from **a single RGBA `.png` texture atlas** (256x256, with 8 px internal padding).
+- Tool logos (Extrude, Sketch, Line, etc.) are rendered from **a single RGBA `.png` texture atlas** (256x256, with 8 px internal padding). The atlas is used as a coverage mask: only its alpha channel reaches the screen (see `ARCHITECTURE.md` §3.2, §3.6).
+- The glyph atlas is deterministic: a fixed required set rasterised once per UI Scale and never modified; any other character is drawn as `?`. Text glyphs are always sampled nearest-neighbour; filtered sampling is permitted for logo textures only (`ARCHITECTURE.md` §3.1, §3.3).
 
 ### 5.2 Visual integration
 
-- Multicolor logos occupy asymmetric blocks on the ASCII grid (e.g. 5x3 cells for a 3:5 ratio).
+- Monochrome logos (foreground colour only) occupy asymmetric blocks on the ASCII grid (e.g. 7x3 cells for major tools and 4x2 for minor tools, with 4:9 cells; see `ARCHITECTURE.md` §3.3).
+- Typography uses one fixed 4:9 cell grid and a monospaced font at one uniform scale, with no glyph stretching (`ARCHITECTURE.md` §3.1).
 - A *fragment shader* centers them to the pixel.
 
 ### 5.3 Interactivity
 
-- Hover effects are handled directly by the shader: hue change and side border.
-- CPU cost is negligible: the CPU only does an O(1) grid lookup and updates one state value; no relayout and no redraw of the UI on the CPU.
+- **There are no hover effects.** Hover-specific states, visuals, shader logic and CPU tracking were intentionally removed (approved change, M2.16; see `ARCHITECTURE.md` §3.5). Click, press, drag, focus, selection and keyboard interaction remain.
+- **Strictly monochrome UI:** only Black `#000000` and White `#FFFFFF`. Light theme = white background / black foreground; Dark theme = black background / white foreground. No decorative colours, greys, gradients, shadows or brightness multipliers; text anti-aliasing is permitted (`ARCHITECTURE.md` §3.6). Widget states are drawn only through the ASCII structures documented in `docs/ui_design/` (e.g. `□`/`■`); there is no widget-level inversion and no invented focus marker (`ARCHITECTURE.md` §3.5). The Light/Dark theme switch is the only foreground/background exchange.
+- CPU cost is negligible: the CPU only does an O(1) grid lookup when resolving an interaction event; no relayout and no redraw of the UI on the CPU.
 - The UI is only redrawn when its state changes (dirty flag). The 3D viewport redraws only when the camera or the model changes.
 
 ### 5.4 Points the current design must address
 
-- **HiDPI and scaling:** cell size must follow the OS scale factor.
+- **HiDPI and scaling:** the UI works in physical pixels and never resamples the grid. Size is chosen by **UI Scale**: 60%, 80%, 100% (default), 120% or 140%, i.e. integer cell sizes 12×27, 16×36, 20×45, 24×54 and 28×63 px on the reference display (4:9, `ARCHITECTURE.md` §3.1.1). The preference is per monitor class: on a Full HD display 100% is one step smaller, 8×18 px (`k = 2`), while MacBook Retina 100% stays 20×45 px. The window never shrinks below 82 columns × 30 rows (656×540 px at `k = 2`); scales that do not fit the monitor are clamped, never skipped. The fit is a conservative estimate of the usable screen (monitor size minus 1/16 of its height), not a measured work area; `k` is derived automatically for the current monitor (M2.17) and the preference becomes user-adjustable in M2.18.
+- **Frameless window:** native decorations are replaced by the in-grid MenuBar and `[-] [□] [X]`. The window stays manually resizable and movable: native `drag_resize_window` where available, otherwise an application-managed edge/corner resize built on safe `winit` API (whole cells, 82×30 minimum). On macOS the west/north edges are a known, manually verified limitation (`ARCHITECTURE.md` §3.1.1, `docs/ui_design/README_UI.md` §25.1).
 - **Keyboard-first:** every tool must be reachable from the keyboard; a command palette is recommended.
 - **Text input:** parameter fields need cursor handling, selection, copy/paste, and IME support for non-Latin input.
 - **3D picking:** selecting faces, edges and vertices in the viewport needs its own mechanism (for example an ID buffer rendered on the GPU). The O(1) grid lookup only covers the 2D UI.
@@ -288,7 +292,7 @@ dbg_macro = "deny"
 ### 7.3 Layer 3: UI validation
 
 - The UI is an abstract grid, so it is validated with state tests, with no GPU involved.
-- Check mouse/grid hit testing, state transitions (e.g. `Normal` → `Hovered`), keyboard navigation.
+- Check mouse/grid hit testing, state transitions (e.g. `Normal` → `Pressed` → `Normal`, focus changes), keyboard navigation. Add a negative test: pointer motion over a widget without a press MUST NOT change any UI state or the rendered grid (hover is intentionally absent). Monochrome test: every rendered UI pixel colour is `#000000`, `#FFFFFF`, or an anti-aliased text/icon blend between the two.
 - **Snapshot tests** (`insta`): render the grid to text and compare with the stored snapshot.
 
 ### 7.4 Layer 4: performance
@@ -448,7 +452,7 @@ Each milestone ends with a usable, tested state. Do not start a milestone before
 |---|---|
 | **M0: Spikes** | BrepKIT licence decision first; then BrepKIT robustness spike on booleans/fillets and wgpu spike on Raspberry Pi. No BrepKIT-dependent production code merges before the licence decision. Output: ADRs. |
 | **M1: Skeleton** | Workspace, CI, rulesets, `CLAUDE.md`, `ARCHITECTURE.md`, window with empty grid at 60 FPS. |
-| **M2: Grid UI** | Glyph rendering, icon atlas, hit testing, hover in shader, keyboard navigation. |
+| **M2: Grid UI** | Glyph rendering, icon atlas, hit testing, keyboard navigation, strictly monochrome Light/Dark themes (M2.16), frameless window (M2.17), View settings with UI Scale and theme (M2.18), reference-exact menus, trees, Action Boxes, numeric fields and status bar (M2.19–M2.24). Hover is intentionally excluded (approved removal). |
 | **M3: Viewport** | 3D camera, display of a BrepKIT-generated solid through `newell-kernel`, picking. |
 | **M4: Sketch** | 2D sketch, lines/arcs/circles, constraint solver. |
 | **M5: Parametric core** | Feature tree, Extrude/Revolve, recompute, undo/redo, topological naming strategy. |

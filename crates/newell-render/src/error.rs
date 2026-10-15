@@ -32,6 +32,9 @@ pub enum RenderError {
     /// A glyph required by the canonical atlas is absent from the font.
     #[error("font has no glyph for {0:?}")]
     MissingGlyph(char),
+    /// The font's line box does not fit the cell height at the uniform scale.
+    #[error("font line box of {line_box} px does not fit a {cell_height} px cell")]
+    LineBoxTooTall { line_box: u32, cell_height: u32 },
 }
 
 impl From<wgpu::Error> for RenderError {

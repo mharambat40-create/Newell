@@ -39,7 +39,7 @@
 //!
 //! Fixed bases, independent of layout and state (the offsets and spans are in the `*_BASE`
 //! constants below): MenuBar, CommandBar, tree rows (64 per tree), Extrude panel, SelectionPanel,
-//! FormulaEditor. The NavCube, viewport, status text and window controls own no id.
+//! FormulaEditor, window controls. The NavCube, viewport and status text own no id.
 //!
 //! # Mock state
 //!
@@ -63,7 +63,7 @@ use crate::overlays::step_focus;
 use crate::{
     CycleStep, ExtrudeUi, FormulaEditor, GridRect, HitTestResult, InteractionState, MAX_MNEMONIC,
     MenuIds, MenuKey, MenuResult, MenuState, Mnemonic, ModalKey, OverlayStack, PanelRowKind,
-    ROW_ID_STRIDE, SelectionPanel, WidgetId, cycle_next, cycle_prev,
+    ROW_ID_STRIDE, SelectionPanel, WidgetId, WindowAction, cycle_next, cycle_prev,
 };
 use compose::{PanelWidths, action_width, nav_width};
 
@@ -80,6 +80,13 @@ const EXTRUDE_SPAN: u32 = 16 * ROW_ID_STRIDE;
 const SELECTION_BASE: u32 = EXTRUDE_BASE + EXTRUDE_SPAN;
 /// The SelectionPanel uses 14 ids from its base.
 const FORMULA_BASE: u32 = SELECTION_BASE + 16;
+/// The three window controls `[-] [□] [X]`, in that order.
+const WINDOW_BASE: u32 = FORMULA_BASE + 16;
+const WINDOW_ACTIONS: [WindowAction; 3] = [
+    WindowAction::Minimize,
+    WindowAction::ToggleMaximize,
+    WindowAction::Close,
+];
 
 const BAR_IDS: MenuIds = MenuIds::new(MENU_BAR_BASE);
 const COMMAND_IDS: MenuIds = MenuIds::new(COMMAND_BAR_BASE);
@@ -248,7 +255,30 @@ impl ShellState {
         }
     }
 
-    /// Hover, focus and press state (hover is applied by the shader, not composed).
+    /// The window control that owns widget `id`, if it is one of `[-] [□] [X]`.
+    #[must_use]
+    pub fn window_action(id: WidgetId) -> Option<WindowAction> {
+        let rel = id.get().checked_sub(WINDOW_BASE)?;
+        WINDOW_ACTIONS.get(usize::try_from(rel).ok()?).copied()
+    }
+
+    /// `true` if the pointer at cell `(col, row)` of `grid` is on unused MenuBar space, where a
+    /// press drags the window: the MenuBar row, inside its frame, on a cell that carries no
+    /// widget and no shared border, and no menu popup or modal is open.
+    #[must_use]
+    pub fn window_drag_at(&self, col: u32, row: u32, grid: &crate::CellGrid) -> bool {
+        if self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active() {
+            return false;
+        }
+        let bar = self.layout().menu_bar();
+        let inside = row == bar.row() && col >= bar.col() && u64::from(col) < bar.right();
+        inside
+            && grid
+                .get(col, row)
+                .is_some_and(|c| c.widget_id.is_none() && c.shared_border.is_none())
+    }
+
+    /// Focus and press state.
     #[must_use]
     pub const fn interaction(&self) -> &InteractionState {
         &self.interaction
@@ -286,13 +316,6 @@ impl ShellState {
 
     fn bounds(&self) -> GridRect {
         GridRect::new(0, 0, self.cols, self.rows)
-    }
-
-    /// Sets hover from a pointer hit-test of the composed grid (`None` when the pointer left
-    /// the grid). Returns `true` if the hovered widget changed. Hover does not change the
-    /// composed cells.
-    pub fn pointer_moved(&mut self, hit: Option<HitTestResult>) -> bool {
-        self.interaction.set_hovered_from_hit(hit)
     }
 
     /// Applies a pointer activation at `hit`, the hit-test result of the composed grid.

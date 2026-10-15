@@ -9,3 +9,5 @@ mod controller;
 mod harness;
 mod input;
 mod pacing;
+mod rescale;
+mod window;

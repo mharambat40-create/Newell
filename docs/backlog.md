@@ -47,15 +47,15 @@
   panel boundaries with whole-cell snapping.
 - [x] M2.15: Add deterministic UI-state tests and reference cell-buffer
   snapshots for the application shell, menus and Action Panel variants.
-- [ ] M2.16: typography, monochrome themes and hover removal.
-- [ ] M2.17: frameless native application window.
-- [ ] M2.18: Application MenuBar and View settings.
-- [ ] M2.19: CommandBar reference fidelity.
-- [ ] M2.20: NavigationPanel and TreeView fidelity.
-- [ ] M2.21: exact fixed-grid Action Box composition, starting with Extrude.
-- [ ] M2.22: remaining reference Action Boxes (Revolve, Loft, Sweep, Boolean).
-- [ ] M2.23: Editable Numeric Fields & FormulaEditor
-- [ ] M2.24: live StatusBar and final M2 reference fidelity.
+- [ ] M2.16: typography (4:9 cells, k = 5), monochrome rendering and hover removal.
+- [ ] M2.17: frameless native window and 82 × 30 minimum grid.
+- [ ] M2.18: Application MenuBar, UI Scale (60/80/100/120/140%) and Light/Dark theme controls.
+- [ ] M2.19: CommandBar and centered menus.
+- [ ] M2.20: TreeView layout, playhead, separators and Rename.
+- [ ] M2.21: exact Action Box grammar and Extrude.
+- [ ] M2.22: Revolve, Loft, Sweep and Boolean Action Boxes.
+- [ ] M2.23: numeric fields and FormulaEditor.
+- [ ] M2.24: live FPS, progress bar and final UI fidelity.
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.

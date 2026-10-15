@@ -8,9 +8,8 @@
 
 mod gpu_cell;
 mod pipeline;
+mod theme;
 
-pub use gpu_cell::{
-    EMPTY_GLYPH, GPU_CELL_BYTES, GpuCell, WIDGET_LEFT_EDGE, WIDGET_PRESENT, cells_to_bytes,
-    encode_widget, resolve_style,
-};
+pub use gpu_cell::{EMPTY_GLYPH, GPU_CELL_BYTES, GpuCell, cells_to_bytes};
 pub use pipeline::UiOverlay;
+pub use theme::Theme;

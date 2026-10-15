@@ -7,7 +7,8 @@
 //! Shell layout and composition: pure functions from [`ShellState`] to a flat [`CellGrid`].
 
 use super::data::{COMMAND_MENUS, status_text, visible_rows, with_bar_menus};
-use super::{BAR_IDS, COMMAND_IDS, ShellState, Tree, tree_id};
+use super::{BAR_IDS, COMMAND_IDS, ShellState, Tree, WINDOW_BASE, tree_id};
+use crate::widgets::Canvas;
 use crate::{
     BorderLine, CellGrid, GridRect, TreeNodeKind, TreeRow, UiError, WidgetContext, WidgetId,
     WidgetState, WidgetStyles, compose_overlays, draw_border, draw_label, draw_menu_bar,
@@ -32,7 +33,7 @@ const PANEL_MIN: u32 = 16;
 /// Title row, separator and the two frame rows around the panel's body rows.
 const PANEL_CHROME_ROWS: u32 = 4;
 /// Window controls drawn at the right end of the MenuBar, with a trailing space.
-const WINDOW_CONTROLS: &str = "[-] [□] [X] ";
+const WINDOW_CONTROLS: [&str; 3] = ["[-]", "[□]", "[X]"];
 const WINDOW_CONTROLS_WIDTH: u32 = 12;
 
 /// The user-chosen widths of the two resizable panels, in whole cells. They are wishes: the
@@ -215,7 +216,7 @@ impl ShellState {
         let bar = layout.menu_bar();
         with_bar_menus(&self.view, |menus| {
             draw_menu_bar(grid, ctx, bar, BAR_IDS, menus, &self.menu_bar);
-            // Static window controls, only where they do not cover a title.
+            // Window controls (stable ids), only where they do not cover a title.
             let titles_end = menus
                 .len()
                 .checked_sub(1)
@@ -223,7 +224,11 @@ impl ShellState {
                 .map_or(0, |r| r.right());
             let (controls, _) = bar.split_right(WINDOW_CONTROLS_WIDTH);
             if u64::from(controls.col()) >= titles_end {
-                draw_label(grid, controls, WINDOW_CONTROLS, style);
+                let mut canvas = Canvas::new(grid, controls);
+                for (i, label) in WINDOW_CONTROLS.iter().enumerate() {
+                    let id = WidgetId::new(WINDOW_BASE + u32::try_from(i).unwrap_or(0));
+                    canvas.text(4 * u32::try_from(i).unwrap_or(0), 0, label, style, Some(id));
+                }
             }
         });
         draw_menu_bar(

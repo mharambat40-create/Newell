@@ -13,22 +13,23 @@ use std::sync::mpsc::{self, Receiver};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
-use newell_ui::{CellGrid, GridMetrics, WidgetId};
+use newell_ui::{CellGrid, GridMetrics};
 
 use crate::RenderError;
+use ab_glyph::FontVec;
+
 use crate::glyph_atlas::{GlyphAtlas, load_font};
 use crate::surface::{FrameAction, SurfaceState, classify};
-use crate::ui::UiOverlay;
+use crate::ui::{Theme, UiOverlay};
 
 const FONT: &[u8] = include_bytes!("../../../assets/FiraCode-Regular.ttf");
 
-/// Placeholder dark neutral; theming is not in scope.
-pub const CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.08,
-    g: 0.08,
-    b: 0.09,
-    a: 1.0,
-};
+/// Background clear colour of the frame: the theme background (pure black or white). The 3D
+/// viewport is specified separately (`ARCHITECTURE.md` §3.6) and draws over this later.
+fn clear_color(theme: Theme) -> wgpu::Color {
+    let [r, g, b] = theme.background().map(f64::from);
+    wgpu::Color { r, g, b, a: 1.0 }
+}
 
 /// Result of a successful `Renderer::render` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,11 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     state: SurfaceState,
     ui: UiOverlay,
+    /// The parsed font, kept to build the atlas of another `k` at run time.
+    font: FontVec,
+    /// Atlases rasterised since start-up (cached sizes are reused, not rebuilt).
+    atlas_builds: u32,
+    theme: Theme,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
 }
@@ -56,11 +62,13 @@ pub struct Renderer {
 impl Renderer {
     /// `window` is an owned handle (e.g. `Arc<winit::window::Window>`), so the surface is
     /// `'static`. `width`/`height` are physical pixels. A zero size yields an inactive
-    /// renderer until a non-zero `resize`.
+    /// renderer until a non-zero `resize`. `metrics` fixes the cell size of the glyph atlas for
+    /// the lifetime of the renderer.
     pub fn new(
         window: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
         height: u32,
+        metrics: GridMetrics,
     ) -> Result<Self, RenderError> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -107,7 +115,8 @@ impl Renderer {
             alpha_mode,
             view_formats: Vec::new(),
         };
-        let atlas = GlyphAtlas::build(&load_font(FONT.to_vec())?)?;
+        let font = load_font(FONT.to_vec())?;
+        let atlas = GlyphAtlas::build(&font, metrics)?;
         let ui = UiOverlay::new(&device, &queue, format, atlas);
         Ok(Self {
             surface,
@@ -116,6 +125,9 @@ impl Renderer {
             config,
             state: SurfaceState::new(width, height),
             ui,
+            font,
+            atlas_builds: 1,
+            theme: Theme::default(),
             gpu_errors,
         })
     }
@@ -125,19 +137,64 @@ impl Renderer {
         self.state.resize(width, height);
     }
 
-    /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of `metrics`
-    /// physical pixels. The whole grid is uploaded; it is drawn by one draw call.
-    pub fn set_ui_grid(&mut self, grid: &CellGrid, metrics: GridMetrics) {
-        self.ui.set_grid(&self.device, &self.queue, grid, metrics);
+    /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of the
+    /// renderer's metrics. The whole grid is uploaded; it is drawn by one draw call.
+    pub fn set_ui_grid(&mut self, grid: &CellGrid) {
+        self.ui.set_grid(&self.device, &self.queue, grid);
     }
 
-    /// Sets the hovered widget (`None` clears it). Only the shader's hover uniform changes; the
-    /// grid is not re-uploaded and the draw is still one call.
-    pub fn set_hovered(&mut self, hovered: Option<WidgetId>) {
-        self.ui.set_hovered(&self.queue, hovered);
+    /// Builds (or finds in the cache) the glyph atlas of `metrics` without changing what is
+    /// drawn. This is the only fallible step of a scale change: on `Err` nothing has changed.
+    ///
+    /// # Errors
+    /// If the atlas cannot be built for `metrics`.
+    pub fn prepare_metrics(&mut self, metrics: GridMetrics) -> Result<(), RenderError> {
+        let size = (metrics.cell_width_px(), metrics.cell_height_px());
+        if !self.ui.has_atlas(size) {
+            let atlas = GlyphAtlas::build(&self.font, metrics)?;
+            self.atlas_builds += 1;
+            self.ui.add_atlas(&self.device, &self.queue, atlas);
+        }
+        Ok(())
     }
 
-    /// Acquires, clears to `CLEAR_COLOR`, submits, presents. Returns `Skipped` when the
+    /// Switches to the cell size of `metrics` and uploads `grid`, composed for those metrics,
+    /// in one call: atlas, cell buffer and shader uniforms change together, so no frame mixes
+    /// an old atlas with a new grid. The atlas is built only if this size has not been used
+    /// before. A zero-sized or inactive surface is unaffected.
+    ///
+    /// # Errors
+    /// If the atlas cannot be built; the previous metrics and grid stay in place.
+    pub fn set_metrics(
+        &mut self,
+        metrics: GridMetrics,
+        grid: &CellGrid,
+    ) -> Result<(), RenderError> {
+        self.prepare_metrics(metrics)?;
+        let size = (metrics.cell_width_px(), metrics.cell_height_px());
+        // `prepare_metrics` guarantees the atlas exists, so this always activates it.
+        let _ = self.ui.activate(&self.device, &self.queue, size, grid);
+        Ok(())
+    }
+
+    /// Cell size `(W, H)` the overlay is currently drawn with.
+    pub fn cell_size(&self) -> (u32, u32) {
+        self.ui.cell_size()
+    }
+
+    /// Atlases rasterised so far; a size that returns is served from the cache.
+    pub fn atlas_builds(&self) -> u32 {
+        self.atlas_builds
+    }
+
+    /// Sets the UI theme (`Light` or `Dark`). Only the shader's theme uniform and the clear
+    /// colour change; the grid is not re-uploaded and the draw is still one call.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.ui.set_theme(&self.queue, theme);
+    }
+
+    /// Acquires, clears to the theme background, submits, presents. Returns `Skipped` when the
     /// surface is inactive or has nothing to draw to; errors on fatal or reported GPU errors.
     pub fn render(&mut self) -> Result<FrameOutcome, RenderError> {
         self.check_gpu_errors()?;
@@ -180,7 +237,7 @@ impl Renderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                    load: wgpu::LoadOp::Clear(clear_color(self.theme)),
                     store: wgpu::StoreOp::Store,
                 },
             })],

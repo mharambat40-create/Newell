@@ -20,23 +20,21 @@
 //!   `widget_id`, `shared_border`), so output depends only on the arguments, not on what
 //!   the grid held before. Blank cells inside an interactive primitive are
 //!   `CellContent::Empty` stamped with the primitive's [`WidgetId`], so the whole control is
-//!   hit-testable and the hover left-edge lands on its first cell.
+//!   hit-testable.
 //! - **One row.** Except [`draw_button`] (which owns its whole rect), primitives use only
 //!   the first row of `rect`.
-//! - **Styles.** Styles come from [`WidgetStyles`] (indices into the existing placeholder
-//!   palette). Hover is never composed here: it is shader-side (ARCHITECTURE.md §3.5).
+//! - **Styles.** Styles come from [`WidgetStyles`]. The UI is strictly monochrome
+//!   (ARCHITECTURE.md §3.5, §3.6): a style never names a colour and is drawn identically by
+//!   the renderer. Focus, press and selection are logical state only: they have no visual
+//!   unless a documented ASCII structure draws them. There is no hover style.
 //! - **Disabled.** A disabled control keeps its [`WidgetId`] (stable identity;
-//!   `InteractionState::press` already refuses it) and uses the disabled style. Whether a
-//!   disabled control may be hovered is Controller policy.
+//!   `InteractionState::press` already refuses it) and uses the disabled style.
 //!
-//! # Shared-border hover rule
+//! # Shared borders
 //!
 //! A separator cell between two interactive neighbours carries `shared_border` routing and
-//! no `widget_id`. It is **visually neutral** for hover: it has no GPU owner, so it never
-//! paints the left-edge stripe. When a control's visual left edge is such a border, the
-//! stripe is painted on the control's first owned cell, one cell inside the border. The
-//! border is still routed by the M2.5 sub-cell rule, so pointing at either half of it
-//! hovers the adjacent control. See `docs/plans/M2-ui-framework.md` (M2.7 decisions).
+//! no `widget_id`. A click on either half of it is routed to the adjacent control by the
+//! M2.5 sub-cell rule. See `docs/plans/M2-ui-framework.md` (M2.7 decisions).
 
 mod button;
 mod field;
@@ -57,10 +55,11 @@ pub use selector::{
 };
 pub use tree::{TreeNodeKind, TreeRow, draw_tree_row};
 
-/// Styles used by the primitives, as indices into the existing placeholder palette.
+/// Styles used by the primitives.
 ///
-/// No colours are decided here: the defaults reuse the palette slots that `newell-render`
-/// already resolves (`0` text, `1` bright, `2` dim, `3` accent).
+/// No colours are decided here. The UI is strictly monochrome and `newell-render` draws every
+/// slot identically, so a style only labels a logical state (focus, press, selection,
+/// disabled); it has no visual of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WidgetStyles {
     pub normal: StyleId,
@@ -68,8 +67,6 @@ pub struct WidgetStyles {
     pub pressed: StyleId,
     pub selected: StyleId,
     pub disabled: StyleId,
-    /// Secondary structure such as tree guide lines.
-    pub muted: StyleId,
 }
 
 impl Default for WidgetStyles {
@@ -80,13 +77,12 @@ impl Default for WidgetStyles {
             pressed: StyleId::new(1),
             selected: StyleId::new(3),
             disabled: StyleId::new(2),
-            muted: StyleId::new(2),
         }
     }
 }
 
 /// Read-only inputs shared by every primitive: the style table and the transient
-/// interaction state (focus and press are shown through style; hover is not).
+/// interaction state (focus and press are shown through style).
 #[derive(Debug, Clone, Copy)]
 pub struct WidgetContext<'a> {
     pub styles: &'a WidgetStyles,
@@ -335,11 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn default_styles_use_existing_palette_slots() {
+    fn default_styles_are_logical_labels_only() {
         let s = WidgetStyles::default();
         assert_eq!(s.normal, StyleId::DEFAULT);
         assert!(
-            [s.focused, s.pressed, s.selected, s.disabled, s.muted]
+            [s.focused, s.pressed, s.selected, s.disabled]
                 .iter()
                 .all(|st| st.get() <= 3)
         );

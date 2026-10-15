@@ -6,7 +6,7 @@
 │ Tools       [Select…       ]│
 │ □ Keep tools                │
 │─────────────────────────────│
-│     OK     │   Cancel   │
+│      OK      │    Cancel    │
 ╰─────────────────────────────╯
 ╭─Boolean─┬───────┬───────────╮
 │   Add   │  Cut  │   Inter   │

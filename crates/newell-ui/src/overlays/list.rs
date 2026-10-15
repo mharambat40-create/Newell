@@ -65,7 +65,7 @@ pub struct ListItem<'a> {
     pub id: WidgetId,
     /// Text shown after the checkbox.
     pub label: &'a str,
-    /// Checked, focus, hover and disabled state of the row.
+    /// Checked, focus and disabled state of the row.
     pub state: WidgetState,
 }
 

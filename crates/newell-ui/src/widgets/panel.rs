@@ -186,7 +186,7 @@ impl ActionPanel {
             sep,
             BorderAxis::Horizontal,
             BorderLine::Single,
-            ctx.styles.muted,
+            ctx.styles.normal,
         );
 
         let mut drawn = 0usize;
@@ -230,7 +230,7 @@ impl ActionPanel {
                 area,
                 BorderAxis::Horizontal,
                 BorderLine::Single,
-                ctx.styles.muted,
+                ctx.styles.normal,
             ),
             PanelRowKind::Segmented { labels, active } => {
                 let segments: Vec<Segment<'_>> = labels

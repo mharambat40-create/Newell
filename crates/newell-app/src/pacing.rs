@@ -9,6 +9,13 @@
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
+/// What the event loop does next: ask for a redraw, and when to wake (`None`: wait for an event).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Schedule {
+    pub redraw: bool,
+    pub wake: Option<Instant>,
+}
+
 /// Fixed-interval deadline tracker. The first frame is due immediately.
 #[derive(Debug, Clone, Copy)]
 pub struct FramePacer {
@@ -38,6 +45,29 @@ impl FramePacer {
     /// True once `now` has reached the deadline.
     pub fn is_due(&self, now: Instant) -> bool {
         now >= self.deadline
+    }
+
+    /// The plan at `now`. A hidden window (minimised, covered) is never drawn, so no frame would
+    /// advance the deadline: waiting on the stale one spins the loop at full speed, so it waits
+    /// for an event instead. A late frame is likewise never waited for with a past deadline.
+    pub fn schedule(&self, now: Instant, hidden: bool) -> Schedule {
+        if hidden {
+            return Schedule {
+                redraw: false,
+                wake: None,
+            };
+        }
+        if self.is_due(now) {
+            Schedule {
+                redraw: true,
+                wake: now.checked_add(self.interval),
+            }
+        } else {
+            Schedule {
+                redraw: false,
+                wake: Some(self.deadline),
+            }
+        }
     }
 
     /// Call after a frame is rendered at `now`.

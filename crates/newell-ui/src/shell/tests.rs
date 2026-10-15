@@ -7,7 +7,7 @@
 use super::compose::Layout;
 use super::data::{self, progress_bar, visible_rows};
 use super::*;
-use crate::{CellContent, CellGrid, GridMetrics, UiPoint, hit_test};
+use crate::{CellContent, CellGrid, GridMetrics, UiPoint, WidgetState, hit_test};
 
 const COLS: u32 = 82;
 const ROWS: u32 = 25;
@@ -562,11 +562,6 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     }
     assert!(s.formula().is_open());
     assert_eq!(base, (s.extrude, s.features_open, s.elements_open));
-    assert!(
-        !s.pointer_moved(hit_at(&g, 70, invert_row)),
-        "hover stays empty"
-    );
-    assert_eq!(s.interaction().hovered, None);
 
     // Keys go to the modal: base shortcuts do nothing, text is typed.
     assert!(!s.key(ShellKey::MenuBar) && !s.menu_bar.is_active());
@@ -684,6 +679,31 @@ fn tab_walks_trees_then_extrude_controls_and_enter_activates() {
     assert!(s.extrude().values.invert);
 }
 
+/// Focus and press are logical state with no visual of their own: no marker glyph is invented
+/// (`ARCHITECTURE.md` §3.5), so the glyphs and owners of the composed grid do not change.
+#[test]
+fn focus_and_press_draw_no_marker() {
+    let mut s = shell();
+    let base = s.compose().unwrap();
+    let layer = |g: &CellGrid| {
+        g.cells()
+            .iter()
+            .map(|c| (c.content, c.widget_id, c.shared_border))
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..40 {
+        s.key(ShellKey::Tab);
+        assert!(s.interaction().focused.is_some());
+        assert_eq!(layer(&s.compose().unwrap()), layer(&base));
+    }
+    let hit = hit_at(&base, 4, 10);
+    assert!(s.interaction.press(
+        hit.and_then(|h| h.widget_id).unwrap_or(WidgetId::new(1)),
+        WidgetState::default()
+    ));
+    assert_eq!(layer(&s.compose().unwrap()), layer(&base));
+}
+
 // ---- determinism, ids, tiny grids ----
 
 #[test]
@@ -718,6 +738,7 @@ fn every_cell_owner_belongs_to_exactly_one_id_range() {
                 (EXTRUDE_BASE..SELECTION_BASE).contains(&id.get()),
                 (SELECTION_BASE..FORMULA_BASE).contains(&id.get()),
                 (FORMULA_BASE..FORMULA_BASE + 4).contains(&id.get()),
+                ShellState::window_action(id).is_some(),
             ];
             assert_eq!(owners.iter().filter(|&&o| o).count(), 1, "{id:?}");
         }
@@ -731,6 +752,7 @@ fn id_ranges_are_disjoint_and_trees_fit() {
     const { assert!(TREE_BASE + TREE_SPAN <= EXTRUDE_BASE) };
     const { assert!(EXTRUDE_BASE + EXTRUDE_SPAN <= SELECTION_BASE) };
     const { assert!(SELECTION_BASE + 14 <= FORMULA_BASE) };
+    const { assert!(FORMULA_BASE + 4 <= WINDOW_BASE) };
     const { assert!(FEATURES.len() <= MAX_NODES && ELEMENTS.len() <= MAX_NODES) };
     for tree in [Tree::Features, Tree::Elements] {
         for index in 0..tree.nodes().len() {
@@ -751,7 +773,6 @@ fn tiny_and_degenerate_grids_are_safe() {
             assert_eq!(g, s.compose().unwrap());
             for (col, row) in [(0, 0), (1, 1), (cols / 2, rows / 2), (cols, rows)] {
                 let hit = hit_at(&g, col, row);
-                s.pointer_moved(hit);
                 s.click(hit);
             }
             for k in [
@@ -853,4 +874,71 @@ fn progress_bar_matches_the_reference_table() {
     }
     assert_eq!(progress_bar(1000), "█████");
     assert_eq!(progress_bar(7), "░    ");
+}
+
+// ---- M2.17: window controls ----
+
+#[test]
+fn window_controls_own_stable_ids_in_their_documented_cells() {
+    let g = shell().compose().unwrap();
+    let (col, row) = find(&g, "[-] [□] [X] ").unwrap();
+    assert_eq!((col, row), (COLS - 1 - 12, 1));
+    let owner = |c: u32| {
+        g.get(c, 1)
+            .unwrap()
+            .widget_id
+            .and_then(ShellState::window_action)
+    };
+    for (offset, want) in [
+        (0, Some(WindowAction::Minimize)),
+        (2, Some(WindowAction::Minimize)),
+        (3, None),
+        (4, Some(WindowAction::ToggleMaximize)),
+        (6, Some(WindowAction::ToggleMaximize)),
+        (7, None),
+        (8, Some(WindowAction::Close)),
+        (10, Some(WindowAction::Close)),
+        (11, None),
+    ] {
+        assert_eq!(owner(col + offset), want, "offset {offset}");
+    }
+    // Ids are the same at any grid size and state, and distinct from every other control.
+    let wide = ShellState::new(120, 40).compose().unwrap();
+    let id_at = |g: &CellGrid, c: u32| g.get(c, 1).unwrap().widget_id;
+    assert_eq!(id_at(&g, col), id_at(&wide, 120 - 13));
+    assert_eq!(ShellState::window_action(WidgetId::new(1)), None);
+    assert_eq!(ShellState::window_action(WidgetId::new(u32::MAX)), None);
+}
+
+#[test]
+fn window_control_click_is_not_a_shell_activation() {
+    let mut s = shell();
+    let before = s.clone();
+    let g = s.compose().unwrap();
+    assert!(!s.click(hit_at(&g, COLS - 13 + 8, 1)));
+    assert_eq!(s, before);
+}
+
+#[test]
+fn window_drag_region_is_inert_menu_bar_space_only() {
+    let mut s = shell();
+    let g = s.compose().unwrap();
+    assert!(s.window_drag_at(40, 1, &g));
+    assert!(s.window_drag_at(COLS - 2, 1, &g), "trailing space");
+    assert!(!s.window_drag_at(0, 1, &g), "frame");
+    assert!(!s.window_drag_at(COLS - 1, 1, &g), "frame");
+    assert!(!s.window_drag_at(2, 1, &g), "menu title");
+    assert!(!s.window_drag_at(COLS - 13, 1, &g), "window control");
+    assert!(!s.window_drag_at(40, 0, &g), "border row");
+    assert!(!s.window_drag_at(40, 3, &g), "command bar row");
+    assert!(!s.window_drag_at(500, 1, &g), "outside the grid");
+    s.key(ShellKey::Alt('f'));
+    let g = s.compose().unwrap();
+    assert!(!s.window_drag_at(40, 1, &g), "a popup is open");
+}
+
+#[test]
+fn window_controls_are_omitted_when_they_would_cover_a_title() {
+    let g = ShellState::new(20, 10).compose().unwrap();
+    assert!(!has(&g, "[X]"));
 }

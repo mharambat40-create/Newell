@@ -59,3 +59,32 @@ fn pacer_schedule() {
     }
     insta::assert_debug_snapshot!(deadlines);
 }
+
+// ---- M2.17 retest: a hidden window must not spin the event loop ----
+
+#[test]
+fn a_hidden_window_waits_for_an_event_instead_of_a_stale_deadline() {
+    let base = Instant::now();
+    let pacer = FramePacer::new(FPS60, base);
+    // The deadline is long past and no frame will ever advance it (minimised: 80% CPU spin).
+    let plan = pacer.schedule(base + Duration::from_secs(5), true);
+    assert_eq!(plan.wake, None);
+    assert!(!plan.redraw);
+}
+
+#[test]
+fn a_visible_window_always_wakes_in_the_future() {
+    let base = Instant::now();
+    let pacer = FramePacer::new(FPS60, base);
+    let now = base + Duration::from_secs(5);
+    // Due and late: redraw now, but never wait for the past deadline.
+    let plan = pacer.schedule(now, false);
+    assert!(plan.redraw);
+    assert_eq!(plan.wake, Some(now + pacer.interval()));
+    // Not yet due: no redraw, wake at the deadline.
+    let mut early = FramePacer::new(FPS60, base);
+    early.on_frame(base);
+    let plan = early.schedule(base, false);
+    assert!(!plan.redraw);
+    assert_eq!(plan.wake, Some(early.deadline()));
+}

@@ -29,7 +29,7 @@ dimensions, labels or topology.
 The UI specification follows this precedence:
 
 1. `ARCHITECTURE.md`
-2. `docs/ui_design/README.md`
+2. `docs/ui_design/README_UI.md`
 3. `.txt` references in `docs/ui_design/`
 4. implementation plans under `docs/plans/`
 
@@ -129,7 +129,7 @@ can become:
 
 ```text
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 The second state contains one additional row.
@@ -163,6 +163,9 @@ A composed Action Box is created by:
 4. recursively applying variants belonging to newly revealed children.
 
 The exact indentation and branch topology from the variant MUST be retained.
+Replacement is limited to the line or branch the variant belongs to; sibling
+controls are preserved, and complete base states outrank partial snippets
+(§2.6).
 
 ---
 
@@ -176,16 +179,86 @@ For example, these three states all occupy the same Action Box width:
 
 ```text
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 ```text
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 ```
 
 The text field is aligned according to the reference, not according to a generic
 form layout.
+
+---
+
+## 2.6 Complete base states versus partial variant snippets
+
+`Action_Box_Extrude.txt` remains the visual authority for the Extrude Action
+Box; neither this README nor an implementation may edit its artwork. It holds
+two kinds of material, with different authority:
+
+- **Complete base states** (the three `"Extrude Action Box"` boxes, including
+  their `Same for Surfaces` note). Every row of a complete state is documented
+  and authoritative for that state.
+- **Partial variant snippets** (`"Extend variants"`, `"Start Offset variants"`,
+  `"End Offset variants 1/2"`, `"Symetric variants"`, `"2nd side variants"`,
+  `"Merge with all variants"`, the two `Invert` lists). A snippet is
+  authoritative for the rows it shows: their text, indentation and glyphs. It
+  is an excerpt. **The absence of a row from a snippet is not an instruction to
+  delete that row from the composed box.** A documented row is removed only
+  when the reference states the removal explicitly (for example an active
+  `Symetric` removes `2nd side`: the snippet pair shows both forms and §8.6
+  states the rule).
+
+**Branch and sibling.** The *branch* of a line is the line plus the rows
+that hang under it, i.e. the rows that carry the branch column (`│` or `╰╴` in
+cells 2–3) below it. A *sibling control* is any row of the box outside that
+branch at the same level: for Extrude, `Profile`, `Symetric`, `2nd side` /
+`Second end position`, `Merge with all` / `Targets`, and the OK/Cancel row.
+Substituting an Extend variant replaces **only** the `Extend` row and the rows
+of the Extend branch. Every sibling control keeps its position and text. An
+implementation MUST NOT replace "everything between `Extend` and `OK`".
+
+**Extend branch composition** (cells are exactly as in the references; only the
+rows named here are involved):
+
+| `Extend` | Rows of the branch, in order | Authority |
+|---|---|---|
+| `Blind` | `Depth`, `Along`, `Starting Offset`, `End Offset` | the complete base boxes (rows 9–12 of each) |
+| `Up to` | `Selection`, `Offset` | the `"Extend variants"` snippet |
+| `Through all` | `Invert`, `Start Offset` | the `"Extend variants"` snippet |
+
+For `Blind`, the complete base boxes and the Blind snippet differ: the snippet
+ends the branch at `Starting Offset` and omits `End Offset`. The base box is a
+complete state and wins, so `End Offset` is kept as the last child and
+`Starting Offset` is not last. The snippet's `│ ╰╴□ Starting Offset` row is the
+closing connector of that partial excerpt, not a deletion of `End Offset`.
+`Up to` and `Through all` have no complete base state in the reference; their
+branches are exactly the snippet rows. The reference documents no `End Offset`
+under them, so none is composed (see *Open reference points* below).
+
+**Last-child form of an expanded offset.** The `Start Offset` / `End Offset`
+variants are written for a non-last child (rows start `│ │ `). When an
+expanded offset is the last child of the branch (`End Offset` under `Blind`,
+`Start Offset` under `Through all`), compose it with the prefix transformation
+and nothing else: in the first row cells 1–4 `│ │ ` become `│ ╰╴`, and in each
+descendant row cells 1–6 `│ │ ╰╴` become `│   ╰╴` (blank continuation). This is
+the convention the reference already shows for last children: `│ ╰╴□ End
+Offset`, `│ ╰╴□ Start Offset`, and `│ ╰╴■ 2nd side ◀ Blind ▶` over `│   ╰╴Depth`.
+Row width stays 31 cells; text, field columns and brackets are unchanged. The
+transformation is part of composition; it does not modify any `.txt` file.
+
+**Open reference points** (reproduced as written, to be settled only by editing
+the `.txt` references together with this README):
+
+1. Label drift: the collapsed Blind-form row reads `Starting Offset`; its
+   expanded variant and the `Through all` form read `Start Offset`. Each row is
+   reproduced with its own label.
+2. `Up to` and `Through all` show no `End Offset`; if the design intends one it
+   must be added to the reference.
+3. The `Offset` row of `Up to` has no documented expanded form: toggling it
+   changes only `□`/`■`; no child row is composed.
 
 ---
 
@@ -269,21 +342,21 @@ Example:
 Example:
 
 ```text
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 ```
 
 means:
 
 - first `│`: left Action Box border;
-- `└`: last child of the current parent branch;
+- `╰╴`: last child of the current parent branch (a two-cell connector: `╰` then `╴`);
 - `□ End Offset`: child control;
 - final `│`: right Action Box border.
 
 Example:
 
 ```text
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Dist  [0.0 mm       ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Dist  [0.0 mm       ☰]│
 ```
 
 The additional indentation means that `End Offset` itself belongs to another
@@ -359,6 +432,13 @@ The surrounding border topology identifies the active segment.
 
 The `╴` and `┆` glyphs belong to this topology. They do not mean that a segment
 is disabled.
+
+> **Temporary accepted deviation (until M2.21).** The segmented selector built
+> in M2.7 marks the active segment with `║` separators, which is not a
+> documented structure. It is accepted temporarily and MUST NOT be extended or
+> copied to new widgets. M2.21 replaces it with the exact border topology of
+> `Action_Box_*.txt` and `Interface_Elements.txt` "Head Action Box variants"; the
+> deviation ends there.
 
 ---
 
@@ -500,6 +580,83 @@ A complete cell corresponds to 20%.
 
 The partial characters divide the following 20% cell into 5% increments.
 
+Block-element limits (`ARCHITECTURE.md` §3.1, Unicode continuity): `░ ▒ ▓ █`
+tile horizontally, so the five progress cells join seamlessly in their single
+row. Vertically a block element covers only the line box (`L = 8k` px of the
+cell's `H = 9k`), so a filled progress cell shows `k` px of background in total
+(`k div 2` px above, the rest below). This is accepted and MUST NOT be
+corrected by stretching, extra rows or a procedural rasteriser. Block elements
+are never stacked vertically in any reference. The shade glyphs `░ ▒ ▓` are the
+font's own patterns at the uniform scale; their coverage blend is part of the
+two-colour rule (`ARCHITECTURE.md` §3.6).
+
+---
+
+## 5.10 Interaction state visuals
+
+Newell has no hover state and no hover visual (`ARCHITECTURE.md` §3.5).
+
+Logical focus, selection, pressed, disabled, checked and expanded state exist
+for keyboard navigation, activation and dragging. They are drawn **only** by
+the ASCII structures documented in this directory:
+
+- `□` / `■` for unchecked / checked and hidden / visible (§5.1, §26);
+- `[-]` / `[+]` for expanded / collapsed tree nodes (§26);
+- the value text between `◀` and `▶` for cyclic selectors (§5.2);
+- the border topology of segmented selectors (§5.3);
+- `+|` / `-|` for direction (§5.4);
+- the selection-field texts `Select…`, `1 Element`, `N Elements` (§5.5);
+- the text-editing caret `▏` while a field is actively edited (§5.11).
+
+A state with no documented structure has no visual. An implementation MUST NOT
+add a generic foreground/background inversion, a marker such as `>` or `<`, an
+underline, or any third colour or intensity to represent focus, selection or
+pressed state. Focus markers are not invented: a focused control without a
+documented structure has no visual (the keyboard focus target is observable
+only through its effect). The only foreground/background exchange is the global Light/Dark
+theme (`ARCHITECTURE.md` §3.6): Light is `#000000` on `#FFFFFF`, Dark is
+`#FFFFFF` on `#000000`.
+
+---
+
+## 5.11 Text-editing caret
+
+`▏` (U+258F, LEFT ONE EIGHTH BLOCK, listed in `Special_ASCII.txt`) is the
+caret of a text field that is **actively being edited** (`Rename`, `Enter Name`,
+the value of a numeric field, the Formula editor text area). It is the only
+approved indicator of editing and is specified for M2.23.
+
+- **When.** Drawn only while exactly one field is in edit mode. Not drawn for
+  merely focused, selected, hovered (there is no hover) or pressed fields.
+- **Colour.** The theme foreground (`#000000` Light, `#FFFFFF` Dark) over the
+  background; no third colour, no inversion, **no blinking** (no animation,
+  `ARCHITECTURE.md` §3.5). The glyph is an ordinary cell in the flat cell
+  buffer; it needs no second draw call and no shader data.
+- **Value untouched.** The caret is a composition-time artefact. The edited
+  text value (the model/UI state string) never contains `▏`, and copying,
+  validating or committing the value never sees it.
+- **Geometry.** The glyph is the left eighth of a cell: ink spans
+  `x ∈ [0, W/8) = [0, k/2)` px of the cell (anti-aliased at odd `k`) and, as a
+  block element, the line box vertically (`L = 8k` of `H = 9k` px).
+- **Placement.** For edited text of `T` characters, caret index `c` (`0 ≤ c ≤ T`)
+  and a text area of `N` cells, the composed display string is
+  `D = text[0..c] + ▏ + text[c..] + static suffix` (the suffix is fixed text
+  that follows the editable text, such as ` mm`). The caret occupies **its own
+  cell**, so the characters after the caret move one cell to the right while the
+  caret is shown; the cells reserved by the field (README §2.2) never change.
+- **Full field.** The visible window of `D` starts at `s = max(0, c + 1 − N)` and
+  shows `D[s .. s + N)`. Therefore (a) while `c < N` nothing scrolls and any
+  cells of `D` beyond the right boundary of the text area are clipped whole-cell
+  (the static suffix is clipped before editable text, which is clipped before the
+  caret); (b) when the caret reaches the last cell, the text scrolls left one
+  cell per additional character and the first characters leave the left
+  boundary. The caret is always visible, and is never drawn over the field
+  delimiters `[` `]`, the direction prefix `+|` or the `☰` cell. Clipping is
+  per whole cell; no `…`, marker or other indicator of hidden text is added.
+- **Not a rejection rule.** A field being visually full does not reject input;
+  any maximum text length is a data rule outside this specification.
+- **Keyboard only in M2.23.** Pointer placement of the caret is not specified.
+
 ---
 
 # 6. Common Action Box header
@@ -553,7 +710,7 @@ Spacing is significant.
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │─────────────────────────────│
@@ -569,7 +726,7 @@ Spacing is significant.
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │ ■ Merge with all            │
@@ -586,7 +743,7 @@ Spacing is significant.
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │ ■ Merge with all            │
@@ -604,38 +761,42 @@ Same for Surfaces
 │ Extend   ◀     Blind     ▶  │
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
-│ └ □ Starting Offset         │
+│ ╰╴□ Starting Offset         │
 
 │ Extend   ◀     Up to     ▶  │
-│ Selection   [Select…       ]│
-│ □ Offset                    │
+│ │ Selection [Select…       ]│
+│ ╰╴□ Offset                  │
+
+│ Extend   ◀  Through all  ▶  │
+│ │ □ Invert                  │
+│ ╰╴□ Start Offset            │
 
 "Start Offset variants"
 │ │ □ Start Offset            │
 
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 1"
 │ │ □ End Offset              │
 
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ End Offset   ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 2"
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Dist  [0.0 mm       ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Dist  [0.0 mm       ☰]│
 
-│   └ ■ End Offset ◀ Up to ▶  │
-│     └ Target[Select…       ]│
+│   ╰╴■ End Offset ◀ Up to ▶  │
+│     ╰╴Target[Select…       ]│
 
 "Symetric variants"
 │ □ Symetric                  │
@@ -644,20 +805,25 @@ Same for Surfaces
 │ ■ Symetric                  │
 
 "2nd side variants"
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ 2nd side     ◀ Blind ▶  │
-│   └ Depth [+|0.0 mm       ☰]│
+│ ╰╴■ 2nd side     ◀ Blind ▶  │
+│   ╰╴Depth [+|0.0 mm       ☰]│
 
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
+
+"Invert vartiants"
+│ □ Invert                    │
+
+│ ■ Invert                    │
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
 ```
 
 ---
@@ -682,13 +848,14 @@ Same for Surfaces
 
 ### Blind
 
-Exact variant:
+Exact snippet (a partial excerpt; the complete `Blind` branch also contains
+`End Offset` as its last child, §2.6):
 
 ```text
 │ Extend   ◀     Blind     ▶  │
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
-│ └ □ Starting Offset         │
+│ ╰╴□ Starting Offset         │
 ```
 
 `Depth` is the extrusion magnitude.
@@ -709,13 +876,39 @@ Exact variant:
 
 ```text
 │ Extend   ◀     Up to     ▶  │
-│ Selection   [Select…       ]│
-│ □ Offset                    │
+│ │ Selection [Select…       ]│
+│ ╰╴□ Offset                  │
 ```
 
-`Selection` identifies the target entity at which the extrusion terminates.
+`Selection` identifies the target entity at which the extrusion terminates. It
+is a child row of `Extend` (second `│` branch) and its field starts one cell
+earlier than the `Profile` field because the label is longer; the reference
+position MUST be kept.
 
-`Offset` optionally shifts the termination relative to that target.
+`Offset` optionally shifts the termination relative to that target. It is the
+last child of `Extend` (`╰╴`).
+
+### Through all
+
+Exact variant:
+
+```text
+│ Extend   ◀  Through all  ▶  │
+│ │ □ Invert                  │
+│ ╰╴□ Start Offset            │
+```
+
+`Through all` terminates the extrusion beyond every entity along its direction;
+it has no depth or target. Its children are `Invert` (see §8.9) and
+`Start Offset`.
+
+> **Resolved by §2.6.** In `Action_Box_Extrude.txt` the complete base boxes show
+> `Starting Offset` and `End Offset` under `Blind`, while the `"Extend variants"`
+> Blind snippet ends the branch at `Starting Offset`. The complete base box is the
+> authority for `Blind` (all four children, `End Offset` last), the snippet is a
+> partial excerpt, and sibling controls are never deleted by a substitution. The
+> `Up to` and `Through all` branches are exactly their snippets; the remaining
+> label and `End Offset` questions are the *Open reference points* of §2.6.
 
 ---
 
@@ -731,14 +924,14 @@ Blind:
 
 ```text
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 Up to:
 
 ```text
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 ```
 
 The control changes where the extrusion starts.
@@ -761,14 +954,14 @@ Blind:
 
 ```text
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 Up to:
 
 ```text
 │ │ ■ End Offset   ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 ```
 
 This is the End Offset variant used as a direct child of the main extent.
@@ -780,21 +973,21 @@ This is the End Offset variant used as a direct child of the main extent.
 Collapsed:
 
 ```text
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 ```
 
 Blind:
 
 ```text
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Dist  [0.0 mm       ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Dist  [0.0 mm       ☰]│
 ```
 
 Up to:
 
 ```text
-│   └ ■ End Offset ◀ Up to ▶  │
-│     └ Target[Select…       ]│
+│   ╰╴■ End Offset ◀ Up to ▶  │
+│     ╰╴Target[Select…       ]│
 ```
 
 This is not another unrelated End Offset control.
@@ -831,22 +1024,22 @@ needed and therefore disappears.
 Collapsed:
 
 ```text
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 ```
 
 Blind:
 
 ```text
-│ └ ■ 2nd side     ◀ Blind ▶  │
-│   └ Depth [+|0.0 mm       ☰]│
+│ ╰╴■ 2nd side     ◀ Blind ▶  │
+│   ╰╴Depth [+|0.0 mm       ☰]│
 ```
 
 Up to:
 
 ```text
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 ```
 
 `2nd side` creates an independent extent on the opposite side.
@@ -867,7 +1060,7 @@ Explicit target selection:
 
 ```text
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
 ```
 
 When enabled, every applicable target is used.
@@ -891,12 +1084,22 @@ and:
 │ ■ Invert                    │
 ```
 
-This is an available boolean direction state.
+This is a boolean direction state.
 
-The current `.txt` does not place this variant in one of the complete Extrude
-Action Box states.
+Its placement is defined by `Action_Box_Extrude.txt`: `Invert` is the first
+child row of `Extend = Through all` and appears nowhere else in the Extrude
+Action Box:
 
-Its exact location therefore MUST NOT be invented by an implementation.
+```text
+│ Extend   ◀  Through all  ▶  │
+│ │ □ Invert                  │
+│ ╰╴□ Start Offset            │
+```
+
+An implementation MUST place `Invert` exactly there, with exactly that
+indentation and branch glyphs, and MUST NOT add it to the `Blind` or `Up to`
+forms. (The `"Invert variants"` and `"Invert vartiants"` headings in the `.txt`
+both only list its two checkbox states.)
 
 ---
 
@@ -948,64 +1151,64 @@ Same for Surfaces
 │ │ Angle   [+|0.0 deg      ☰]│
 │ │ □ Start Offset            │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
 │ □ Full Revolve   ◀ Up to ▶  │
 │ │ Target    [Select…       ]│
 │ │ □ Start Offset            │
 │ │ □ End Offset              │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
     
 "Start Offset variants"
 │ │ □ Start Offset            │
 
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Angle [+|0.0 deg      ☰]│
+│ │ ╰╴Angle [+|0.0 deg      ☰]│
 
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 1"
 │ │ □ End Offset              │
 
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Angle   [0.0 deg      ☰]│
+│ │ ╰╴Angle   [0.0 deg      ☰]│
 
 │ │ ■ End Offset   ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 2"
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Angle [0.0 deg      ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Angle [0.0 deg      ☰]│
 
-│   └ ■ End Offset ◀ Up to ▶  │
-│     └ Target[Select…       ]│
+│   ╰╴■ End Offset ◀ Up to ▶  │
+│     ╰╴Target[Select…       ]│
 
 "2nd side variants"
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ 2nd side     ◀ Blind ▶  │
-│   └ Angle [+|0.0 deg      ☰]│
+│ ╰╴■ 2nd side     ◀ Blind ▶  │
+│   ╰╴Angle [+|0.0 deg      ☰]│
 
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
 "Symetric variants"
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ Symetric                │
+│ ╰╴■ Symetric                │
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
 ```
 
 ---
@@ -1051,7 +1254,7 @@ Blind partial revolution:
 │ │ Angle   [+|0.0 deg      ☰]│
 │ │ □ Start Offset            │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 ```
 
 The user defines a signed angular extent.
@@ -1064,7 +1267,7 @@ Up-to partial revolution:
 │ │ □ Start Offset            │
 │ │ □ End Offset              │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 ```
 
 The revolution terminates on a selected target.
@@ -1138,25 +1341,25 @@ Same for Surfaces
 │ □ Start type                │
 
 │ ■ Start type   ◀ Normal  ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ Start type   ◀ Tengent ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ Start type   ◀  Match  ▶  │
-│ └ Entity    [Select…       ]│
+│ ╰╴Entity    [Select…       ]│
 
 "End Type variants"
 │ □ End type                  │
 
 │ ■ End type     ◀ Normal  ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ End type     ◀ Tengent ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ End type     ◀  Match  ▶  │
-│ └ Entity    [Select…       ]│
+│ ╰╴Entity    [Select…       ]│
 
 "Guide variants"
 │ □ Guide                     │
@@ -1173,13 +1376,13 @@ Same for Surfaces
 
 │ ■ Connection                │
 │ │ Start     [Select…       ]│
-│ └ End       [Select…       ]│
+│ ╰╴End       [Select…       ]│
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
 ```
 
 ---
@@ -1213,21 +1416,21 @@ Normal:
 
 ```text
 │ ■ Start type   ◀ Normal  ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 ```
 
 Tangent:
 
 ```text
 │ ■ Start type   ◀ Tengent ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 ```
 
 Match:
 
 ```text
 │ ■ Start type   ◀  Match  ▶  │
-│ └ Entity    [Select…       ]│
+│ ╰╴Entity    [Select…       ]│
 ```
 
 `Normal` and `Tengent` use a formula-capable scalar `Magnitude`.
@@ -1299,7 +1502,7 @@ Enabled:
 ```text
 │ ■ Connection                │
 │ │ Start     [Select…       ]│
-│ └ End       [Select…       ]│
+│ ╰╴End       [Select…       ]│
 ```
 
 `Start` and `End` are children of the Connection option.
@@ -1364,13 +1567,13 @@ Same for Surfaces
 │ □ Keep orientation          │
 
 │ ■ Keep orientation          │
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 
 
 "Twist variants"
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 
-│ └ ■ Twist [+|0.0 deg      ☰]│
+│ ╰╴■ Twist [+|0.0 deg      ☰]│
 
 "Scale variants"
 │ □ Scale                     │
@@ -1381,7 +1584,7 @@ Same for Surfaces
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
 ```
 
 ---
@@ -1438,7 +1641,7 @@ Enabled:
 
 ```text
 │ ■ Keep orientation          │
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 ```
 
 Enabling `Keep orientation` reveals the optional `Twist` child.
@@ -1450,13 +1653,13 @@ Enabling `Keep orientation` reveals the optional `Twist` child.
 Disabled:
 
 ```text
-│ └ □ Twist                   │
+│ ╰╴□ Twist                   │
 ```
 
 Enabled:
 
 ```text
-│ └ ■ Twist [+|0.0 deg      ☰]│
+│ ╰╴■ Twist [+|0.0 deg      ☰]│
 ```
 
 The twist parameter is embedded on the same row as the checkbox.
@@ -1500,7 +1703,7 @@ No unit is displayed, indicating a scalar/dimensionless parameter.
 │ Tools       [Select…       ]│
 │ □ Keep tools                │
 │─────────────────────────────│
-│     OK     │   Cancel   │
+│      OK      │    Cancel    │
 ╰─────────────────────────────╯
 ╭─Boolean─┬───────┬───────────╮
 │   Add   │  Cut  │   Inter   │
@@ -1526,15 +1729,15 @@ No unit is displayed, indicating a scalar/dimensionless parameter.
 │ □ Offset                    │
 
 │ ■ Offset                    │
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 
 "Offset All variants"
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 
-│ └ □ Offset all              │
-│   └ Faces   [none          ]│
+│ ╰╴□ Offset all              │
+│   ╰╴Faces   [none          ]│
 │     Dist  [+|0.0 mm       ☰]│
 
 "Keep tools variants"
@@ -1628,8 +1831,8 @@ Enabled:
 
 ```text
 │ ■ Offset                    │
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 Offset is a Cut-specific optional operation in the current reference.
@@ -1643,8 +1846,8 @@ Its child is `Offset all`.
 Enabled:
 
 ```text
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 The distance applies to all applicable faces.
@@ -1652,8 +1855,8 @@ The distance applies to all applicable faces.
 Disabled:
 
 ```text
-│ └ □ Offset all              │
-│   └ Faces   [none          ]│
+│ ╰╴□ Offset all              │
+│   ╰╴Faces   [none          ]│
 │     Dist  [+|0.0 mm       ☰]│
 ```
 
@@ -1664,7 +1867,7 @@ The following `Dist` line belongs to the same Offset-all branch.
 The different indentation between:
 
 ```text
-│   └ Faces
+│   ╰╴Faces
 ```
 
 and:
@@ -1677,29 +1880,20 @@ MUST be preserved exactly as defined by the reference.
 
 ---
 
-# 17. Boolean footer anomaly
+# 17. Boolean footer (anomaly resolved)
 
-The current Add-state reference contains:
-
-```text
-│     OK     │   Cancel   │
-```
-
-while the other Boolean states contain:
+`Action_Box_Boolean.txt` previously contained a shorter, 27-cell Add-state footer
+row. It is corrected: all three Boolean states now use the canonical 31-cell
+footer row shared with every other Action Box:
 
 ```text
 │      OK      │    Cancel    │
 ```
 
-The first row is shorter than the otherwise 31-cell Boolean frame.
-
-This README deliberately reproduces the source exactly and does not silently
-insert spaces.
-
-This should be treated as a current reference inconsistency.
-
-If it is corrected, the correction should be made in
-`Action_BoxBoolean.txt` and then reflected here.
+The enclosing Boolean Action Box is exactly 31 cells wide in every row of every
+state (verified row by row for all `.txt` Action Box references). There is no
+remaining Boolean footer exception, and the former workaround of reproducing the
+short row "as is" (M2.22) no longer applies.
 
 ---
 
@@ -1879,7 +2073,22 @@ Both use the same modal interaction.
 
 The first starts from an empty/default value.
 
-The second starts with the existing name.
+The second starts with the existing name (the full stored name, never the
+`…`-truncated text of a tree row, §26).
+
+**Rename trigger (M2.20).** `Rename` opens on a **double-click** of the primary
+(left) mouse button on the name text of a user-named tree row (a Feature row or
+an Element body row, §26). The category headers (`Features`, `Elements`,
+`Solid Bodies(N)`, `Surfaces(N)`, `Construct`), the playhead separator row, the
+`[-]`/`[+]` marker cells and the `□`/`■` cells are not rename targets; a click
+on a marker or checkbox keeps its own action and never starts a rename.
+`winit` 0.30 reports no click count, so the Controller recognises a double-click
+itself: two left presses on the same tree-row name `widget_id` within 500 ms,
+with no press on any other target in between. The first press keeps its normal
+selection meaning; the second opens the modal. No keyboard shortcut opens
+`Rename` in M2.20; one may be added later only after it is documented here.
+Opening, editing (caret, §5.11), OK/Cancel and focus restoration follow the
+common modal interaction above; Cancel keeps the old name.
 
 ---
 
@@ -1939,33 +2148,185 @@ Its canonical regions are:
 The complete reference currently shows an Extrude Action Box over the right side
 of the viewport.
 
+The reference is 82 columns × 28 rows and is preserved unchanged. The minimum
+window grid is **82 columns × 30 rows** at every UI Scale and on every monitor
+(`ARCHITECTURE.md` §3.1.1). When the window moves to a smaller monitor, the
+number of columns and rows the user last chose is kept as far as it fits (never
+below 82 × 30), is restored when the window returns to a larger monitor, and the
+window is moved the minimum distance needed to stay fully on the monitor
+(`ARCHITECTURE.md` §3.1.1, *Safe window fit*).
+
+**Fixed and flexible rows.** In the reference, eight rows are fixed-height
+regions: row 1 (top frame), row 2 (MenuBar), row 3 (separator), row 4
+(CommandBar), row 5 (separator above the body), row 26 (separator below the
+body), row 27 (StatusBar) and row 28 (bottom frame). Rows 6–25 are the
+flexible central body (20 rows). The MenuBar, CommandBar and StatusBar heights
+never grow. At a grid of `R` rows the body has `R − 8` rows: 20 at 82 × 28 and
+22 at 82 × 30. Every additional row belongs to the body and, at the default
+split, to the lower (`Elements`) pane and to the Viewport3D below the Action
+Box; the Features pane keeps its reference height (rows 6–16, with the divider
+at row 17) and the Action Box and NavCube keep their reference rows, anchored
+to the top of the viewport.
+
+**Comparing an 82 × 30 snapshot with the 82 × 28 reference.** A snapshot of the
+default state at 82 × 30 is compared in two steps, without inventing any
+difference:
+
+1. Remove snapshot rows 26 and 27 (the two additional body rows, immediately
+   below reference row 25). The remaining 28 rows MUST equal
+   `Interface_Exemple.txt` row for row, cell for cell (snapshot rows 28–30 are
+   reference rows 26–28).
+2. Snapshot rows 26 and 27 MUST each equal the blank body-row template
+   `║` + 23 spaces + `║` + 56 spaces + `║` (82 cells: the outer frame, the
+   Elements pane interior, the panel separator and the viewport interior). No
+   other content appears in them.
+
+Any other expected difference between the two sizes is a defect in the
+snapshot or in the layout, not in the reference. States that differ from the
+reference by design (open menus, other Action Box states, panel resizing,
+Dark theme) have their own snapshots and are not compared with the reference.
+
+The right end of the MenuBar row shows the window controls `[-] [□] [X]`.
+They are grid cells of the frameless window (minimise, maximise, close) and
+follow the same hit-testing rules as every other control.
+
+## 25.1 Frameless window: move and resize regions
+
+The window has no native decorations (M2.17) and stays movable, resizable,
+minimisable, maximisable and closable from the grid. The binding mechanism is
+`ARCHITECTURE.md` §3.1.1 (*Window move and resize*); this section defines the
+regions and the precedence.
+
+**Resize ring.** The outer frame of the composed grid (`╔ ═ ╗ ║ ╚ ╝` of
+`Interface_Exemple.txt`, plus the junction glyphs `╠ ╣ ╦ ╩` that sit on it) is
+inert chrome: those cells carry no `widget_id`. With the surface `sw × sh`
+physical px and the pointer at `(x, y)` (floored, §3.4), the zones are:
+
+```text
+west   x <  W            east   x >= sw - W
+north  y <  H            south  y >= sh - H
+```
+
+A corner is the intersection of two zones (north-west, north-east, south-west,
+south-east), one cell `W × H` in size; there is no larger corner target. The
+pixels right of or below the last whole cell (§3.1 leftover) belong to the
+east/south zone. All tests are integer comparisons (O(1)).
+
+**Precedence** (first match wins, evaluated on a left-button press):
+
+1. A cell that carries a `widget_id` is a control: it wins, including the
+   window controls `[-] [□] [X]`, menu items and any overlay or popup cell
+   composed over the ring (for example a popup clipped at the grid edge, §29.1,
+   or a surface cropped below the minimum).
+2. A resize zone (above) starts a resize, whether or not a menu or modal
+   overlay is open. Pressing it does not dismiss the overlay.
+3. An inert cell of the MenuBar row (row 1, between the menu items and the
+   window controls) starts a window drag (`drag_window`).
+4. Anything else follows normal routing.
+
+While a resize is in progress no widget receives a pressed state, a drag or a
+release; the resize owns the pointer until it ends. The release that ends it is
+consumed. Maximise/restore stays the `[□]` control; minimise and close are
+unchanged. Resizing is inactive while the window is maximised or fullscreen.
+
+**Result of a resize.** The window size is a whole number of cells, never below
+`82 × 30` (`328k × 270k` px). Dragging west or north keeps the opposite edge
+fixed, including when the minimum is reached. The grid is recomposed from the
+size reported by `Resized`, never from the requested size (§3.1.1).
+
+**Cursor shape (optional).** The implementation MAY set the OS resize cursor
+while the pointer is in a zone. This is an OS cursor shape, not a UI rendering
+effect (`ARCHITECTURE.md` §3.5): it stores no UI state, redraws nothing and
+changes no cell. Pointer motion without a press still changes no cell buffer.
+
+**Manual verification (M2.17, macOS).** The Executor records the result of each
+item in the milestone report: (1) east, south and south-east drags follow the
+pointer and stop at 82 × 30; (2) west, north, north-west, north-east and
+south-west drags keep the opposite edge fixed with no visible jump, flicker or
+drift, at k = 2, 3 and 5, on Retina (k = 2 on the Full HD monitor, with the 8 px
+wide ring as the pointer target); (3) releasing outside the window ends the
+resize; (4) Cmd-Tab during a drag ends it; (5) `[-] [□] [X]`, the MenuBar drag
+and maximise/restore still work; (6) a press on a menu item in row 1 never
+starts a resize. An item that fails is reported as a limitation, not patched
+with unsafe code or a platform workaround.
+
+**Manual verification (M2.17, multi-monitor, macOS).** On the MacBook Air
+Retina display and an external 1920×1080 monitor, the Executor records: (1) the
+View menu preference stays 100% on both and the cells are 20×45 and 8×18 px
+(measured from a snapshot or log of `effective_k`); (2) dragging the window from
+the Retina display to the 1080p monitor and back changes the cell size once,
+with no flicker loop, no repeated resize and no oscillation (the log shows at
+most one transition per move); (3) the window is fully on the 1080p monitor
+after the move, its MenuBar row and `[-] [□] [X]` are reachable, and the grid is
+at least 82 × 30; (4) moving back restores the earlier grid size on the Retina
+display; (5) entering and leaving fullscreen on each monitor re-derives `k`
+without moving the 100% reference; (6) changing the macOS display scale or the
+external monitor resolution re-derives `k`; (7) clicking and menu hit-testing are
+correct immediately after each transition; (8) on the 1920×1080 monitor (`k = 2`,
+8×18 px) text, box-drawing frames, `.`/`,`, `:`/`;`, the `▏` caret and the
+`░ ▒ ▓ █` bars are legible and frames show no gap, judged by eye and recorded
+(ADR 0003, *Open compatibility points* 3). An item that fails is reported as a
+limitation, never patched with unsafe code or a platform workaround.
+
 ---
 
 # 26. Navigation trees
 
-Example:
+The exact reference is the NavigationPanel of `Interface_Exemple.txt`
+(columns 1–25 of rows 5–26, shown here with the panel borders; row 16 and rows
+24–25 are blank panel rows):
 
 ```text
-[-]Features
- ├ □ Sketch_Profile_Ma.
- ├[-] Hub_Features
- │ ├ Extrude_Base
- │ ├ ■ Sketch_Hole
- │ └ Extrude_Cut_Center
- ├ Fillet_Inner
- ├ Chamfer_Edges
- └ Pattern_Circular
+╠═══════════════════════╦
+║[-]Features            ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ├ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ │ ╰╴Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ │ ─────────────────── ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+║                       ║
+╠═══════════════════════╣
+║[-]Elements            ║
+║ ├[-]Solid Bodies(2)   ║
+║ │ ├ ■ Rim_Body        ║
+║ │ ╰╴□ Hub_Body        ║
+║ ├ Surfaces(0)         ║
+║ ╰[+]Construct         ║
+║                       ║
+║                       ║
+╠═══════════════════════╩
 ```
 
 Tree topology uses:
 
 ```text
 ├
-└
+╰╴
 │
 ```
 
-for hierarchy.
+for hierarchy: `├` for a child with following siblings, `╰╴` (two cells) for
+the last child, `│` for a continuing branch. In the Elements tree the last
+top-level entry is `╰[+]` followed directly by the marker, exactly as in the
+reference. `Interface_Exemple.txt` is the more recent reference; the earlier
+`└`-based tree examples in this section were stale and are removed.
+
+The row `│ ─────────────────── ` (row 13 of the reference) is the *playhead
+separator* between two features. It is not a feature and is not selectable.
+
+**Truncated labels.** A label that does not fit its row is shortened to the
+available cell count by keeping its leading characters and replacing the final
+available cell with the single character `…` (U+2026), as in
+`Sketch_Profile_Ma…` (the label occupies the 23-cell panel interior exactly,
+with no cell left before the panel border). One Unicode scalar value is one
+cell; labels are limited to single-cell characters. `…` is also the character
+used in `[Select…       ]`. It is a font glyph (verified present in
+`assets/FiraCode-Regular.ttf`) and belongs to the required atlas set
+(`ARCHITECTURE.md` §3.1, Glyph coverage).
 
 ```text
 [-]
@@ -2024,6 +2385,46 @@ Meaning:
 - `Fully Constrained`: contextual status;
 - `98fps`: current rendering frame rate;
 - `Progress [███░ ] 65%`: current progress state.
+
+**Fixed-width frame-rate field.** The frame rate is a measured integer. Its
+segment is exactly **7 cells** between the two `│` separators and never changes
+width:
+
+The 7 cells are a **3-cell right-aligned numeric field**, then `fps`, then one
+blank cell. The leading blank of the reference ` 98fps ` *is* the field's first
+(padding) position, so no cell is added to the reference row. The field is the
+three cells directly after the left separator, right-aligned, padded on the left
+with spaces (never zeros):
+
+| value | 7 cells (between `│` and `│`) |
+|---|---|
+| 0 | `  0fps ` |
+| 5 | `  5fps ` |
+| 98 | ` 98fps ` (identical to `Interface_Exemple.txt`) |
+| 144 | `144fps ` (the left blank is used by the third digit) |
+| 999 | `999fps ` |
+| > 999 | `999fps ` (saturated, see below) |
+
+Consequences: the separators, `Progress [███░ ] 65%` and the right border stay in
+the same columns for every value from 0 to 999; no adjacent field shifts when
+the digit count changes; at 98 the row equals the reference cell for cell. At
+three digits the field touches the left separator, an accepted consequence of
+keeping the reference width.
+
+**Value rules** (pure composition function; the input is a measured number, not
+a clock read): round to the nearest integer (halves away from zero), a NaN,
+infinite or negative input is shown as `0`, and any value above 999 is shown as
+`999` (saturation: the field never grows to four digits and never shows a `+`,
+`>` or `…`). The digits are always the plain ASCII digits `0`–`9`.
+
+**Other status text.** The segments are composed left to right, joined by
+` │ `. The document name and the contextual status are free text: a different
+length moves the segments after it, and text that would pass the right border is
+clipped whole-cell and never wraps (the §26 ellipsis rule does not apply to the
+status bar). Only the frame-rate field is fixed-width, so the frame rate itself
+never moves another field. The status bar contains no pointer target whose
+position matters to the user; the progress bar is display-only. A snapshot
+comparison with `Interface_Exemple.txt` injects the value `98`.
 
 ---
 
@@ -2088,6 +2489,8 @@ Current menu:
 ╭─View──────────────╮
 │ ◀  Perspective  ▶ │
 │ ◀    Shaded     ▶ │
+│ UI Scale ◀ 100% ▶ │
+│ Theme [ ◐ Light ] │
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
@@ -2117,6 +2520,59 @@ Display-style states:
 ◀   Flat line   ▶
 ```
 
+UI Scale states (`Application_Menu_Bar.txt`):
+
+```text
+│ UI Scale ◀  60% ▶ │
+│ UI Scale ◀  80% ▶ │
+│ UI Scale ◀ 100% ▶ │
+│ UI Scale ◀ 120% ▶ │
+│ UI Scale ◀ 140% ▶ │
+```
+
+`UI Scale` is a cyclic selector (§5.2) over exactly five **preference** values
+(60%, 80%, 100%, 120%, 140%). A percentage is not a fixed physical size: the
+application derives the integer cell size factor `k` automatically for the
+monitor showing the window (`ARCHITECTURE.md` §3.1.1). On the reference display
+the values are 60% = 12×27 px, 80% = 16×36, 100% = 20×45 (default),
+120% = 24×54, 140% = 28×63. On another monitor the same percentage can give a
+smaller cell: 100% is 20×45 on the MacBook Air Retina display and 8×18 (`k = 2`,
+one step smaller) on a Full HD 1920×1080 monitor.
+
+- The row **always shows the stored preference**, never the derived `k`: it reads
+  `100%` on both monitors, and moving the window between monitors never changes
+  the text of the row or the stored preference. The adaptation shows no dialog
+  and no notice.
+- `◀` selects the previous and `▶` the next of the five values, wrapping like
+  every other cyclic selector, and stores it as the new preference. **No value is
+  skipped or hidden**, even when the current monitor clamps several of them to
+  the same cell size: on a 1920×1080 monitor 60/80/100/120% all give 8×18 px and
+  140% gives 12×27, so most steps change the preference and nothing visible. This is intended
+  (`ARCHITECTURE.md` §3.1.1, *Several percentages may share one `k`*).
+- `100%` is the default preference, and the menu opens in Light theme by default.
+- When the cell size changes (a step that changes `effective_k`, or the window
+  moving to another monitor, a resolution or display-scale change, or entering or
+  leaving fullscreen) the whole UI is recomposed in one atomic transition
+  (metrics, glyph atlas, grid, GPU buffers, minimum window size and pointer
+  mapping together); an open menu stays open at its new, recomputed position.
+  Focus, selection and expansion are kept. The pointer does not move, so the
+  control under it is generally a different cell afterwards; a press in progress
+  is cancelled and its release does nothing (`ARCHITECTURE.md` §3.1.1,
+  *Transition*).
+- The automatic part is M2.17 and has no UI; this selector is M2.18 and contains
+  no sizing logic.
+
+Theme states:
+
+```text
+Theme [ ◐ Light ]
+Theme [ ◑ Dark  ]
+```
+
+The bracketed field shows the current theme and is activated to switch to the
+other one. Light is black on white; Dark is white on black
+(`ARCHITECTURE.md` §3.6).
+
 Checkbox entries control visibility.
 
 `[N]ormal to` contains an explicit keyboard mnemonic.
@@ -2129,22 +2585,29 @@ Checkbox entries control visibility.
 
 ## 28.4 Help
 
-Current entries:
+Current popup (`Application_Menu_Bar.txt`):
 
 ```text
-Tutorial
-Docs
-Shortcuts
-Bug
-Update
-About
+╭─Help──────╮
+│ Tutorial  │
+│ Docs      │
+│ Shortcuts │
+│ Bug       │
+│ Update    │
+│ About     │
+╰───────────╯
 ```
+
+The Help popup follows the same fixed-cell conventions as the File and Edit
+popups: a 13-cell frame, one leading space before each entry, and entries padded
+with spaces to the right frame. The reference contains only space characters;
+tab characters MUST NOT appear in any `.txt` reference.
 
 ---
 
 # 29. Command Bar
 
-The Command Bar exposes one Workbench menu and command groups.
+The Command Bar exposes one Workbench menu, one Sketch menu and command groups.
 
 Current workbenches:
 
@@ -2159,6 +2622,19 @@ Animation
 Manufacture
 PLM
 ```
+
+Sketch (`Command_Bar.txt`):
+
+```text
+╭─Sketch─────────╮
+│ [N]ew Sketch   │
+╰────────────────╯
+```
+
+`[N]ew Sketch` is UI-only and mock-only like every command in M2: it performs
+only the existing mock action (closing the popup and any mock state change the
+plan defines). It creates no sketch, no geometry and no feature, and calls
+neither the Model nor BrepKIT. Sketch editing is a later milestone.
 
 Current command groups:
 
@@ -2188,7 +2664,36 @@ visually identifies `E`.
 visually identifies `Mi`.
 
 The ASCII design specifies the mnemonic but does not by itself require a
-particular implementation mechanism for multi-character mnemonics.
+particular implementation mechanism for multi-character mnemonics. A mnemonic
+is scoped to the popup that is open (`[S]` appears in several popups).
+
+## 29.1 Placement of CommandBar popups
+
+The CommandBar popups (Workbench, Sketch, Create, Operate, Pattern, Refine,
+Construct, Inspect) are centred in the grid, not anchored under their header.
+For a popup of `popup_width × popup_height` cells (frame included) in a grid of
+`grid_cols × grid_rows` cells:
+
+```text
+col = floor((grid_cols − popup_width) / 2)
+row = floor((grid_rows − popup_height) / 2)
+```
+
+with integer arithmetic on non-negative values: if a difference is negative the
+coordinate is 0 (the popup is clipped at the right/bottom grid edge, never at
+the left/top edge and never wrapped). The popup size is that of its `.txt`
+reference (for example Workbench 18 × 11, Sketch 18 × 3), unchanged by
+centring. The grid is the whole composed grid (82 × 30 or larger), not the
+viewport region, so the result is stable under panel resizing.
+
+The popup is composed last (foreground), over every other region including the
+Action Box and other overlays, in the same single cell buffer. Modal and
+keyboard routing is unchanged from M2.8/M2.9: cells covered by the popup route
+to the popup; an outside press closes it according to the existing overlay
+rule; Escape closes it; mnemonics and arrow navigation work as for other
+menus. Centring only changes the position, not the routing rules. The
+MenuBar popups (File, Edit, View, Help) are not centred; they keep their
+existing placement under their MenuBar entry.
 
 ---
 
@@ -2317,16 +2822,16 @@ must be replaced by the selected Start Offset branch:
 
 ```text
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 ```
 
 and the base second-side line must be replaced by:
 
 ```text
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Dist  [0.0 mm       ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Dist  [0.0 mm       ☰]│
 ```
 
 The renderer must preserve:
@@ -2392,7 +2897,16 @@ same time.
 ☰
 ```
 
-The palette defines the available visual vocabulary.
+The palette defines the available visual vocabulary. It is not an exhaustive
+list of the characters used by the references: `…` (U+2026), `◐`, `◑`, `╻`, `╹`,
+`×`, `+`, `|` and the ASCII letters are used in the `.txt` files without being
+listed here, and `▏` (the text-editing caret, §5.11) is listed here for M2.23.
+The set of glyphs the renderer must be able to draw (the *required atlas set*)
+is defined by `ARCHITECTURE.md` §3.1 (Glyph coverage) as the union of printable
+ASCII and every character occurring in `docs/ui_design/*.txt`, plus `▏`. The
+atlas holds exactly that set, built once per `k`; any other character is drawn
+as `?` and nothing is added at run time. Adding a character to a `.txt` reference
+therefore adds it to the required set (and the font-coverage test must pass).
 
 A character does not receive a universal interaction merely because it appears
 in this file.
@@ -2490,7 +3004,7 @@ This remains subject to the O(1) hit-testing rules in `ARCHITECTURE.md`.
 | `Action_Box_Revolve.txt` | Revolve base panels and every currently defined line/branch variant |
 | `Action_Box_Loft.txt` | Loft base panels and every currently defined line/branch variant |
 | `Action_Box_Sweep.txt` | Sweep base panels and every currently defined line/branch variant |
-| `Action_BoxBoolean.txt` | Boolean Add/Cut/Inter panels and line/branch variants |
+| `Action_Box_Boolean.txt` | Boolean Add/Cut/Inter panels and line/branch variants |
 | `Special_ASCII.txt` | visual character palette |
 
 ---
@@ -2528,7 +3042,7 @@ Likewise:
 
 │ ■ Connection                │
 │ │ Start     [Select…       ]│
-│ └ End       [Select…       ]│
+│ ╰╴End       [Select…       ]│
 ```
 
 defines both the collapsed row and the complete expanded branch.

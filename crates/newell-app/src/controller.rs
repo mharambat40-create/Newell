@@ -10,23 +10,35 @@
 //! It contains no `winit` or GPU types, so it is testable without a window or an adapter.
 
 use newell_ui::{
-    CellGrid, GridMetrics, Separator, ShellKey, ShellState, UiError, UiPoint, WidgetId, hit_test,
+    CellGrid, GridMetrics, ResizeZone, Separator, ShellKey, ShellState, UiError, UiPoint,
+    WindowAction, composed_grid_size, hit_test, resize_zone,
 };
+
+/// Who owns a primary-button press (`README_UI.md` §25.1 precedence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// A window control `[-] [□] [X]`.
+    Window(WindowAction),
+    /// A resize zone of the outer frame ring.
+    Resize(ResizeZone),
+    /// Unused MenuBar space: drag the window.
+    Drag,
+    /// A shell control or nothing: normal routing already applied.
+    Shell(Update),
+}
 
 /// What the caller must do after an input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Update {
     /// The grid was recomposed: upload it.
     pub grid: bool,
-    /// The hovered widget changed: send the hover id to the shader.
-    pub hover: bool,
 }
 
 impl Update {
     /// `true` if anything must be uploaded or redrawn.
     #[must_use]
     pub const fn any(self) -> bool {
-        self.grid || self.hover
+        self.grid
     }
 
     /// Both effects of two updates.
@@ -34,8 +46,29 @@ impl Update {
     pub const fn merge(self, other: Self) -> Self {
         Self {
             grid: self.grid || other.grid,
-            hover: self.hover || other.hover,
         }
+    }
+}
+
+/// A scale change prepared by [`ShellController::prepare_metrics`], not yet published.
+#[derive(Debug)]
+pub struct PreparedScale {
+    metrics: GridMetrics,
+    shell: ShellState,
+    grid: CellGrid,
+}
+
+impl PreparedScale {
+    /// The composed grid, to be uploaded with the metrics' atlas.
+    #[must_use]
+    pub const fn grid(&self) -> &CellGrid {
+        &self.grid
+    }
+
+    /// The metrics the grid was composed for.
+    #[must_use]
+    pub const fn metrics(&self) -> GridMetrics {
+        self.metrics
     }
 }
 
@@ -79,19 +112,15 @@ impl ShellController {
         self.metrics
     }
 
-    /// The widget under the pointer, for the shader's hover uniform.
-    #[must_use]
-    pub const fn hovered(&self) -> Option<WidgetId> {
-        self.shell.interaction().hovered
-    }
-
     /// The shell state (read-only).
     #[must_use]
     pub const fn shell(&self) -> &ShellState {
         &self.shell
     }
 
-    /// The pointer moved to `position` (`None`: it left the window).
+    /// The pointer moved to `position` (`None`: it left the window). The position is only
+    /// remembered for the next press and used to continue a drag; motion alone never changes
+    /// the grid (there is no hover).
     pub fn pointer_moved(&mut self, position: Option<UiPoint>) -> Update {
         self.cursor = position;
         let acted = match (self.drag, position) {
@@ -115,12 +144,87 @@ impl ShellController {
     }
 
     /// The window is now `width_px` x `height_px` physical pixels: the shell is re-laid out on
-    /// the whole cells that fit (see [`GridMetrics::grid_size`]). A size that does not change
-    /// the cell grid does nothing.
+    /// the whole cells that fit, never below 82 x 30 (see [`composed_grid_size`]; a smaller
+    /// surface is cropped by the renderer). A size that does not change the cell grid does
+    /// nothing.
     pub fn resize(&mut self, width_px: u32, height_px: u32) -> Update {
-        let (cols, rows) = self.metrics.grid_size(width_px, height_px);
+        let (cols, rows) = composed_grid_size(self.metrics, width_px, height_px);
         let acted = self.shell.resize(cols, rows);
         self.refresh(acted)
+    }
+
+    /// Phase A of a scale change: the shell re-laid out for `metrics` on a surface of
+    /// `width_px` x `height_px`, composed on a copy. Nothing live is touched, so a failure
+    /// leaves this controller exactly as it was.
+    ///
+    /// # Errors
+    /// If the grid cannot be composed.
+    pub fn prepare_metrics(
+        &self,
+        metrics: GridMetrics,
+        width_px: u32,
+        height_px: u32,
+    ) -> Result<PreparedScale, UiError> {
+        let (cols, rows) = composed_grid_size(metrics, width_px, height_px);
+        let mut shell = self.shell.clone();
+        shell.resize(cols, rows);
+        let grid = shell.compose()?;
+        Ok(PreparedScale {
+            metrics,
+            shell,
+            grid,
+        })
+    }
+
+    /// Phase B of a scale change: publishes the prepared metrics, shell and grid together.
+    /// Logical state (focus, selection, expansion, open overlays) lives in the shell and
+    /// survives. The pointer position was reported in the old pixel space and may belong to
+    /// another monitor, so it is forgotten (nothing is synthesised: the next `CursorMoved`
+    /// sets it) and a separator drag is cancelled.
+    pub fn commit_metrics(&mut self, prepared: PreparedScale) -> Update {
+        self.metrics = prepared.metrics;
+        self.shell = prepared.shell;
+        self.grid = prepared.grid;
+        self.cursor = None;
+        self.drag = None;
+        Update { grid: true }
+    }
+
+    /// The primary button was pressed at the last known pointer position on a window whose
+    /// surface is `surface` physical pixels. Precedence: a window control, then (when
+    /// `resizable`) a resize zone on a cell with no widget, then unused MenuBar space, then
+    /// normal shell routing. Only the last case changes shell state.
+    pub fn press(&mut self, surface: (u32, u32), resizable: bool) -> Press {
+        let Some(point) = self.cursor else {
+            return Press::Shell(self.pointer_pressed());
+        };
+        let hit = hit_test(point, self.metrics, &self.grid);
+        let id = hit.and_then(|h| h.widget_id);
+        if let Some(action) = id.and_then(ShellState::window_action) {
+            return Press::Window(action);
+        }
+        if id.is_none() && resizable {
+            if let Some(zone) = resize_zone(point, surface, self.metrics) {
+                return Press::Resize(zone);
+            }
+        }
+        if hit.is_some_and(|h| self.shell.window_drag_at(h.col, h.row, &self.grid)) {
+            return Press::Drag;
+        }
+        Press::Shell(self.pointer_pressed())
+    }
+
+    /// The window control under the last known pointer position, if any.
+    #[must_use]
+    pub fn window_control_at_cursor(&self) -> Option<WindowAction> {
+        let hit = hit_test(self.cursor?, self.metrics, &self.grid)?;
+        hit.widget_id.and_then(ShellState::window_action)
+    }
+
+    /// The pointer position last reported, in physical pixels of the window.
+    #[must_use]
+    pub const fn cursor(&self) -> Option<UiPoint> {
+        self.cursor
     }
 
     /// The primary button was pressed at the last known pointer position.
@@ -142,8 +246,7 @@ impl ShellController {
         self.refresh(acted)
     }
 
-    /// Recomposes after an input that acted, then re-resolves hover: the cells under a
-    /// stationary pointer may have a new owner.
+    /// Recomposes after an input that acted.
     fn refresh(&mut self, acted: bool) -> Update {
         let mut update = Update::default();
         if acted {
@@ -152,14 +255,6 @@ impl ShellController {
                 update.grid = true;
             }
         }
-        update.hover = self.resolve_hover();
         update
-    }
-
-    fn resolve_hover(&mut self) -> bool {
-        let hit = self
-            .cursor
-            .and_then(|p| hit_test(p, self.metrics, &self.grid));
-        self.shell.pointer_moved(hit)
     }
 }

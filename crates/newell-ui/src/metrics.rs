@@ -8,9 +8,19 @@
 
 use crate::{MAX_CELLS, UiError};
 
+/// Default cell scale `k`: 20 x 45 physical pixels (`ARCHITECTURE.md` §3.1).
+pub const DEFAULT_K: u32 = 5;
+
+/// Cell width in pixels per unit of `k`.
+const WIDTH_PER_K: u32 = 4;
+/// Cell height in pixels per unit of `k`.
+const HEIGHT_PER_K: u32 = 9;
+
 /// Validated pixel size of one grid cell. Both dimensions are non-zero.
 ///
-/// The 3:5 width:height ratio is a design target and is not enforced here.
+/// Production metrics come from [`GridMetrics::from_k`]: `W = 4k`, `H = 9k`, exactly 4:9
+/// (`ARCHITECTURE.md` §3.1). [`GridMetrics::new`] accepts any non-zero size so that pure layout
+/// and hit-testing arithmetic can be tested with other ratios.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridMetrics {
     cell_width_px: u32,
@@ -18,6 +28,20 @@ pub struct GridMetrics {
 }
 
 impl GridMetrics {
+    /// The 4:9 cell of scale `k`: `4k` x `9k` physical pixels.
+    ///
+    /// # Errors
+    /// Returns [`UiError::InvalidMetrics`] if `k` is zero or the size overflows `u32`.
+    pub const fn from_k(k: u32) -> Result<Self, UiError> {
+        match (k.checked_mul(WIDTH_PER_K), k.checked_mul(HEIGHT_PER_K)) {
+            (Some(w), Some(h)) => Self::new(w, h),
+            _ => Err(UiError::InvalidMetrics {
+                width_px: 0,
+                height_px: 0,
+            }),
+        }
+    }
+
     /// # Errors
     /// Returns [`UiError::InvalidMetrics`] if either dimension is zero.
     pub const fn new(cell_width_px: u32, cell_height_px: u32) -> Result<Self, UiError> {
@@ -117,7 +141,29 @@ mod tests {
     }
 
     #[test]
-    fn non_3_5_ratio_accepted() {
+    fn any_ratio_accepted_by_new() {
         assert!(GridMetrics::new(1, 1).is_ok());
+    }
+
+    #[test]
+    fn from_k_is_exactly_four_by_nine() {
+        for (k, w, h) in [
+            (3, 12, 27),
+            (4, 16, 36),
+            (5, 20, 45),
+            (6, 24, 54),
+            (7, 28, 63),
+        ] {
+            let m = GridMetrics::from_k(k).unwrap();
+            assert_eq!((m.cell_width_px(), m.cell_height_px()), (w, h), "k = {k}");
+            assert_eq!(m.cell_width_px() * 9, m.cell_height_px() * 4);
+        }
+        assert_eq!(GridMetrics::from_k(DEFAULT_K), GridMetrics::new(20, 45));
+    }
+
+    #[test]
+    fn from_k_rejects_zero_and_overflow() {
+        assert!(GridMetrics::from_k(0).is_err());
+        assert!(GridMetrics::from_k(u32::MAX).is_err());
     }
 }

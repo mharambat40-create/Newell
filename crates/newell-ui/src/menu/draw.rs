@@ -191,7 +191,11 @@ pub fn draw_menu_popup(
                 canvas.text(1, 0, item.label, style, Some(id));
             }
             MenuEntry::Separator => {
-                let sep = cell(CellContent::Glyph('─'), ctx.styles.muted, Some(ids.popup()));
+                let sep = cell(
+                    CellContent::Glyph('─'),
+                    ctx.styles.normal,
+                    Some(ids.popup()),
+                );
                 canvas.fill(0, canvas.width(), 0, sep);
             }
         }

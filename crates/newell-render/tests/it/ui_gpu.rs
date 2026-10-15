@@ -8,15 +8,42 @@
 // Test helpers call `unwrap` for clear failure messages. The `clippy.toml` allowance only covers `#[test]` bodies.
 #![allow(clippy::unwrap_used)]
 
-use newell_render::ui::{UiOverlay, resolve_style};
-use newell_render::{GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, GlyphAtlas, load_font};
-use newell_ui::{Cell, CellContent, CellGrid, GridMetrics, StyleId, WidgetId, demo_grid};
+use newell_render::ui::{Theme, UiOverlay};
+use newell_render::{GlyphAtlas, load_font};
+use newell_ui::{Cell, CellContent, CellGrid, DEFAULT_K, GridMetrics, StyleId, demo_grid};
 
 const FONT_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/FiraCode-Regular.ttf"
 );
-const BACKGROUND: [u8; 4] = [20, 20, 23, 255];
+
+fn metrics() -> GridMetrics {
+    GridMetrics::from_k(DEFAULT_K).unwrap()
+}
+
+/// The cell size in physical pixels, from the one metrics value.
+fn cell_size() -> (u32, u32) {
+    let m = metrics();
+    (m.cell_width_px(), m.cell_height_px())
+}
+
+/// Frame produced by [`render`]: width, height, RGBA8 pixels, draw calls.
+type Frame = (u32, u32, Vec<u8>, u32);
+
+fn gray(c: f32) -> u8 {
+    (c * 255.0).round() as u8
+}
+
+/// Opaque RGBA of the theme background / foreground.
+fn background(theme: Theme) -> [u8; 4] {
+    let [v, ..] = theme.background().map(gray);
+    [v, v, v, 255]
+}
+
+fn foreground(theme: Theme) -> [u8; 4] {
+    let [v, ..] = theme.foreground().map(gray);
+    [v, v, v, 255]
+}
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     use std::sync::Arc;
@@ -40,12 +67,19 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 
 /// Renders the demo grid offscreen through `UiOverlay`; returns (width, height, RGBA8 rows, draw calls).
 fn render_demo() -> (u32, u32, Vec<u8>, u32) {
-    render(&demo_grid().unwrap(), &[None]).pop().unwrap()
+    render(&demo_grid().unwrap(), &[Theme::Dark]).pop().unwrap()
 }
 
-/// Renders `grid` once per entry of `hovers` with the same overlay, changing only the hovered
-/// widget between frames (no `set_grid` in between).
-fn render(grid: &CellGrid, hovers: &[Option<WidgetId>]) -> Vec<(u32, u32, Vec<u8>, u32)> {
+/// Renders `grid` once per entry of `themes` with the same overlay, changing only the theme
+/// between frames (no `set_grid` in between). The frame is cleared to the theme background,
+/// as the renderer does.
+fn render(grid: &CellGrid, themes: &[Theme]) -> Vec<Frame> {
+    render_in(grid, themes, None)
+}
+
+/// As [`render`], into a `surface` of `(width, height)` pixels instead of the grid's own size
+/// (a smaller one crops the grid).
+fn render_in(grid: &CellGrid, themes: &[Theme], surface: Option<(u32, u32)>) -> Vec<Frame> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter =
         block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
@@ -53,25 +87,19 @@ fn render(grid: &CellGrid, hovers: &[Option<WidgetId>]) -> Vec<(u32, u32, Vec<u8
         block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
 
     let font = load_font(std::fs::read(FONT_PATH).unwrap()).unwrap();
-    let (width, height) = (
-        grid.cols() * GLYPH_CELL_WIDTH,
-        grid.rows() * GLYPH_CELL_HEIGHT,
-    );
+    let (cell_w, cell_h) = cell_size();
+    let (width, height) = surface.unwrap_or((grid.cols() * cell_w, grid.rows() * cell_h));
     let format = wgpu::TextureFormat::Rgba8Unorm;
 
-    let mut overlay = UiOverlay::new(&device, &queue, format, GlyphAtlas::build(&font).unwrap());
-    overlay.set_grid(
-        &device,
-        &queue,
-        grid,
-        GridMetrics::new(GLYPH_CELL_WIDTH, GLYPH_CELL_HEIGHT).unwrap(),
-    );
+    let atlas = GlyphAtlas::build(&font, metrics()).unwrap();
+    let mut overlay = UiOverlay::new(&device, &queue, format, atlas);
+    overlay.set_grid(&device, &queue, grid);
     overlay.set_viewport(&queue, width, height);
 
-    hovers
+    themes
         .iter()
-        .map(|&hover| {
-            overlay.set_hovered(&queue, hover);
+        .map(|&theme| {
+            overlay.set_theme(&queue, theme);
             let target = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
@@ -98,7 +126,7 @@ fn render(grid: &CellGrid, hovers: &[Option<WidgetId>]) -> Vec<(u32, u32, Vec<u8
 
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            let [r, g, b, a] = BACKGROUND.map(|c| f64::from(c) / 255.0);
+            let [r, g, b, a] = background(theme).map(|c| f64::from(c) / 255.0);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -157,7 +185,10 @@ fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 #[test]
 #[ignore = "needs a GPU"]
 fn demo_grid_renders_with_one_draw_call() {
+    let (cell_w, cell_h) = cell_size();
+    let theme = Theme::Dark;
     let (width, height, pixels, draws) = render_demo();
+    let (bg, fg) = (background(theme), foreground(theme));
     assert_eq!(draws, 1, "the whole overlay is one draw call");
 
     if let Ok(path) = std::env::var("NEWELL_UI_DUMP") {
@@ -168,33 +199,32 @@ fn demo_grid_renders_with_one_draw_call() {
         std::fs::write(path, ppm).unwrap();
     }
 
-    // 1:1 sampling: every pixel is exactly the atlas coverage blended over the background. This
-    // rules out bleed from neighbouring slots and ink outside the cell.
-    let atlas = GlyphAtlas::build(&load_font(std::fs::read(FONT_PATH).unwrap()).unwrap()).unwrap();
+    // 1:1 sampling: every pixel is exactly the atlas coverage blended between the two theme
+    // colours, whatever the cell's style. This rules out bleed from neighbouring slots, ink
+    // outside the cell and any colour other than the pair.
+    let atlas = GlyphAtlas::build(
+        &load_font(std::fs::read(FONT_PATH).unwrap()).unwrap(),
+        metrics(),
+    )
+    .unwrap();
     let grid = demo_grid().unwrap();
     for row in 0..grid.rows() {
         for col in 0..grid.cols() {
             let cell = grid.get(col, row).unwrap();
-            let color = resolve_style(cell.style);
+            let (face, back) = (fg, bg);
             let rect = match cell.content {
                 newell_ui::CellContent::Glyph(ch) => atlas.get(ch).map(|g| g.rect),
                 newell_ui::CellContent::Empty => None,
             };
-            for y in 0..GLYPH_CELL_HEIGHT {
-                for x in 0..GLYPH_CELL_WIDTH {
+            for y in 0..cell_h {
+                for x in 0..cell_w {
                     let cov = rect.map_or(0, |r| {
                         atlas.coverage()[((r.y + y) * atlas.width() + r.x + x) as usize]
                     });
-                    let got = pixel(
-                        &pixels,
-                        width,
-                        col * GLYPH_CELL_WIDTH + x,
-                        row * GLYPH_CELL_HEIGHT + y,
-                    );
+                    let got = pixel(&pixels, width, col * cell_w + x, row * cell_h + y);
                     for c in 0..3 {
-                        let expect = f32::from(BACKGROUND[c])
-                            + (f32::from(color[c]) - f32::from(BACKGROUND[c])) * f32::from(cov)
-                                / 255.0;
+                        let expect = f32::from(back[c])
+                            + (f32::from(face[c]) - f32::from(back[c])) * f32::from(cov) / 255.0;
                         assert!(
                             (f32::from(got[c]) - expect).abs() <= 2.0,
                             "cell ({col},{row}) px ({x},{y}) ch {c}: got {} expected {expect}",
@@ -206,222 +236,259 @@ fn demo_grid_renders_with_one_draw_call() {
         }
     }
 
-    let cell = |col: u32, row: u32| (col * GLYPH_CELL_WIDTH, row * GLYPH_CELL_HEIGHT);
+    let cell = |col: u32, row: u32| (col * cell_w, row * cell_h);
     // An empty cell stays background (transparent handling), a glyph cell has ink.
     let (ex, ey) = cell(47, 16);
-    for y in 0..GLYPH_CELL_HEIGHT {
-        for x in 0..GLYPH_CELL_WIDTH {
-            assert_eq!(pixel(&pixels, width, ex + x, ey + y), BACKGROUND);
+    for y in 0..cell_h {
+        for x in 0..cell_w {
+            assert_eq!(pixel(&pixels, width, ex + x, ey + y), bg);
         }
     }
     let (nx, ny) = cell(0, 0);
-    let lit = (0..GLYPH_CELL_HEIGHT)
-        .flat_map(|y| (0..GLYPH_CELL_WIDTH).map(move |x| (x, y)))
-        .filter(|&(x, y)| pixel(&pixels, width, nx + x, ny + y) != BACKGROUND)
+    let lit = (0..cell_h)
+        .flat_map(|y| (0..cell_w).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(&pixels, width, nx + x, ny + y) != bg)
         .count();
     assert!(lit > 20, "'N' should cover pixels, got {lit}");
 
     // Horizontal box strokes of adjacent cells (row 16, cols 1 and 2) join across the cell boundary.
     let (bx, by) = cell(1, 16);
     let mut stroke_rows = 0;
-    for y in 0..GLYPH_CELL_HEIGHT {
-        let left = pixel(&pixels, width, bx + GLYPH_CELL_WIDTH - 1, by + y);
-        let right = pixel(&pixels, width, bx + GLYPH_CELL_WIDTH, by + y);
+    for y in 0..cell_h {
+        let left = pixel(&pixels, width, bx + cell_w - 1, by + y);
+        let right = pixel(&pixels, width, bx + cell_w, by + y);
         assert_eq!(left, right, "gap at stroke row {y}");
-        stroke_rows += usize::from(left != BACKGROUND);
+        stroke_rows += usize::from(left != bg);
     }
     assert!(stroke_rows > 0, "═ should have ink");
 }
 
-fn hover_grid() -> CellGrid {
-    // Row 0: "Btn" owned by widget 1 (cols 1..4, col 0 is an owned empty cell), then widget 2.
+/// A grid exercising every style slot and empty cells.
+fn style_grid() -> CellGrid {
     let mut grid = CellGrid::new(8, 1).unwrap();
-    for (col, ch, id) in [
-        (0, None, 1),
-        (1, Some('B'), 1),
-        (2, Some('t'), 1),
-        (3, Some('n'), 1),
-        (5, Some('X'), 2),
+    for (col, ch, style) in [
+        (0, Some('B'), 0),
+        (1, Some('t'), 1),
+        (2, Some('n'), 2),
+        (3, Some('X'), 3),
+        (4, None, 1),
+        (5, None, 0),
+        (6, Some('█'), 3),
+        (7, Some('Y'), u16::MAX),
     ] {
         *grid.get_mut(col, 0).unwrap() = Cell {
             content: ch.map_or(CellContent::Empty, CellContent::Glyph),
-            style: StyleId::new(2), // dim, so white hover text is clearly different
-            widget_id: Some(WidgetId::new(id)),
+            style: StyleId::new(style),
+            widget_id: None,
             shared_border: None,
         };
     }
     grid
 }
 
-fn cell_pixels_at(frame: &(u32, u32, Vec<u8>, u32), col: u32, row: u32) -> Vec<[u8; 4]> {
+fn cell_pixels(frame: &Frame, col: u32) -> Vec<[u8; 4]> {
     let (width, _, pixels, _) = frame;
-    (0..GLYPH_CELL_HEIGHT)
-        .flat_map(|y| (0..GLYPH_CELL_WIDTH).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            pixel(
-                pixels,
-                *width,
-                col * GLYPH_CELL_WIDTH + x,
-                row * GLYPH_CELL_HEIGHT + y,
-            )
-        })
+    let (cell_w, cell_h) = cell_size();
+    (0..cell_h)
+        .flat_map(|y| (0..cell_w).map(move |x| (x, y)))
+        .map(|(x, y)| pixel(pixels, *width, col * cell_w + x, y))
         .collect()
 }
 
-fn cell_pixels(frame: &(u32, u32, Vec<u8>, u32), col: u32) -> Vec<[u8; 4]> {
-    cell_pixels_at(frame, col, 0)
-}
-
-/// Manual: `cargo test -p newell-render --test it hover -- --ignored`.
+/// Manual: `cargo test -p newell-render --test it monochrome -- --ignored`.
+/// Every pixel is a grey level (R = G = B, opaque): only black, white and the anti-aliased
+/// blend between them reach the screen, in both themes and for every style slot.
 #[test]
 #[ignore = "needs a GPU"]
-fn hover_is_shader_side_and_changes_only_the_hovered_widget() {
-    let frames = render(
-        &hover_grid(),
-        &[None, Some(WidgetId::new(1)), Some(WidgetId::new(99)), None],
-    );
-    assert!(frames.iter().all(|f| f.3 == 1), "still one draw call");
-    let (normal, hover1, nobody, back) = (&frames[0], &frames[1], &frames[2], &frames[3]);
-
-    // Unknown hovered ID and clearing hover both reproduce the normal frame exactly.
-    assert_eq!(nobody.2, normal.2);
-    assert_eq!(back.2, normal.2);
-
-    // Widget 1 text turns brighter; widget 2 and empty cells are untouched.
-    assert_ne!(
-        cell_pixels(hover1, 1),
-        cell_pixels(normal, 1),
-        "hovered text"
-    );
-    assert_eq!(
-        cell_pixels(hover1, 5),
-        cell_pixels(normal, 5),
-        "other widget"
-    );
-    assert_eq!(
-        cell_pixels(hover1, 7),
-        cell_pixels(normal, 7),
-        "unowned cell"
-    );
-    let max =
-        |f: &(u32, u32, Vec<u8>, u32), col| cell_pixels(f, col).iter().map(|p| p[0]).max().unwrap();
-    assert!(max(hover1, 1) > max(normal, 1));
-
-    // Left-border stripe: first cell of widget 1 (an empty glyph cell) gets exactly its leftmost
-    // pixel column painted; the following cells of the same widget get no stripe.
-    let stripe = cell_pixels(hover1, 0);
-    for (i, px) in stripe.iter().enumerate() {
-        let x = i as u32 % GLYPH_CELL_WIDTH;
-        assert_eq!(*px != BACKGROUND, x == 0, "stripe pixel {i}");
-    }
-    assert!(cell_pixels(normal, 0).iter().all(|p| *p == BACKGROUND));
-    let second = cell_pixels(hover1, 2);
-    assert_ne!(second, cell_pixels(normal, 2)); // text is white...
-    let lit_in_column_0 = (0..GLYPH_CELL_HEIGHT)
-        .filter(|y| second[(y * GLYPH_CELL_WIDTH) as usize] != BACKGROUND)
-        .count();
-    // ...but an interior cell has no full-height stripe.
-    assert!(lit_in_column_0 < GLYPH_CELL_HEIGHT as usize);
-}
-
-/// Manual: `cargo test -p newell-render --test it hover -- --ignored`.
-/// `WidgetId(0)` and `WidgetId(u32::MAX)` are ordinary IDs: the presence flag, not the value,
-/// decides whether the shader treats a cell as owned.
-#[test]
-#[ignore = "needs a GPU"]
-fn hover_works_for_extreme_widget_ids() {
-    let mut grid = CellGrid::new(5, 1).unwrap();
-    for (col, ch, id) in [(0, 'B', 0), (2, 'X', u32::MAX), (4, 'Y', 1)] {
-        *grid.get_mut(col, 0).unwrap() = Cell {
-            content: CellContent::Glyph(ch),
-            style: StyleId::new(2),
-            widget_id: Some(WidgetId::new(id)),
-            shared_border: None,
-        };
-    }
-    let frames = render(
-        &grid,
-        &[
-            None,
-            Some(WidgetId::new(0)),
-            Some(WidgetId::new(u32::MAX)),
-            None,
-        ],
-    );
-    assert!(frames.iter().all(|f| f.3 == 1), "still one draw call");
-    let (normal, hover_zero, hover_max, cleared) = (&frames[0], &frames[1], &frames[2], &frames[3]);
-    assert_eq!(cleared.2, normal.2);
-
-    assert_ne!(
-        cell_pixels(hover_zero, 0),
-        cell_pixels(normal, 0),
-        "id 0 hovered"
-    );
-    assert_eq!(
-        cell_pixels(hover_zero, 2),
-        cell_pixels(normal, 2),
-        "id MAX untouched"
-    );
-    assert_eq!(
-        cell_pixels(hover_zero, 4),
-        cell_pixels(normal, 4),
-        "id 1 untouched"
-    );
-
-    assert_ne!(
-        cell_pixels(hover_max, 2),
-        cell_pixels(normal, 2),
-        "id MAX hovered"
-    );
-    assert_eq!(
-        cell_pixels(hover_max, 0),
-        cell_pixels(normal, 0),
-        "id 0 untouched"
-    );
-    assert_eq!(
-        cell_pixels(hover_max, 4),
-        cell_pixels(normal, 4),
-        "id 1 untouched"
-    );
-}
-
-/// Manual: `cargo test -p newell-render --test it hover -- --ignored`.
-/// A widget spanning several rows gets its left-edge stripe once per row, and the first cell of a
-/// row is an edge even when the cell before it (end of the previous row) has the same owner.
-#[test]
-#[ignore = "needs a GPU"]
-fn hover_left_edge_stripe_is_per_row() {
-    let mut grid = CellGrid::new(3, 2).unwrap();
-    for row in 0..2 {
-        for col in 0..3 {
-            *grid.get_mut(col, row).unwrap() = Cell {
-                content: CellContent::Empty,
-                style: StyleId::DEFAULT,
-                widget_id: Some(WidgetId::new(1)),
-                shared_border: None,
-            };
+fn monochrome_output_has_no_colour_in_both_themes() {
+    for grid in [style_grid(), demo_grid().unwrap()] {
+        let frames = render(&grid, &[Theme::Light, Theme::Dark]);
+        assert!(frames.iter().all(|f| f.3 == 1), "still one draw call");
+        for frame in &frames {
+            for px in frame.2.chunks(4) {
+                assert!(px[0] == px[1] && px[1] == px[2] && px[3] == 255, "{px:?}");
+            }
         }
     }
-    let frames = render(&grid, &[None, Some(WidgetId::new(1))]);
-    let (normal, hover) = (&frames[0], &frames[1]);
-    assert!(frames.iter().all(|f| f.3 == 1), "still one draw call");
+}
 
-    for row in 0..2 {
-        for col in 0..3 {
-            let px = cell_pixels_at(hover, col, row);
-            assert!(
-                cell_pixels_at(normal, col, row)
-                    .iter()
-                    .all(|p| *p == BACKGROUND)
-            );
-            for (i, p) in px.iter().enumerate() {
-                let x = i as u32 % GLYPH_CELL_WIDTH;
-                assert_eq!(
-                    *p != BACKGROUND,
-                    col == 0 && x == 0,
-                    "cell ({col},{row}) pixel {i}"
+/// Manual: `cargo test -p newell-render --test it theme -- --ignored`.
+/// Switching theme only exchanges foreground and background: the Light frame is the exact
+/// inverse of the Dark frame, with no grid upload in between.
+#[test]
+#[ignore = "needs a GPU"]
+fn light_theme_is_the_exact_inverse_of_dark() {
+    for grid in [style_grid(), demo_grid().unwrap()] {
+        let frames = render(&grid, &[Theme::Light, Theme::Dark, Theme::Light]);
+        let (light, dark, again) = (&frames[0], &frames[1], &frames[2]);
+        assert_eq!(light.2, again.2, "theme switching is reversible");
+        for (l, d) in light.2.chunks(4).zip(dark.2.chunks(4)) {
+            for c in 0..3 {
+                assert!(
+                    (i16::from(l[c]) + i16::from(d[c]) - 255).abs() <= 2,
+                    "light {l:?} dark {d:?}"
                 );
             }
         }
+    }
+}
+
+/// Manual: `cargo test -p newell-render --test it state_styles -- --ignored`.
+/// Styles never reach the GPU: the same glyphs with every style slot render identically, and
+/// empty cells stay at the background, so state is carried by glyph structure only.
+#[test]
+#[ignore = "needs a GPU"]
+fn style_slots_do_not_change_the_rendering() {
+    let styled = style_grid();
+    let mut plain = styled.clone();
+    for col in 0..plain.cols() {
+        plain.get_mut(col, 0).unwrap().style = StyleId::DEFAULT;
+    }
+    for theme in [Theme::Light, Theme::Dark] {
+        let a = render(&styled, &[theme]).pop().unwrap();
+        let b = render(&plain, &[theme]).pop().unwrap();
+        assert_eq!(a.2, b.2);
+        let bg = background(theme);
+        assert!(cell_pixels(&a, 4).iter().all(|p| *p == bg), "empty cell");
+        assert!(cell_pixels(&a, 5).iter().all(|p| *p == bg), "empty cell");
+        assert!(cell_pixels(&a, 1).iter().any(|p| *p != bg), "glyph has ink");
+    }
+}
+
+/// Manual: `cargo test -p newell-render --test it exact_colours -- --ignored`.
+/// Light is exactly black on white and Dark exactly white on black: an empty cell is the pure
+/// background, the interior of a full block is the pure foreground, nothing else is needed.
+#[test]
+#[ignore = "needs a GPU"]
+fn exact_colours_in_both_themes() {
+    let mut grid = CellGrid::new(2, 1).unwrap();
+    grid.get_mut(0, 0).unwrap().content = CellContent::Glyph('█');
+    let frames = render(&grid, &[Theme::Light, Theme::Dark]);
+    for (frame, (fg, bg)) in frames.iter().zip([
+        ([0, 0, 0, 255], [255, 255, 255, 255]),
+        ([255; 4], [0, 0, 0, 255]),
+    ]) {
+        let (_, cell_h) = cell_size();
+        // Rows well inside the line box of the block (top = k div 2, L = 8k).
+        let pixels = cell_pixels(frame, 0);
+        let (cell_w, _) = cell_size();
+        let inside = |x: u32, y: u32| pixels[(y * cell_w + x) as usize];
+        assert_eq!(inside(cell_w / 2, cell_h / 2), fg);
+        assert!(cell_pixels(frame, 1).iter().all(|p| *p == bg));
+    }
+    assert_eq!(background(Theme::default()), [255; 4]);
+    assert_eq!(foreground(Theme::default()), [0, 0, 0, 255]);
+}
+
+/// Manual: `cargo test -p newell-render --test it cropped -- --ignored`.
+/// M2.17: a surface smaller than the composed 82 x 30 grid crops it: no panic, one draw call,
+/// and the visible pixels equal the top-left of the uncropped frame.
+#[test]
+#[ignore = "needs a GPU"]
+fn surface_smaller_than_the_grid_is_cropped_not_scaled() {
+    let grid = demo_grid().unwrap();
+    let (cell_w, cell_h) = cell_size();
+    let full = render(&grid, &[Theme::Dark]).pop().unwrap();
+    let (w, h) = (full.0 / 2 + 3, full.1 / 2 + 5);
+    let cropped = render_in(&grid, &[Theme::Dark], Some((w, h)))
+        .pop()
+        .unwrap();
+    assert_eq!((cropped.0, cropped.1, cropped.3), (w, h, 1));
+    assert!(w > cell_w && h > cell_h);
+    for y in 0..h {
+        for x in 0..w {
+            assert_eq!(
+                pixel(&cropped.2, w, x, y),
+                pixel(&full.2, full.0, x, y),
+                "({x},{y})"
+            );
+        }
+    }
+}
+
+/// Draws `overlay` once into a throw-away target and returns the draw calls recorded.
+fn draw_calls(device: &wgpu::Device, overlay: &UiOverlay, width: u32, height: u32) -> u32 {
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    let draws = overlay.draw(&mut pass);
+    drop(pass);
+    draws
+}
+
+/// The run-time scale change of M2.17: another cell size is activated together with a grid
+/// built for it, atlases are cached per size, and there is still one draw call.
+#[test]
+#[ignore = "needs a GPU"]
+fn overlay_switches_cell_size_at_run_time_and_reuses_atlases() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter =
+        block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+    let (device, queue) =
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    let font = load_font(std::fs::read(FONT_PATH).unwrap()).unwrap();
+    let m5 = GridMetrics::from_k(5).unwrap();
+    let m2 = GridMetrics::from_k(2).unwrap();
+    let grid = demo_grid().unwrap();
+
+    let mut overlay = UiOverlay::new(
+        &device,
+        &queue,
+        wgpu::TextureFormat::Rgba8Unorm,
+        GlyphAtlas::build(&font, m5).unwrap(),
+    );
+    overlay.set_grid(&device, &queue, &grid);
+    overlay.set_viewport(&queue, grid.cols() * 20, grid.rows() * 45);
+    assert_eq!(overlay.cell_size(), (20, 45));
+    assert_eq!(draw_calls(&device, &overlay, 64, 64), 1);
+
+    // An unknown size is refused and nothing changes.
+    assert!(!overlay.activate(&device, &queue, (8, 18), &grid));
+    assert_eq!(overlay.cell_size(), (20, 45));
+
+    // Add the k = 2 atlas: adding does not change what is drawn.
+    overlay.add_atlas(&device, &queue, GlyphAtlas::build(&font, m2).unwrap());
+    assert_eq!(overlay.atlas_count(), 2);
+    assert_eq!(overlay.cell_size(), (20, 45));
+
+    assert!(overlay.activate(&device, &queue, (8, 18), &grid));
+    assert_eq!(overlay.cell_size(), (8, 18));
+    assert_eq!(draw_calls(&device, &overlay, 64, 64), 1);
+
+    // Back to k = 5 and k = 2 again: the cache serves both, nothing is added.
+    for size in [(20, 45), (8, 18), (20, 45)] {
+        assert!(overlay.activate(&device, &queue, size, &grid));
+        overlay.add_atlas(&device, &queue, GlyphAtlas::build(&font, m2).unwrap());
+        assert_eq!(overlay.atlas_count(), 2);
+        assert_eq!(overlay.cell_size(), size);
+        assert_eq!(draw_calls(&device, &overlay, 64, 64), 1);
     }
 }

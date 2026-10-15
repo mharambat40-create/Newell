@@ -41,8 +41,7 @@ pub struct TreeRow<'a> {
 }
 
 /// Draws a tree row on the first row of `rect`; every cell of that row (guides, marker,
-/// label and trailing blanks) is owned by `row.id`, so hover paints one left-edge stripe
-/// at the start of the row.
+/// label and trailing blanks) is owned by `row.id`, so a click anywhere on the row routes to it.
 ///
 /// Layout, matching the reference trees:
 ///
@@ -53,7 +52,7 @@ pub struct TreeRow<'a> {
 ///  │ └ ■ Hub_Body         depth 2, last leaf
 /// ```
 ///
-/// Guides use the muted style; the rest uses the row's style (selected, focused, ...).
+/// The row uses one style (selected, focused, ...).
 /// Content past the rect width is clipped.
 pub fn draw_tree_row(
     grid: &mut CellGrid,
@@ -77,7 +76,7 @@ pub fn draw_tree_row(
             guides.push(' ');
         }
         guides.push(if row.last { '└' } else { '├' });
-        dx = canvas.text(dx, 0, &guides, ctx.styles.muted, id);
+        dx = canvas.text(dx, 0, &guides, ctx.styles.normal, id);
     }
     let marker = match (row.kind, row.state) {
         (TreeNodeKind::Branch, s) if s.expanded => "[-] ",
@@ -205,14 +204,14 @@ mod tests {
         let styles = WidgetStyles::default();
         let mut r = row(TreeNodeKind::Leaf, 1, false, &[], "Sketch");
         let g = draw(&r, &InteractionState::default());
-        assert_eq!(g.get(1, 0).unwrap().style, styles.muted);
+        assert_eq!(g.get(1, 0).unwrap().style, styles.normal);
         assert_eq!(g.get(3, 0).unwrap().style, styles.normal);
         r.state = WidgetState {
             selected: true,
             ..WidgetState::default()
         };
         let g = draw(&r, &InteractionState::default());
-        assert_eq!(g.get(1, 0).unwrap().style, styles.muted);
+        assert_eq!(g.get(1, 0).unwrap().style, styles.normal);
         assert_eq!(g.get(3, 0).unwrap().style, styles.selected);
         assert_eq!(g.get(W - 1, 0).unwrap().style, styles.selected);
         r.state = WidgetState::default();

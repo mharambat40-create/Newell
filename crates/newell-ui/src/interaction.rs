@@ -9,36 +9,22 @@
 //! Plain `Copy` values owned by the Controller. There is no widget object, callback or
 //! registry, and nothing here is stored in the rendered [`crate::CellGrid`].
 
-use crate::{HitTestResult, WidgetId};
+use crate::WidgetId;
 
 /// Transient pointer / keyboard state: at most one widget per role.
 ///
-/// - `hovered`: the widget currently under the pointer, as resolved by [`crate::hit_test()`]
-///   (so shared-border routing is already applied).
 /// - `focused`: the widget that owns keyboard focus.
 /// - `pressed`: the widget currently held down by pointer activation.
 ///
-/// Changing hover never changes the rendered cell grid: it only needs the hovered ID
-/// to reach the shader.
+/// There is no hover state: a pointer position is only used to resolve a press, release,
+/// drag or scroll event (`ARCHITECTURE.md` §3.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InteractionState {
-    pub hovered: Option<WidgetId>,
     pub focused: Option<WidgetId>,
     pub pressed: Option<WidgetId>,
 }
 
 impl InteractionState {
-    /// Sets (or clears, with `None`) hover. Returns `true` if the value changed.
-    pub fn set_hovered(&mut self, widget: Option<WidgetId>) -> bool {
-        replace(&mut self.hovered, widget)
-    }
-
-    /// Updates hover from a pointer hit-test. A pointer outside the grid (`None`) or over a
-    /// cell without an owner clears hover. Returns `true` if the hovered widget changed.
-    pub fn set_hovered_from_hit(&mut self, hit: Option<HitTestResult>) -> bool {
-        self.set_hovered(hit.and_then(|h| h.widget_id))
-    }
-
     /// Sets (or clears, with `None`) keyboard focus. Returns `true` if the value changed.
     pub fn set_focused(&mut self, widget: Option<WidgetId>) -> bool {
         replace(&mut self.focused, widget)
@@ -95,7 +81,6 @@ impl WidgetState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BorderAxis, CellGrid, GridMetrics, SharedBorder, UiPoint, hit_test};
 
     fn id(v: u32) -> WidgetId {
         WidgetId::new(v)
@@ -104,7 +89,7 @@ mod tests {
     #[test]
     fn default_state_is_empty() {
         let s = InteractionState::default();
-        assert_eq!((s.hovered, s.focused, s.pressed), (None, None, None));
+        assert_eq!((s.focused, s.pressed), (None, None));
         assert_eq!(
             WidgetState::default(),
             WidgetState {
@@ -118,26 +103,13 @@ mod tests {
     }
 
     #[test]
-    fn hover_set_clear_reports_change() {
-        let mut s = InteractionState::default();
-        assert!(s.set_hovered(Some(id(1))));
-        assert!(!s.set_hovered(Some(id(1))));
-        assert!(s.set_hovered(Some(id(2))));
-        assert_eq!(s.hovered, Some(id(2)));
-        assert!(s.set_hovered(None));
-        assert!(!s.set_hovered(None));
-        assert_eq!(s.hovered, None);
-    }
-
-    #[test]
-    fn focus_set_clear_is_independent_of_hover() {
+    fn focus_set_clear_reports_change() {
         let mut s = InteractionState::default();
         assert!(s.set_focused(Some(id(5))));
         assert!(!s.set_focused(Some(id(5))));
-        s.set_hovered(Some(id(6)));
-        assert_eq!((s.focused, s.hovered), (Some(id(5)), Some(id(6))));
         assert!(s.set_focused(None));
-        assert_eq!((s.focused, s.hovered), (None, Some(id(6))));
+        assert!(!s.set_focused(None));
+        assert_eq!(s.focused, None);
     }
 
     #[test]
@@ -200,7 +172,6 @@ mod tests {
     fn equality_and_determinism() {
         let build = || {
             let mut s = InteractionState::default();
-            s.set_hovered(Some(id(1)));
             s.set_focused(Some(id(2)));
             s.press(id(1), WidgetState::default());
             s
@@ -209,42 +180,5 @@ mod tests {
         let mut other = build();
         other.set_focused(Some(id(3)));
         assert_ne!(build(), other);
-    }
-
-    fn grid() -> CellGrid {
-        let mut g = CellGrid::new(3, 1).unwrap();
-        g.get_mut(0, 0).unwrap().widget_id = Some(id(10));
-        let c = g.get_mut(1, 0).unwrap();
-        c.widget_id = Some(id(99)); // ignored: shared_border wins
-        c.shared_border = Some(SharedBorder {
-            axis: BorderAxis::Vertical,
-            low: Some(id(10)),
-            high: Some(id(20)),
-        });
-        g
-    }
-
-    #[test]
-    fn hit_result_updates_hover() {
-        let m = GridMetrics::new(6, 10).unwrap();
-        let g = grid();
-        let mut s = InteractionState::default();
-        let at = |x| hit_test(UiPoint { x, y: 0 }, m, &g);
-
-        assert!(s.set_hovered_from_hit(at(1)));
-        assert_eq!(s.hovered, Some(id(10)));
-        // Same widget from a different pixel: no change.
-        assert!(!s.set_hovered_from_hit(at(5)));
-        // Shared border: left half routes to 10, right half to 20 (never 99).
-        assert!(!s.set_hovered_from_hit(at(6)));
-        assert!(s.set_hovered_from_hit(at(9)));
-        assert_eq!(s.hovered, Some(id(20)));
-        // Cell without owner clears hover.
-        assert!(s.set_hovered_from_hit(at(13)));
-        assert_eq!(s.hovered, None);
-        // Outside the grid clears hover too.
-        s.set_hovered(Some(id(10)));
-        assert!(s.set_hovered_from_hit(at(1000)));
-        assert_eq!(s.hovered, None);
     }
 }

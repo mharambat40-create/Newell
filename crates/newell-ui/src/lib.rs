@@ -21,6 +21,7 @@ mod shell;
 mod style;
 mod widget_id;
 mod widgets;
+mod window;
 
 pub use cell::{Cell, CellContent};
 pub use demo::demo_grid;
@@ -38,7 +39,7 @@ pub use menu::{
     MenuEntry, MenuIds, MenuItem, MenuKey, MenuResult, MenuState, MenuTarget, Mnemonic,
     draw_menu_bar, draw_menu_popup, popup_size, title_rect,
 };
-pub use metrics::GridMetrics;
+pub use metrics::{DEFAULT_K, GridMetrics};
 pub use overlays::{
     FormulaEditor, ListItem, ModalKey, ModalLayout, ModalStatus, Overlay, OverlayKind,
     OverlayStack, ScrollList, ScrollState, SelectionPanel, center_modal, compose_overlays,
@@ -52,4 +53,10 @@ pub use widgets::{
     TreeRow, WidgetContext, WidgetStyles, cycle_next, cycle_prev, draw_button, draw_checkbox,
     draw_cyclic, draw_label, draw_numeric_field, draw_segmented, draw_separator, draw_text_field,
     draw_tree_row,
+};
+pub use window::{
+    DEFAULT_SCALE_PERCENT, MAX_K, MAX_REFERENCE_K, MIN_COLS, MIN_K, MIN_ROWS, ResizeSnapshot,
+    ResizeTarget, ResizeZone, SCALE_PERCENTS, ScaleDecision, ScaleMode, ScreenRect, WindowAction,
+    WindowFit, available_height, composed_grid_size, effective_scale, fit_window, k_fit,
+    min_window_size, monitor_reference_scale, resize_target, resize_zone, usable_rect,
 };

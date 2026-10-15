@@ -50,7 +50,7 @@ reasonable solutions exist.
 For UI-related work:
 
 1. Read `ARCHITECTURE.md` first.
-2. Read `docs/ui_design/README.md`.
+2. Read `docs/ui_design/README_UI.md`.
 3. Inspect only the specific ASCII reference files under `docs/ui_design/`
    relevant to the task.
 4. Read the applicable implementation plan under `docs/plans/`.
@@ -58,7 +58,7 @@ For UI-related work:
 Do not rely on the deleted legacy `ui_design.md`.
 
 ASCII mock-ups under `docs/ui_design/` are reference states and interaction
-examples. `docs/ui_design/README.md` defines their shared UI semantics.
+examples. `docs/ui_design/README_UI.md` defines their shared UI semantics.
 
 ## Common Commands
 As an Executor or Auditor, you will use these commands:

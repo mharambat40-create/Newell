@@ -149,6 +149,32 @@ mod tests {
         hit_test(p(x, y), m(), &grid()).unwrap().widget_id
     }
 
+    /// For every cell of a grid, the pixels at its four corners and its centre map back to that
+    /// cell, with the 4:9 metrics every `k` gives (the same W and H the renderer draws with).
+    #[test]
+    fn corners_and_centre_round_trip_at_every_k() {
+        let g = CellGrid::new(7, 5).unwrap();
+        for k in 2..=7 {
+            let m = GridMetrics::from_k(k).unwrap();
+            let (w, h) = (m.cell_width_px(), m.cell_height_px());
+            for (col, row) in (0..g.rows()).flat_map(|r| (0..g.cols()).map(move |c| (c, r))) {
+                let (x0, y0) = (col * w, row * h);
+                for (x, y) in [
+                    (x0, y0),
+                    (x0 + w - 1, y0),
+                    (x0, y0 + h - 1),
+                    (x0 + w - 1, y0 + h - 1),
+                    (x0 + w / 2, y0 + h / 2),
+                ] {
+                    let hit = hit_test(p(x, y), m, &g).unwrap();
+                    assert_eq!((hit.col, hit.row), (col, row), "k = {k} at ({x}, {y})");
+                }
+            }
+            assert!(hit_test(p(g.cols() * w, 0), m, &g).is_none());
+            assert!(hit_test(p(0, g.rows() * h), m, &g).is_none());
+        }
+    }
+
     #[test]
     fn first_pixel_of_first_cell() {
         let r = hit_test(p(0, 0), m(), &grid()).unwrap();

@@ -10,6 +10,8 @@ mod app;
 pub mod controller;
 pub mod input;
 pub mod pacing;
+pub mod scale;
+pub mod window;
 
 /// Fatal application errors. Crate-local by design (no global error type).
 #[derive(Debug, thiserror::Error)]

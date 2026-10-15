@@ -13,8 +13,6 @@ pub mod surface;
 pub mod ui;
 
 pub use error::RenderError;
-pub use glyph_atlas::{
-    GLYPH_CELL_HEIGHT, GLYPH_CELL_WIDTH, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs,
-    load_font,
-};
-pub use renderer::{CLEAR_COLOR, FrameOutcome, Renderer};
+pub use glyph_atlas::{CellLayout, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs, load_font};
+pub use renderer::{FrameOutcome, Renderer};
+pub use ui::Theme;

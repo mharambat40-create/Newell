@@ -11,6 +11,9 @@
 │ Manufacture    │
 │ PLM            │
 ╰────────────────╯
+╭─Sketch─────────╮
+│ [N]ew Sketch   │
+╰────────────────╯
 ╭─Create─────────╮
 │ [E]xtrude      │
 │ [R]evolve      │

@@ -31,13 +31,13 @@
 ╰───────────────────╯
 ◀  Perspective  ▶, ◀ Orthographic  ▶
 ◀    Points     ▶, ◀  Wireframe    ▶, ◀  Hidden line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀   Flat line   ▶
-◀  50% ▶, ◀  75% ▶, ◀ 100% ▶, ◀ 125% ▶, ◀ 150% ▶
+◀  60% ▶, ◀  80% ▶, ◀ 100% ▶, ◀ 120% ▶, ◀ 140% ▶
 [ ◐ Light ], [ ◑ Dark  ]
 ╭─Help──────╮
-│Tutorial	│
-│Docs		│
-│Shortcuts	│
-│Bug		│
-│Update		│
-│About		│
+│ Tutorial  │
+│ Docs      │
+│ Shortcuts │
+│ Bug       │
+│ Update    │
+│ About     │
 ╰───────────╯
