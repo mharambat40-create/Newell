@@ -47,6 +47,13 @@
   panel boundaries with whole-cell snapping.
 - [x] M2.15: Add deterministic UI-state tests and reference cell-buffer
   snapshots for the application shell, menus and Action Panel variants.
+- [ ] M2.16: typography, monochrome themes and hover removal.
+- [ ] M2.17: frameless native application window.
+- [ ] M2.18: Application MenuBar and View settings.
+- [ ] M2.19: CommandBar reference fidelity.
+- [ ] M2.20: NavigationPanel and TreeView fidelity.
+- [ ] M2.21: exact fixed-grid Action Box composition, starting with Extrude.
+- [ ] M2.22: remaining reference Action Boxes (Revolve, Loft, Sweep, Boolean).
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
