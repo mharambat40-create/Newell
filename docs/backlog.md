@@ -54,6 +54,8 @@
 - [ ] M2.20: NavigationPanel and TreeView fidelity.
 - [ ] M2.21: exact fixed-grid Action Box composition, starting with Extrude.
 - [ ] M2.22: remaining reference Action Boxes (Revolve, Loft, Sweep, Boolean).
+- [ ] M2.23: Editable Numeric Fields & FormulaEditor
+- [ ] M2.24: live StatusBar and final M2 reference fidelity.
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
