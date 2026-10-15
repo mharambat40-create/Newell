@@ -8,19 +8,19 @@
 ║ ├[-] Hub_Features     ║                                               │       │║
 ║ │ ├ Extrude_Base      ║                                               ╰───────╯║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Extrude─────┬───────────────╮║
-║ │ └ Extrude_Cut_Center║                         │    Solid    │    Surface    │║
+║ │ ╰╴Extrude_Cut_Center║                         │    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║                         ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ │ ─────────────────── ║                         │  New  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║                         ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
-║ └ Pattern_Circular    ║                         │ Profile     [Select…       ]│║
+║ ╰╴Pattern_Circular    ║                         │ Profile     [Select…       ]│║
 ║                       ║                         │ Extend   ◀     Blind     ▶  │║
 ╠═══════════════════════╣                         │ │ Depth   [+|0.0 mm       ☰]│║
 ║[-]Elements            ║                         │ │ Along     [Select…       ]│║
 ║ ├[-]Solid Bodies(2)   ║                         │ │ □ Starting Offset         │║
-║ │ ├ ■ Rim_Body        ║                         │ └ □ End Offset              │║
-║ │ └ □ Hub_Body        ║                         │ □ Symetric                  │║
+║ │ ├ ■ Rim_Body        ║                         │ ╰╴□ End Offset              │║
+║ │ ╰╴□ Hub_Body        ║                         │ □ Symetric                  │║
 ║ ├ Surfaces(0)         ║                         │ □ Second end position       │║
-║ └[+]Construct         ║                         │─────────────────────────────│║
+║ ╰[+]Construct         ║                         │─────────────────────────────│║
 ║                       ║                         │      OK      │    Cancel    │║
 ║                       ║                         ╰─────────────────────────────╯║
 ╠═══════════════════════╩════════════════════════════════════════════════════════╣
