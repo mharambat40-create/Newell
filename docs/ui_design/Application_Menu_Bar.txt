@@ -19,6 +19,7 @@
 │ ◀  Perspective  ▶ │
 │ ◀    Shaded     ▶ │
 │ UI Scale ◀ 100% ▶ │
+│ Theme [ ◐ Light ] │
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
@@ -28,9 +29,10 @@
 │ Reset Cam         │
 │ Fullscreen        │
 ╰───────────────────╯
-◀  Perspective  ▶ ◀ Orthographic  ▶
-◀    Points     ▶ ◀  Wireframe    ▶ ◀  Hidden line  ▶ ◀  No shading   ▶ ◀    Shaded     ▶ ◀   Flat line   ▶
-◀  50% ▶ ◀  75% ▶ ◀ 100% ▶ ◀ 125% ▶ ◀ 150% ▶
+◀  Perspective  ▶, ◀ Orthographic  ▶
+◀    Points     ▶, ◀  Wireframe    ▶, ◀  Hidden line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀   Flat line   ▶
+◀  50% ▶, ◀  75% ▶, ◀ 100% ▶, ◀ 125% ▶, ◀ 150% ▶
+[ ◐ Light ], [ ◑ Dark  ]
 ╭─Help──────╮
 │Tutorial	│
 │Docs		│
