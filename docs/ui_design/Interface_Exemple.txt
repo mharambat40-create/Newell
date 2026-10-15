@@ -4,7 +4,7 @@
 ║ Workbench │ Sketch │ Create │ Operate │ Pattern │ Refine │ Construct │ Inspect ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
 ║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma.║                                               │       │║
+║ ├ □ Sketch_Profile_Ma…║                                               │       │║
 ║ ├[-] Hub_Features     ║                                               │       │║
 ║ │ ├ Extrude_Base      ║                                               ╰───────╯║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Extrude─────┬───────────────╮║
