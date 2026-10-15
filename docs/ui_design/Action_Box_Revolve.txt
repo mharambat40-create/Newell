@@ -43,61 +43,61 @@ Same for Surfaces
 │ │ Angle   [+|0.0 deg      ☰]│
 │ │ □ Start Offset            │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
 │ □ Full Revolve   ◀ Up to ▶  │
 │ │ Target    [Select…       ]│
 │ │ □ Start Offset            │
 │ │ □ End Offset              │
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
     
 "Start Offset variants"
 │ │ □ Start Offset            │
 
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Angle [+|0.0 deg      ☰]│
+│ │ ╰╴Angle [+|0.0 deg      ☰]│
 
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 1"
 │ │ □ End Offset              │
 
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Angle   [0.0 deg      ☰]│
+│ │ ╰╴Angle   [0.0 deg      ☰]│
 
 │ │ ■ End Offset   ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 2"
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Angle [0.0 deg      ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Angle [0.0 deg      ☰]│
 
-│   └ ■ End Offset ◀ Up to ▶  │
-│     └ Target[Select…       ]│
+│   ╰╴■ End Offset ◀ Up to ▶  │
+│     ╰╴Target[Select…       ]│
 
 "2nd side variants"
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ 2nd side     ◀ Blind ▶  │
-│   └ Angle [+|0.0 deg      ☰]│
+│ ╰╴■ 2nd side     ◀ Blind ▶  │
+│   ╰╴Angle [+|0.0 deg      ☰]│
 
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
 "Symetric variants"
 │ │ □ Symetric                │
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ Symetric                │
+│ ╰╴■ Symetric                │
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
