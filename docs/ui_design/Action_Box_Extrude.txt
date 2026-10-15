@@ -9,7 +9,7 @@
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │─────────────────────────────│
@@ -25,7 +25,7 @@
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │ ■ Merge with all            │
@@ -42,7 +42,7 @@
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
 │ │ □ Starting Offset         │
-│ └ □ End Offset              │
+│ ╰╴□ End Offset              │
 │ □ Symetric                  │
 │ □ Second end position       │
 │ ■ Merge with all            │
@@ -60,38 +60,42 @@ Same for Surfaces
 │ Extend   ◀     Blind     ▶  │
 │ │ Depth   [+|0.0 mm       ☰]│
 │ │ Along     [Select…       ]│
-│ └ □ Starting Offset         │
+│ ╰╴□ Starting Offset         │
 
 │ Extend   ◀     Up to     ▶  │
-│ Selection   [Select…       ]│
-│ □ Offset                    │
+│ │ Selection [Select…       ]│
+│ ╰╴□ Offset                  │
+
+│ Extend   ◀  Through all  ▶  │
+│ │ □ Invert                  │
+│ ╰╴□ Start Offset            │
 
 "Start Offset variants"
 │ │ □ Start Offset            │
 
 │ │ ■ Start Offset ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ Start Offset ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 1"
 │ │ □ End Offset              │
 
 │ │ ■ End Offset   ◀ Blind ▶  │
-│ │ └ Dist  [+|0.0 mm       ☰]│
+│ │ ╰╴Dist  [+|0.0 mm       ☰]│
 
 │ │ ■ End Offset   ◀ Up to ▶  │
-│ │ └ Target  [Select…       ]│
+│ │ ╰╴Target  [Select…       ]│
 
 "End Offset variants 2"
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
 
-│   └ ■ End Offset ◀ Blind ▶  │
-│     └ Dist  [0.0 mm       ☰]│
+│   ╰╴■ End Offset ◀ Blind ▶  │
+│     ╰╴Dist  [0.0 mm       ☰]│
 
-│   └ ■ End Offset ◀ Up to ▶  │
-│     └ Target[Select…       ]│
+│   ╰╴■ End Offset ◀ Up to ▶  │
+│     ╰╴Target[Select…       ]│
 
 "Symetric variants"
 │ □ Symetric                  │
@@ -100,17 +104,22 @@ Same for Surfaces
 │ ■ Symetric                  │
 
 "2nd side variants"
-│ └ □ 2nd side                │
+│ ╰╴□ 2nd side                │
 
-│ └ ■ 2nd side     ◀ Blind ▶  │
-│   └ Depth [+|0.0 mm       ☰]│
+│ ╰╴■ 2nd side     ◀ Blind ▶  │
+│   ╰╴Depth [+|0.0 mm       ☰]│
 
-│ └ ■ 2nd side     ◀ Up to ▶  │
+│ ╰╴■ 2nd side     ◀ Up to ▶  │
 │   │ Target  [Select…       ]│
-│   └ □ End Offset            │
+│   ╰╴□ End Offset            │
+
+"Invert vartiants"
+│ □ Invert                    │
+
+│ ■ Invert                    │
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
