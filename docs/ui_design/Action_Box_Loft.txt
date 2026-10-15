@@ -49,25 +49,25 @@ Same for Surfaces
 │ □ Start type                │
 
 │ ■ Start type   ◀ Normal  ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ Start type   ◀ Tengent ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ Start type   ◀  Match  ▶  │
-│ └ Entity    [Select…       ]│
+│ ╰╴Entity    [Select…       ]│
 
 "End Type variants"
 │ □ End type                  │
 
 │ ■ End type     ◀ Normal  ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ End type     ◀ Tengent ▶  │
-│ └ Magnitude [0.0          ☰]│
+│ ╰╴Magnitude [0.0          ☰]│
 
 │ ■ End type     ◀  Match  ▶  │
-│ └ Entity    [Select…       ]│
+│ ╰╴Entity    [Select…       ]│
 
 "Guide variants"
 │ □ Guide                     │
@@ -84,10 +84,10 @@ Same for Surfaces
 
 │ ■ Connection                │
 │ │ Start     [Select…       ]│
-│ └ End       [Select…       ]│
+│ ╰╴End       [Select…       ]│
 
 "Merge with all variants"
 │ ■ Merge with all            │
 
 │ □ Merge with all            │
-│ └ Targets   [Select…       ]│
+│ ╰╴Targets   [Select…       ]│
