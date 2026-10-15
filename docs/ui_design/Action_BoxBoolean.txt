@@ -32,15 +32,15 @@
 │ □ Offset                    │
 
 │ ■ Offset                    │
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 
 "Offset All variants"
-│ └ ■ Offset all              │
-│   └ Dist  [+|0.0 mm       ☰]│
+│ ╰╴■ Offset all              │
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 
-│ └ □ Offset all              │
-│   └ Faces   [none          ]│
+│ ╰╴□ Offset all              │
+│   ╰╴Faces   [none          ]│
 │     Dist  [+|0.0 mm       ☰]│
 
 "Keep tools variants"
