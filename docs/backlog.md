@@ -48,7 +48,7 @@
   panel boundaries with whole-cell snapping.
 - [x] M2.15: Add deterministic UI-state tests and reference cell-buffer
   snapshots for the application shell, menus and Action Panel variants.
-- [ ] M2.16: typography (4:9 cells, k = 5), monochrome rendering and hover removal.
+- [x] M2.16: typography (4:9 cells, k = 5), monochrome rendering and hover removal.
 - [ ] M2.17: frameless native window and 82 × 30 minimum grid.
 - [ ] M2.18: Application MenuBar, UI Scale (60/80/100/120%) and Light/Dark theme controls.
 - [x] M2.19: CommandBar and centered menus.
@@ -57,15 +57,26 @@
 - [x] M2.22: Revolve, Loft, Sweep and Boolean Action Boxes.
 - [x] M2.23: numeric fields and FormulaEditor.
 - [ ] M2.24: live FPS, progress bar and final UI fidelity.
+  Blocked: FPS and progress are fixed reference values; the interactive
+  progress animation and event-driven scheduling are not implemented.
 - [ ] M2.25 — ASCII Hover Highlight
+  Hover implementation and sampled visual checks pass; final acceptance retains
+  the M2.24 scheduling prerequisite required by the plan.
 
 ### Validation checkpoint — 2026-10-16
 
-All implemented M1/M2 automated checks pass, including 665 standard tests and
-8 GPU tests. M2.19–M2.23 are checked above. M2.16–M2.18 and M2.24–M2.25 have
-passing automated coverage but retain native-window, multi-monitor or visual
-acceptance work; they are not marked fully accepted. See
-[the validation report](validation/M1-M2-2026-10-16.md) for evidence and limits.
+All 665 standard tests and 8 GPU tests pass. These passing tests do not prove
+that every M2 requirement is implemented. Visual checks of the current ASCII
+application confirmed monochrome typography, both themes, parameter/header
+hover, scale preference cycling, maximise/restore and fullscreen round-trip
+on Full HD. M2.16 and M2.19–M2.23 are checked above.
+
+M2.17–M2.18 still require confirmed cross-monitor and native edge-resize
+checks. M2.24 is incomplete: FPS is fixed at 98, progress at 65%, and the
+60 FPS bootstrap pacer remains active. M2.25's sampled hover visuals pass,
+but the plan's M2.24 scheduling prerequisite remains open. See
+[the automated report](validation/M1-M2-2026-10-16.md) and
+[the visual report](validation/M2-visual-2026-10-16.md).
 M3 and later milestones are not implemented and remain unchecked.
 
 ## Milestone 3: Viewport & Kernel Boundary

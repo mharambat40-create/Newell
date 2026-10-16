@@ -1,7 +1,7 @@
 # Newell — Milestone 2 UI Framework Plan
 
 **Milestone:** M2 — ASCII UI Framework & Application Shell  
-**Status:** M2.1–M2.15 complete; M2.16–M2.25 implemented with automated validation; native/visual acceptance remains open (see `docs/validation/M1-M2-2026-10-16.md`).
+**Status:** M2.1–M2.16 and M2.19–M2.23 validated locally; M2.17–M2.18 retain native checks; M2.24 incomplete; M2.25 hover tested with its M2.24 scheduling prerequisite open (see `docs/validation/M2-visual-2026-10-16.md`).
 **Implementation scope:** `newell-ui`, `newell-render`, `newell-app`  
 **Architecture authority:** `ARCHITECTURE.md`
 
