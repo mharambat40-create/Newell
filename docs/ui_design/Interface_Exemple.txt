@@ -1,7 +1,7 @@
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║ File │ Edit │ View │ Help                                          [-] [□] [X] ║
 ╠════════════════════════════════════════════════════════════════════════════════╣
-║ Workbench │ Sketch │ Create │ Operate │ Pattern │ Refine │ Construct │ Inspect ║
+║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Construct │ Utilities  ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
 ║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
 ║ ├ □ Sketch_Profile_Ma…║                                               │       │║
@@ -16,7 +16,7 @@
 ║                       ║                         │ Extend   ◀     Blind     ▶  │║
 ╠═══════════════════════╣                         │ │ Depth   [+|0.0 mm       ☰]│║
 ║[-]Elements            ║                         │ │ Along     [Select…       ]│║
-║ ├[-]Solid Bodies(2)   ║                         │ │ □ Starting Offset         │║
+║ ├[-]Solid Bodies(2)   ║                         │ ╞ □ Starting Offset         ╡║
 ║ │ ├ ■ Rim_Body        ║                         │ ╰╴□ End Offset              │║
 ║ │ ╰╴□ Hub_Body        ║                         │ □ Symetric                  │║
 ║ ├ Surfaces(0)         ║                         │ □ Second end position       │║
