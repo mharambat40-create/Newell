@@ -56,6 +56,7 @@
 - [ ] M2.22: Revolve, Loft, Sweep and Boolean Action Boxes.
 - [ ] M2.23: numeric fields and FormulaEditor.
 - [ ] M2.24: live FPS, progress bar and final UI fidelity.
+- [ ] M2.25 — ASCII Hover Highlight
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
