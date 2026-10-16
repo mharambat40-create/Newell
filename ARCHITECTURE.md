@@ -846,12 +846,65 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 
 - **Pointer routing (unchanged):** The Controller resolves pointer position to a grid cell and `widget_id` via O(1) division (`mouse_x / cell_width`), including Sub-Cell Modulo Logic (§3.4). This applies to click, press, release, drag and scroll. No bounding-box iteration is allowed.
 - **Retained interaction mechanisms:** Hit-testing, clicking, dragging, keyboard focus and navigation, selection, pressed state during a click/drag, disabled state, expansion/checked state and all other non-hover interactions remain fully in force.
-- **Prohibited (hover):**
-  - NO `WidgetState::Hovered` (or any equivalent enum variant, flag or field such as `hovered: Option<WidgetId>`).
-  - NO CPU-side tracking of "the widget currently under an idle pointer", and NO redraw triggered solely by pointer motion over a widget.
-  - NO hover uniform, hover ID, hover flag or other hover-related data passed to the shader, and NO hover-related shader logic.
-  - NO hover visual effect of any kind: brightness change, colour shift, highlight, left-border stripe, underline, inversion, cursor-following effect or tooltip-style reveal.
-  - A pointer position MAY be used only to resolve an actual interaction event (press, release, drag, scroll). Using the OS mouse cursor shape is not a UI rendering effect and is not affected by this section.
+### ASCII Hover Highlight (M2.25)
+
+M2.25 authorizes discrete, text-only hover highlighting.
+
+**Controller**
+- The Controller MAY store `hovered: Option<WidgetId>`.
+- Update it through pointer movement and pointer exit events.
+- Resolve targets through existing O(1) CellGrid hit-testing.
+- At most one WidgetId may be hovered.
+- Request a redraw only when the hovered target changes.
+- Clear hover when the pointer leaves or the target disappears.
+
+**Visual representation**
+- Hover changes only Unicode border characters.
+- No colors, brightness changes, fades or transitions.
+- No hover animations or shader effects.
+- No changes to layout dimensions, spacing or text content.
+- Restore original characters immediately on hover exit.
+
+**Canonical transformations**
+
+Menu row:
+`│ Bridging Curve  │`
+→ `╞ Bridging Curve  ╡`
+
+Parameter:
+`│ │ Along     [Select…       ]│`
+→ `│ ╞ Along     [Select…       ]╡`
+
+Checkbox:
+`│ ╰╴□ End Offset              ╡`
+→ `│ ╘ □ End Offset              ╡`
+
+Button:
+`│      OK      │    Cancel    │`
+→ `╞      OK      ╡    Cancel    │`
+
+**Interaction precedence**
+- Apply the existing pointer and overlay precedence rules.
+- Active window resizing suppresses hover updates.
+- Only the topmost eligible interactive element may be hovered.
+- Open menus and modals prevent hover on obscured elements.
+- Disabled and non-interactive elements never receive hover.
+- Hover never changes click, selection or focus semantics.
+
+**Architectural constraints**
+- Preserve MVC separation.
+- Preserve the flat CellGrid.
+- Preserve O(1) hit-testing.
+- Preserve exactly one batched GPU UI draw call.
+- No retained widget tree.
+- No bounding-box scans.
+- No additional rendering passes.
+
+The M2.24 StatusBar progress animation remains the only
+authorized animation. M2.25 hover is instantaneous and
+does not constitute an animation.
+
+No other hover visual effects are authorized.
 - **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The only approved addition is the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness or any third colour, intensity or alpha level. Inversion is not a state visual; the only foreground/background exchange in the UI is the global theme switch (§3.6). Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
 - **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It is drawn in the monochrome foreground colour as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
 - **Temporary accepted deviation (until M2.21).** The segmented-selector active-segment `║` separators built in M2.7 are not a documented structure. They may remain, unmodified and not extended to any new widget, until M2.21 replaces them with the exact canonical border topology of `docs/ui_design/`. M2.16 does not need to remove them. After M2.21 their presence is a violation of this section.
