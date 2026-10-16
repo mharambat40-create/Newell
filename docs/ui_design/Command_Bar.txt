@@ -1,51 +1,71 @@
 "Command Bar"
 
-╭─Workbench──────╮
-│ Part design    │
-│ Assemblies     │
-│ Mesh           │
-│ Parametric     │
-│ Drawing        │
-│ Simulation     │
-│ Animation      │
-│ Manufacture    │
-│ PLM            │
-╰────────────────╯
-╭─Sketch─────────╮
-│ [N]ew Sketch   │
-╰────────────────╯
-╭─Create─────────╮
-│ [E]xtrude      │
-│ [R]evolve      │
-│ [L]oft         │
-│ [S]weep        │
-╰────────────────╯
-╭─Operate────────╮
-│ [B]oolean      │
-│ [S]plit [F]ace │
-│ [S]plit [B]ody │
-│ [T]ransform    │
-╰────────────────╯
-╭─Pattern────────╮
-│ [Mi]rror       │
-│ [Li]near       │
-│ [Ci]rcular     │
-│ [Cu]rve        │
-╰────────────────╯
-╭─Refine─────────╮
-│ [F]illet       │
-│ [C]hamfer      │
-│ [S]hell        │
-│ [D]raft        │
-╰────────────────╯
-╭─Construct──────╮
-│ [Pl]ane        │
-│ [A]xis         │
-│ [P]oint        │
-╰────────────────╯
-╭─Inspect────────╮
-│ [M]esure       │
-│ [S]plit [V]iew │
-│ Curvature      │
-│ Properties     │
-╰────────────────╯
+ Workbench │ Construct │ Create │ Shape │ Modify │ Pattern │ Construct │ Utils 
+
+╭─Workbench───────╮
+│ Part design     │
+│ Assemblies      │
+│ Mesh            │
+│ Parametric      │
+│ Drawing         │
+│ Simulation      │
+│ Animation       │
+│ Manufacture     │
+│ PLM             │
+╰─────────────────╯
+╭─Datum───────────╮
+│ [S]ketch        │
+│ [Pl]ane         │
+│ [A]xis          │
+│ [P]oint         │
+╰─────────────────╯
+╭─Create──────────╮
+│ [E]xtrude       │
+│ [R]evolve       │
+│ [L]oft          │
+│ [S]weep         │
+│─────────────────│
+│ Hole            │
+│ Thread          │
+│ Thicken         │
+│─────────────────│
+│ Helix           │
+│ Primitive Body  │
+╰─────────────────╯
+╭─Shape───────────╮
+│ Projected Curve │
+│ Bridging Curve  │
+│ Composit Curve  │
+│ Intersect Curve │
+│─────────────────│
+│ Offset Surface  │
+│ Fill Surface    │
+│ Constrained     │
+╰─────────────────╯
+╭─Modify──────────╮
+│ [F]illet        │
+│ [C]hamfer       │
+│ Shell           │
+│ Draft           │
+│ Face Blend      │
+│─────────────────│
+│ Boolean         │
+│ Split Face      │
+│ Split Body      │
+│─────────────────│
+│ Transform       │
+│ Delete Face     │
+│ Move Face       │
+╰─────────────────╯
+╭─Pattern─────────╮
+│ Mirror          │
+│ Linear          │
+│ Circular        │
+│ Curve           │
+╰─────────────────╯
+╭─Utilities───────╮
+│ [M]esure        │
+│ Split View      │
+│ Curvature       │
+│ Properties      │
+╰─────────────────╯
