@@ -855,7 +855,38 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 - **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The only approved addition is the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness or any third colour, intensity or alpha level. Inversion is not a state visual; the only foreground/background exchange in the UI is the global theme switch (§3.6). Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
 - **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It is drawn in the monochrome foreground colour as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
 - **Temporary accepted deviation (until M2.21).** The segmented-selector active-segment `║` separators built in M2.7 are not a documented structure. They may remain, unmodified and not extended to any new widget, until M2.21 replaces them with the exact canonical border topology of `docs/ui_design/`. M2.16 does not need to remove them. After M2.21 their presence is a violation of this section.
-- **No animation:** The CPU MUST NEVER compute fade animations or colour transitions; none are specified.
+- **No animation (M2.24 exception):**
+  The CPU MUST NOT compute fade animations, colour transitions,
+  hover animations or other decorative effects.
+
+  The only approved exception is the M2.24 StatusBar progress animation,
+  as specified in `docs/ui_design/README_UI.md` §27.1.
+
+  - The entire `Progress […] N%` segment is clickable through one
+    stable WidgetId, using existing click activation semantics.
+  - Initial value: 0%.
+  - First click: animate from 0% to 100% over exactly 5 seconds.
+  - Next click: animate from 100% to 0% over exactly 1 second.
+  - Subsequent clicks alternate between these two directions.
+  - Clicks during an animation are ignored without queuing or restarting.
+  - Progress uses 21 discrete states (0–100%, increments of 5%).
+  - Timing MUST use monotonic elapsed time, never frame counts.
+  - The Controller owns the animation state and updates ordinary
+    character cells in the flat CellGrid.
+  - Redraws are scheduled only when required, using
+    ControlFlow::WaitUntil for the next progress step.
+  - No progress-related redraws are scheduled while idle.
+  - The FPS field updates independently at 5 Hz.
+
+  This exception MUST preserve:
+  - O(1) cell-based hit-testing.
+  - Exactly one batched GPU UI draw call.
+  - No retained widget tree.
+  - No shader-based animation.
+  - No hover effects.
+  - No additional GPU rendering passes.
+
+  No other animations are authorized.
 
 ### 3.6 Monochrome Palette & Themes
 
