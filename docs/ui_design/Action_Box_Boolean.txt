@@ -40,8 +40,8 @@
 │   ╰╴Dist  [+|0.0 mm       ☰]│
 
 │ ╰╴□ Offset all              │
-│   ╰╴Faces   [none          ]│
-│     Dist  [+|0.0 mm       ☰]│
+│   │ Faces   [none          ]│
+│   ╰╴Dist  [+|0.0 mm       ☰]│
 
 "Keep tools variants"
 │ □ Keep tools                │
