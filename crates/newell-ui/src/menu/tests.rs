@@ -374,16 +374,16 @@ fn overlay_composition_covers_background_and_clips() {
     let (g, stack) = frame(&opened(0), &InteractionState::default());
     let top = stack.top().unwrap();
     assert_eq!((top.kind, top.id), (OverlayKind::Popup, IDS.popup()));
-    assert_eq!(top.rect, GridRect::new(0, 1, 11, 8));
+    assert_eq!(top.rect, GridRect::new(0, 1, 13, 8));
     assert_eq!(
         text_row(&g, 0).get(..5),
         Some(" File"[..].replace(' ', ".").as_str())
     );
     assert!(text_row(&g, 2).starts_with("│.New"));
-    assert!(text_row(&g, 3).starts_with("│─────────│"));
+    assert!(text_row(&g, 3).starts_with("│───────────│"));
     // Cells under the popup lost the background owner; cells beside it keep it.
     assert_ne!(g.get(3, 2).unwrap().widget_id, Some(WidgetId::new(99)));
-    assert_eq!(g.get(11, 2).unwrap().widget_id, Some(WidgetId::new(99)));
+    assert_eq!(g.get(13, 2).unwrap().widget_id, Some(WidgetId::new(99)));
     assert_eq!(g.get(3, 9).unwrap().widget_id, Some(WidgetId::new(99)));
     // Items own their rows.
     assert_eq!(g.get(3, 2).unwrap().widget_id, IDS.item(0, 0));
@@ -490,7 +490,7 @@ fn empty_and_disabled_menus_are_safe() {
         assert_eq!(s.highlighted(), None);
     }
     let (g, _) = frame(&s, &InteractionState::default());
-    assert_eq!(text_row(&g, 2).chars().nth(12), Some('└'));
+    assert_eq!(text_row(&g, 2).chars().nth(14), Some('└'));
     // All disabled.
     let mut s = opened(3);
     key(&mut s, MenuKey::Down);
@@ -588,12 +588,14 @@ fn view_entries(checked: bool, persp: usize) -> [MenuEntry<'static>; 13] {
     };
     [
         MenuEntry::Cyclic(MenuCycle {
+            label: "",
             action: MenuAction::new(30),
             values: &VALUES,
             current: persp,
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
+            label: "",
             action: MenuAction::new(31),
             values: &SHADES,
             current: 0,
@@ -781,7 +783,7 @@ fn disabled_checkbox_and_cyclic_rows_are_inert() {
     assert_eq!(g.get(4, 3).unwrap().style, styles.disabled);
     assert_eq!(g.get(4, 5).unwrap().style, styles.disabled);
     assert_eq!(g.get(2, 3).unwrap().widget_id, IDS.cycle_prev(0, 1));
-    for (col, row) in [(4, 5), (4, 3), (2, 3), (19, 3)] {
+    for (col, row) in [(4, 5), (4, 3), (2, 3), (18, 3)] {
         let mut s = vopen();
         assert_eq!(vclick(&mut s, &g, col, row), MenuResult::Handled);
         assert_eq!(s.open_menu(), Some(0), "({col},{row})");
@@ -811,8 +813,8 @@ fn cyclic_row_shows_only_current_value() {
     // Controls and value area have stable, distinct owners.
     assert_eq!(g.get(2, 2).unwrap().content, CellContent::Glyph('◀'));
     assert_eq!(g.get(2, 2).unwrap().widget_id, IDS.cycle_prev(0, 0));
-    assert_eq!(g.get(19, 2).unwrap().content, CellContent::Glyph('▶'));
-    assert_eq!(g.get(19, 2).unwrap().widget_id, IDS.cycle_next(0, 0));
+    assert_eq!(g.get(18, 2).unwrap().content, CellContent::Glyph('▶'));
+    assert_eq!(g.get(18, 2).unwrap().widget_id, IDS.cycle_next(0, 0));
     assert_eq!(g.get(8, 2).unwrap().widget_id, IDS.item(0, 0));
     assert_ne!(IDS.cycle_prev(0, 0), IDS.cycle_next(0, 0));
     assert_ne!(IDS.item(0, 0), IDS.cycle_prev(0, 0));
@@ -861,7 +863,7 @@ fn cyclic_pointer_uses_real_hit_test() {
     vkey(&mut s, MenuKey::Down);
     assert_eq!(s.highlighted(), Some(2));
     assert_eq!(
-        vclick(&mut s, &g, 19, 2),
+        vclick(&mut s, &g, 18, 2),
         MenuResult::Cycled(a, CycleStep::Next)
     );
     assert_eq!(s.highlighted(), Some(0));
@@ -924,12 +926,14 @@ fn command_items_unchanged_in_mixed_menu() {
 fn cyclic_with_empty_values_or_bad_current_is_safe() {
     let e = [
         MenuEntry::Cyclic(MenuCycle {
+            label: "",
             action: MenuAction::new(50),
             values: &[],
             current: 7,
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
+            label: "",
             action: MenuAction::new(51),
             values: &VALUES,
             current: usize::MAX,

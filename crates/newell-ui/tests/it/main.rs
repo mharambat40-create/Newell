@@ -5,5 +5,9 @@
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
+mod action_boxes;
+mod command_bar;
 mod harness;
+mod hover;
+mod menu_bar;
 mod snapshots;

@@ -15,13 +15,16 @@ use crate::WidgetId;
 ///
 /// - `focused`: the widget that owns keyboard focus.
 /// - `pressed`: the widget currently held down by pointer activation.
+/// - `hovered`: the ASCII hover target of one composition (M2.25, `ARCHITECTURE.md` §3.5). The
+///   Controller passes it to [`crate::ShellState::compose_hovered`] on a copy of the state; it is
+///   never stored in the shell. It changes glyphs only, never colour or behaviour.
 ///
-/// There is no hover state: a pointer position is only used to resolve a press, release,
-/// drag or scroll event (`ARCHITECTURE.md` §3.5).
+/// A pointer position is otherwise only used to resolve a press, release, drag or scroll event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InteractionState {
     pub focused: Option<WidgetId>,
     pub pressed: Option<WidgetId>,
+    pub hovered: Option<WidgetId>,
 }
 
 impl InteractionState {

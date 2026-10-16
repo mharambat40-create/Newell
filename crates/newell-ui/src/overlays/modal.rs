@@ -7,6 +7,7 @@
 //! Shared vocabulary of the modal overlays (M2.12): keys, lifecycle and focus stepping.
 
 use crate::WidgetId;
+use crate::widgets::EditKey;
 
 /// Keys a modal reacts to (already translated from window events).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub enum ModalKey {
     Backspace,
     /// A typed character.
     Char(char),
+    /// Caret movement, selection and Delete in a text area.
+    Edit(EditKey),
 }
 
 /// Lifecycle of a modal. `Confirmed` and `Cancelled` record the last outcome until the modal

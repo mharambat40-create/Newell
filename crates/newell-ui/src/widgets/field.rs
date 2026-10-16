@@ -8,6 +8,8 @@
 //!
 //! Fields display caller-supplied text only: nothing is parsed, evaluated or edited here.
 
+use super::edit::caret_window;
+use super::numeric::NumericView;
 use super::{Canvas, WidgetContext, cell, owned_blank};
 use crate::{CellContent, CellGrid, GridRect, WidgetId, WidgetState};
 
@@ -73,6 +75,35 @@ pub fn draw_numeric_field(
         0,
         cell(CellContent::Glyph(']'), button_style, Some(formula)),
     );
+}
+
+/// A numeric field showing an edited value (M2.23): the direction prefix, then the value and
+/// its unit in the fixed-width text area, with the caret `▏` composed in while edited. The
+/// text area never moves: the caret scrolls the text inside it (`README_UI.md` §5.11).
+pub(crate) fn draw_numeric_view(
+    grid: &mut CellGrid,
+    ctx: &WidgetContext<'_>,
+    rect: GridRect,
+    field: WidgetId,
+    formula: WidgetId,
+    state: WidgetState,
+    view: &NumericView,
+) {
+    if rect.width() < 3 {
+        return;
+    }
+    draw_numeric_field(grid, ctx, rect, field, formula, state, "");
+    let style = ctx.style_of(field, state);
+    let mut canvas = Canvas::new(grid, rect);
+    let button = canvas.width() - 2;
+    let prefix = u32::try_from(view.prefix.chars().count()).unwrap_or(0);
+    let area = button.saturating_sub(1 + prefix);
+    if area == 0 {
+        return;
+    }
+    canvas.text(1, 0, view.prefix, style, Some(field));
+    let shown = caret_window(&view.body, &view.suffix, view.caret, area as usize);
+    canvas.text(1 + prefix, 0, &shown, style, Some(field));
 }
 
 #[cfg(test)]
@@ -207,6 +238,90 @@ mod tests {
         assert_eq!(g.get(2, 0).unwrap().style, styles.normal);
         assert_eq!(g.get(10, 0).unwrap().style, styles.pressed);
         assert_eq!(g.get(11, 0).unwrap().style, styles.pressed);
+    }
+
+    fn view(prefix: &'static str, body: &str, caret: Option<usize>) -> NumericView {
+        NumericView {
+            prefix,
+            body: body.chars().collect(),
+            suffix: " mm".to_owned(),
+            caret,
+        }
+    }
+
+    fn edited(width: u32, v: &NumericView) -> CellGrid {
+        let styles = WidgetStyles::default();
+        let inter = InteractionState::default();
+        let mut g = grid(width, 1);
+        let c = ctx(&styles, &inter);
+        draw_numeric_view(
+            &mut g,
+            &c,
+            r(0, 0, width, 1),
+            id(3),
+            id(4),
+            WidgetState::default(),
+            v,
+        );
+        g
+    }
+
+    #[test]
+    fn edited_field_keeps_fixed_cells_and_reference_widths() {
+        let row = |g: &CellGrid| -> String {
+            (0..g.cols())
+                .map(|c| match g.get(c, 0).unwrap().content {
+                    CellContent::Glyph(ch) => ch,
+                    CellContent::Empty => ' ',
+                })
+                .collect()
+        };
+        assert_eq!(
+            row(&edited(18, &view("+|", "0.0", None))),
+            "[+|0.0 mm       ☰]"
+        );
+        assert_eq!(
+            row(&edited(18, &view("-|", "5.5", Some(1)))),
+            "[-|5▏.5 mm      ☰]"
+        );
+        assert_eq!(
+            row(&edited(18, &view("+|", "", Some(0)))),
+            "[+|▏ mm         ☰]"
+        );
+        // The limits of the references fill the 13-cell text area exactly.
+        assert_eq!(
+            row(&edited(18, &view("+|", "12345678.9", None))),
+            "[+|12345678.9 mm☰]"
+        );
+        let deg = NumericView {
+            suffix: " deg".to_owned(),
+            ..view("+|", "1234567.8", None)
+        };
+        assert_eq!(row(&edited(18, &deg)), "[+|1234567.8 deg☰]");
+        // Full text with the caret: the suffix is clipped, delimiter, prefix and `☰` stay.
+        assert_eq!(
+            row(&edited(18, &view("+|", "12345678.9", Some(10)))),
+            "[+|12345678.9▏ m☰]"
+        );
+        assert_eq!(
+            row(&edited(18, &view("-|", "12345678.9", Some(0)))),
+            "[-|▏12345678.9 m☰]"
+        );
+        let g = edited(18, &view("+|", "12345678.9", Some(10)));
+        assert_eq!(owner_row(&g, 0), "333333333333333344");
+    }
+
+    #[test]
+    fn edited_field_without_direction_and_tiny_rects() {
+        let plain = NumericView {
+            suffix: String::new(),
+            ..view("", "0.0", Some(3))
+        };
+        assert_eq!(text_row(&edited(12, &plain), 0), "[0.0▏.....☰]");
+        assert_eq!(edited(2, &plain), grid(2, 1));
+        for w in 3..6 {
+            let _ = edited(w, &view("+|", "123", Some(3)));
+        }
     }
 
     #[test]

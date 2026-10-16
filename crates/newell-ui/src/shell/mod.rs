@@ -52,36 +52,49 @@ mod data;
 mod key;
 
 use data::{
-    ACT_EXTRUDE, ACT_VIEW_CHECK, ACT_VIEW_PROJECTION, ACT_VIEW_SHADING, ACT_WORKBENCH,
-    COMMAND_MENUS, ELEMENTS, FEATURES, MAX_NODES, PROJECTION, SHADING, ViewMock, initial_open,
-    with_bar_menus,
+    ACT_BOOLEAN, ACT_EXTRUDE, ACT_LOFT, ACT_REVOLVE, ACT_SWEEP, ACT_VIEW_CHECK,
+    ACT_VIEW_FULLSCREEN, ACT_VIEW_PROJECTION, ACT_VIEW_SCALE, ACT_VIEW_SHADING, ACT_VIEW_THEME,
+    ACT_WORKBENCH, COMMAND_MENUS, DEFAULT_PLAYHEAD, ELEMENTS, FEATURES, Line, MAX_NODES, NodeKind,
+    PROJECTION, SHADING, ViewMock, clamp_playhead, full_label, has_children, initial_checks,
+    initial_open, top_level_count, visible_lines, with_bar_menus,
 };
 
+pub use data::ThemeChoice;
 pub use key::ShellKey;
 
+use crate::create_box::{ActionBoxUi, ID_SPAN, K_ACTIONS};
 use crate::overlays::step_focus;
+use crate::widgets::NumericFields;
 use crate::{
-    CycleStep, ExtrudeUi, FormulaEditor, GridRect, HitTestResult, InteractionState, MAX_MNEMONIC,
-    MenuIds, MenuKey, MenuResult, MenuState, Mnemonic, ModalKey, OverlayStack, PanelRowKind,
-    ROW_ID_STRIDE, SelectionPanel, WidgetId, WindowAction, cycle_next, cycle_prev,
+    BooleanUi, CycleStep, EditKey, ExtrudeUi, FormulaEditor, GridRect, HitTestResult,
+    InteractionState, LoftUi, MAX_MNEMONIC, MenuIds, MenuKey, MenuResult, MenuState, MenuTarget,
+    Mnemonic, ModalKey, OverlayStack, RenameModal, RevolveUi, SCALE_PERCENTS, SelectionPanel,
+    SweepUi, WidgetId, WindowAction, cycle_next, cycle_prev,
 };
-use compose::{PanelWidths, action_width, nav_width};
+use compose::{PanelWidths, Split, TOP_ROWS, features_rows, nav_width};
 
 pub use compose::Separator;
 
 const MENU_BAR_BASE: u32 = 1_000_000;
 const COMMAND_BAR_BASE: u32 = MENU_BAR_BASE + MenuIds::SPAN;
 const TREE_BASE: u32 = COMMAND_BAR_BASE + MenuIds::SPAN;
-/// Ids reserved for the two trees: features first, then elements.
-const TREE_SPAN: u32 = 2 * MAX_NODES as u32;
-const EXTRUDE_BASE: u32 = TREE_BASE + TREE_SPAN;
-/// Ids reserved for the Extrude panel: 16 row keys of [`ROW_ID_STRIDE`] slots.
-const EXTRUDE_SPAN: u32 = 16 * ROW_ID_STRIDE;
-const SELECTION_BASE: u32 = EXTRUDE_BASE + EXTRUDE_SPAN;
+/// Ids per tree node: the row itself, its marker, its checkbox and its name (see [`TreePart`]).
+const TREE_STRIDE: u32 = 4;
+/// Ids of the node rows: features first, then elements; the playhead id follows them.
+const NODE_IDS: u32 = 2 * MAX_NODES as u32 * TREE_STRIDE;
+/// The playhead separator row of the Features tree.
+const PLAYHEAD_ID: u32 = TREE_BASE + NODE_IDS;
+/// Ids reserved for the two trees and the playhead.
+const TREE_SPAN: u32 = NODE_IDS + 1;
+/// First id of the Action Box. The five boxes share this range: only one is shown at a time.
+const ACTION_BASE: u32 = TREE_BASE + TREE_SPAN;
+const SELECTION_BASE: u32 = ACTION_BASE + ID_SPAN;
 /// The SelectionPanel uses 14 ids from its base.
 const FORMULA_BASE: u32 = SELECTION_BASE + 16;
+/// The Rename modal uses 4 ids from its base.
+const RENAME_BASE: u32 = FORMULA_BASE + 16;
 /// The three window controls `[-] [□] [X]`, in that order.
-const WINDOW_BASE: u32 = FORMULA_BASE + 16;
+const WINDOW_BASE: u32 = RENAME_BASE + 16;
 const WINDOW_ACTIONS: [WindowAction; 3] = [
     WindowAction::Minimize,
     WindowAction::ToggleMaximize,
@@ -91,8 +104,35 @@ const WINDOW_ACTIONS: [WindowAction; 3] = [
 const BAR_IDS: MenuIds = MenuIds::new(MENU_BAR_BASE);
 const COMMAND_IDS: MenuIds = MenuIds::new(COMMAND_BAR_BASE);
 
-/// Mock formula shown by the FormulaEditor (`docs/ui_design/Interface_Elements.txt`).
-const MOCK_FORMULA: &str = "Fx = (#EntraxeA - 2mm) / 5 * 3 * sin(#Angle1 - #Angle2 + 3deg)";
+/// The operation whose Action Box is shown in the ActionPanel (`Create` and `Modify` menus).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionOperation {
+    #[default]
+    Extrude,
+    Revolve,
+    Loft,
+    Sweep,
+    Boolean,
+}
+
+impl ActionOperation {
+    /// Index into the per-operation state arrays.
+    const fn slot(self) -> usize {
+        self as usize
+    }
+
+    /// The operation a CommandBar action opens, if it is one of the five.
+    const fn from_action(action: u32) -> Option<Self> {
+        match action {
+            ACT_EXTRUDE => Some(Self::Extrude),
+            ACT_REVOLVE => Some(Self::Revolve),
+            ACT_LOFT => Some(Self::Loft),
+            ACT_SWEEP => Some(Self::Sweep),
+            ACT_BOOLEAN => Some(Self::Boolean),
+            _ => None,
+        }
+    }
+}
 
 /// Which mock tree a row belongs to. They are different data sources (README §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,23 +155,68 @@ impl Tree {
             Self::Elements => MAX_NODES as u32,
         }
     }
+
+    /// Index into the per-tree state arrays.
+    const fn slot(self) -> usize {
+        match self {
+            Self::Features => 0,
+            Self::Elements => 1,
+        }
+    }
 }
 
-/// Stable id of tree node `index`, independent of which rows are visible.
+/// `true` if `id` lies in the Action Box id range.
+fn in_action_panel(id: WidgetId) -> bool {
+    id.get()
+        .checked_sub(ACTION_BASE)
+        .is_some_and(|rel| rel < ID_SPAN)
+}
+
+/// The part of a tree row an id belongs to. Every cell of a row is owned by one of them, so
+/// a press tells the expansion marker, the visibility checkbox and the name apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreePart {
+    /// Guides, spacing and the blanks after the name: selects the row.
+    Row = 0,
+    /// `[-]` / `[+]`: expands or collapses.
+    Marker = 1,
+    /// `□` / `■`: toggles the visibility.
+    Check = 2,
+    /// The name: selects the row; a double-click renames a named row.
+    Name = 3,
+}
+
+impl TreePart {
+    const ALL: [Self; 4] = [Self::Row, Self::Marker, Self::Check, Self::Name];
+}
+
+/// Stable id of `part` of tree node `index`, independent of which rows are visible.
+fn tree_part_id(tree: Tree, index: usize, part: TreePart) -> WidgetId {
+    let node = tree.offset() + u32::try_from(index).unwrap_or(0);
+    WidgetId::new(TREE_BASE + node * TREE_STRIDE + part as u32)
+}
+
+/// The row id of tree node `index`: the keyboard focus target and the activation target of
+/// Enter / Space.
 fn tree_id(tree: Tree, index: usize) -> WidgetId {
-    WidgetId::new(TREE_BASE + tree.offset() + u32::try_from(index).unwrap_or(0))
+    tree_part_id(tree, index, TreePart::Row)
 }
 
-/// Inverse of [`tree_id`] for nodes that exist.
-fn tree_decode(id: WidgetId) -> Option<(Tree, usize)> {
+/// Inverse of [`tree_part_id`] for nodes that exist.
+fn tree_decode(id: WidgetId) -> Option<(Tree, usize, TreePart)> {
     let rel = id.get().checked_sub(TREE_BASE)?;
-    let (tree, index) = if rel < Tree::Elements.offset() {
-        (Tree::Features, rel)
+    if rel >= NODE_IDS {
+        return None;
+    }
+    let part = TreePart::ALL[(rel % TREE_STRIDE) as usize];
+    let node = rel / TREE_STRIDE;
+    let (tree, index) = if node < Tree::Elements.offset() {
+        (Tree::Features, node)
     } else {
-        (Tree::Elements, rel - Tree::Elements.offset())
+        (Tree::Elements, node - Tree::Elements.offset())
     };
     let index = usize::try_from(index).ok()?;
-    (index < tree.nodes().len()).then_some((tree, index))
+    (index < tree.nodes().len()).then_some((tree, index, part))
 }
 
 /// The UI state of one application window. See the module docs.
@@ -145,12 +230,36 @@ pub struct ShellState {
     /// Mnemonic token typed so far in an open menu (see [`ShellState::typed_char`]).
     typed: String,
     view: ViewMock,
+    /// The Fullscreen item was activated and the application has not taken the request yet.
+    fullscreen_request: bool,
     workbench: usize,
     features_open: [bool; MAX_NODES],
     elements_open: [bool; MAX_NODES],
+    /// Visibility checkboxes, per tree and node (meaningful for rows that have one).
+    checks: [[bool; MAX_NODES]; 2],
+    /// Names the user gave, per tree and node; `None` keeps the mock name.
+    names: [[Option<String>; MAX_NODES]; 2],
+    /// The row last pressed. Logical state only: selection has no visual (`README_UI.md` §5.10).
+    selected: Option<(Tree, usize)>,
+    /// Top-level features before the playhead separator (see [`data::clamp_playhead`]).
+    playhead: usize,
+    /// The Action Box shown. The five boxes keep their own state, so switching operations
+    /// restores what each one held.
+    operation: ActionOperation,
     extrude: ExtrudeUi,
+    revolve: RevolveUi,
+    loft: LoftUi,
+    sweep: SweepUi,
+    boolean: BooleanUi,
     selection: SelectionPanel,
     formula: FormulaEditor,
+    /// Edited numeric fields and formula drafts of each Action Box, by [`ActionOperation::slot`].
+    numeric: [NumericFields; 5],
+    /// The numeric field the open FormulaEditor belongs to.
+    formula_target: Option<WidgetId>,
+    rename: RenameModal,
+    /// The row the open Rename modal edits.
+    rename_target: Option<(Tree, usize)>,
     interaction: InteractionState,
     overlays: OverlayStack,
 }
@@ -168,12 +277,26 @@ impl ShellState {
             command_bar: MenuState::default(),
             typed: String::new(),
             view: ViewMock::default(),
+            fullscreen_request: false,
             workbench: 0,
             features_open: initial_open(&FEATURES),
             elements_open: initial_open(&ELEMENTS),
-            extrude: ExtrudeUi::new(EXTRUDE_BASE),
+            checks: [initial_checks(&FEATURES), initial_checks(&ELEMENTS)],
+            names: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            selected: None,
+            playhead: DEFAULT_PLAYHEAD,
+            operation: ActionOperation::Extrude,
+            extrude: ExtrudeUi::new(ACTION_BASE),
+            revolve: RevolveUi::new(ACTION_BASE),
+            loft: LoftUi::new(ACTION_BASE),
+            sweep: SweepUi::new(ACTION_BASE),
+            boolean: BooleanUi::new(ACTION_BASE),
             selection: SelectionPanel::new(SELECTION_BASE),
-            formula: FormulaEditor::new(FORMULA_BASE, MOCK_FORMULA),
+            formula: FormulaEditor::new(FORMULA_BASE),
+            numeric: Default::default(),
+            formula_target: None,
+            rename: RenameModal::new(RENAME_BASE),
+            rename_target: None,
             interaction: InteractionState::default(),
             overlays: OverlayStack::default(),
         };
@@ -207,7 +330,9 @@ impl ShellState {
         self.layout().nav
     }
 
-    /// ActionPanel width in cells, frame included, as laid out on the current grid.
+    /// Action Box width in cells, frame included, as laid out on the current grid: always
+    /// 31 (`README_UI.md` §2.2), or the viewport interior if that is narrower (the box is then
+    /// cropped at its right edge, never squeezed).
     #[must_use]
     pub fn action_width(&self) -> u32 {
         self.layout().action
@@ -221,38 +346,88 @@ impl ShellState {
         self.nav_width() != before
     }
 
-    /// Asks for an ActionPanel `wanted` cells wide, clamped to the viewport. Returns `true`
-    /// if the laid-out width changed.
-    pub fn set_action_width(&mut self, wanted: u32) -> bool {
-        let before = self.action_width();
-        let inner = self.layout().viewport.inset(1).width();
-        self.widths.action = action_width(inner, wanted);
-        self.action_width() != before
+    /// `true` while no menu popup or modal owns input, so panels can be dragged and the
+    /// window moved.
+    fn input_free(&self) -> bool {
+        !(self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active())
     }
 
-    /// The separator under cell `(col, row)`, if one can be dragged now: not while a modal or
-    /// a menu owns input.
+    /// The layout separator under cell `(col, row)`, if one can be dragged now: not while a
+    /// modal or a menu owns input.
     #[must_use]
     pub fn separator_at(&self, col: u32, row: u32) -> Option<Separator> {
-        if self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active() {
+        if !self.input_free() {
             return None;
         }
-        let rows = self.extrude.compose().map(|p| p.rows.len());
-        self.layout().separator_at(col, row, rows)
+        self.layout().separator_at(col, row)
     }
 
-    /// Drags `separator` to character column `col` (any column, even off the grid: the
-    /// width is clamped). Returns `true` if the layout changed.
-    pub fn drag_separator(&mut self, separator: Separator, col: u32) -> bool {
+    /// What a press on `hit` starts dragging: a layout separator ([`ShellState::separator_at`],
+    /// by arithmetic on the layout) or the playhead separator row (by the id of the cell).
+    #[must_use]
+    pub fn drag_at(&self, hit: &HitTestResult) -> Option<Separator> {
+        self.separator_at(hit.col, hit.row).or_else(|| {
+            (self.input_free() && hit.widget_id == Some(WidgetId::new(PLAYHEAD_ID)))
+                .then_some(Separator::Playhead)
+        })
+    }
+
+    /// Drags `separator` to the pointer cell `(col, row)` (any cell, even off the grid: the
+    /// result is clamped). `Navigation` reads the column, `Split` and `Playhead` the row. Returns `true` if the layout or the playhead changed.
+    pub fn drag_separator(&mut self, separator: Separator, col: u32, row: u32) -> bool {
         match separator {
             Separator::Navigation => self.set_nav_width(col.saturating_add(1)),
-            Separator::Action => {
-                let right = self.layout().viewport.inset(1).right();
-                let wanted =
-                    u32::try_from(right.saturating_sub(u64::from(col))).unwrap_or(u32::MAX);
-                self.set_action_width(wanted)
-            }
+            Separator::Split => self.set_split(row),
+            Separator::Playhead => self.drag_playhead(row),
         }
+    }
+
+    /// Moves the Features / Elements divider to `row` (the row of the shared border). The pane
+    /// heights are clamped to three rows each. The proportion is remembered, so a later window
+    /// resize keeps it. Returns `true` if the laid-out heights changed.
+    fn set_split(&mut self, row: u32) -> bool {
+        let before = self.layout().features.height();
+        let body = self.layout().viewport.height();
+        let wanted = row.saturating_add(1).saturating_sub(TOP_ROWS);
+        let features = features_rows(
+            body,
+            Some(Split {
+                features: wanted,
+                body,
+            }),
+        );
+        self.widths.split = Some(Split { features, body });
+        self.layout().features.height() != before
+    }
+
+    /// Moves the playhead separator to directly after the top-level feature (with its
+    /// subtree) under the pointer's `row`, clamped to between two top-level features, so the
+    /// nesting of the tree is never touched. A row above the tree counts as the first feature,
+    /// one below as the last. Returns `true` if the position changed.
+    fn drag_playhead(&mut self, row: u32) -> bool {
+        let nodes = Tree::Features.nodes();
+        let top = top_level_count(nodes);
+        let current = clamp_playhead(self.playhead, top);
+        let lines = visible_lines(nodes, &self.features_open, current);
+        let first = self.layout().features.inset(1).row();
+        let gap = match row.checked_sub(first).map(|d| d as usize) {
+            None => 0,
+            Some(i) => match lines.get(i) {
+                Some(Line::Playhead) => return false,
+                Some(_) => lines[..=i]
+                    .iter()
+                    .filter(|l| {
+                        matches!(l, Line::Node(r) if nodes.get(r.index).is_some_and(|n| n.depth == 1))
+                    })
+                    .count(),
+                None => top,
+            },
+        };
+        let Some(new) = clamp_playhead(gap, top) else {
+            return false;
+        };
+        self.playhead = new;
+        current != Some(new)
     }
 
     /// The window control that owns widget `id`, if it is one of `[-] [□] [X]`.
@@ -262,12 +437,59 @@ impl ShellState {
         WINDOW_ACTIONS.get(usize::try_from(rel).ok()?).copied()
     }
 
+    /// Resolves hover separately from clicks. Inert Action Box labels and cyclic values
+    /// inherit a region id from their row without changing the grid's click routing.
+    /// The fallback reads at most the fixed 31 Action Box cells, independent of scene size.
+    #[must_use]
+    pub fn hover_target(&self, hit: HitTestResult, grid: &crate::CellGrid) -> Option<WidgetId> {
+        if hit.widget_id.is_some() {
+            return hit.widget_id;
+        }
+        if !self.input_free() {
+            return None;
+        }
+        let rect = self.layout().action_panel(1);
+        let end = rect.col().saturating_add(rect.width().min(31));
+        if hit.col <= rect.col() || hit.col >= end.saturating_sub(1) {
+            return None;
+        }
+        let cell = grid.get(hit.col, hit.row)?;
+        if matches!(
+            cell.content,
+            crate::CellContent::Glyph('│' | '╞' | '╡' | '╰' | '╴' | '┆' | '─')
+        ) {
+            return None;
+        }
+        (rect.col()..end).find_map(|col| {
+            let id = grid.get(col, hit.row)?.widget_id?;
+            self.panel().decode(id).map(|_| id)
+        })
+    }
+
+    /// `false` if widget `id` can never be an ASCII hover target (M2.25): a tree row or part,
+    /// the playhead, a window control, a MenuBar or CommandBar title, a popup surface. The
+    /// Controller then needs no recomposition to know that nothing is hovered. `true` only
+    /// means "maybe": the composer decides the eligibility.
+    #[must_use]
+    pub fn may_hover(id: WidgetId) -> bool {
+        let bar_chrome = [BAR_IDS, COMMAND_IDS].into_iter().any(|ids| {
+            matches!(
+                ids.decode(id),
+                Some(MenuTarget::Title(_) | MenuTarget::Popup)
+            )
+        });
+        !(tree_decode(id).is_some()
+            || id.get() == PLAYHEAD_ID
+            || Self::window_action(id).is_some()
+            || bar_chrome)
+    }
+
     /// `true` if the pointer at cell `(col, row)` of `grid` is on unused MenuBar space, where a
     /// press drags the window: the MenuBar row, inside its frame, on a cell that carries no
     /// widget and no shared border, and no menu popup or modal is open.
     #[must_use]
     pub fn window_drag_at(&self, col: u32, row: u32, grid: &crate::CellGrid) -> bool {
-        if self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active() {
+        if !self.input_free() {
             return false;
         }
         let bar = self.layout().menu_bar();
@@ -290,16 +512,139 @@ impl ShellState {
         &self.extrude
     }
 
+    /// The Revolve panel's mock state.
+    #[must_use]
+    pub const fn revolve(&self) -> &RevolveUi {
+        &self.revolve
+    }
+
+    /// The Loft panel's mock state.
+    #[must_use]
+    pub const fn loft(&self) -> &LoftUi {
+        &self.loft
+    }
+
+    /// The Sweep panel's mock state.
+    #[must_use]
+    pub const fn sweep(&self) -> &SweepUi {
+        &self.sweep
+    }
+
+    /// The Boolean panel's mock state.
+    #[must_use]
+    pub const fn boolean(&self) -> &BooleanUi {
+        &self.boolean
+    }
+
+    /// The operation whose Action Box the ActionPanel shows.
+    #[must_use]
+    pub const fn operation(&self) -> ActionOperation {
+        self.operation
+    }
+
+    /// The shown Action Box, whichever operation it belongs to.
+    fn panel(&self) -> &dyn ActionBoxUi {
+        match self.operation {
+            ActionOperation::Extrude => &self.extrude,
+            ActionOperation::Revolve => &self.revolve,
+            ActionOperation::Loft => &self.loft,
+            ActionOperation::Sweep => &self.sweep,
+            ActionOperation::Boolean => &self.boolean,
+        }
+    }
+
+    fn panel_mut(&mut self) -> &mut dyn ActionBoxUi {
+        match self.operation {
+            ActionOperation::Extrude => &mut self.extrude,
+            ActionOperation::Revolve => &mut self.revolve,
+            ActionOperation::Loft => &mut self.loft,
+            ActionOperation::Sweep => &mut self.sweep,
+            ActionOperation::Boolean => &mut self.boolean,
+        }
+    }
+
     /// The SelectionPanel.
     #[must_use]
     pub const fn selection(&self) -> &SelectionPanel {
         &self.selection
     }
 
+    /// The numeric fields of the shown Action Box.
+    pub(crate) fn fields(&self) -> &NumericFields {
+        &self.numeric[self.operation.slot()]
+    }
+
+    /// The numeric field being edited, if any.
+    #[must_use]
+    pub fn editing_field(&self) -> Option<WidgetId> {
+        self.fields().editing()
+    }
+
     /// The FormulaEditor.
     #[must_use]
     pub const fn formula(&self) -> &FormulaEditor {
         &self.formula
+    }
+
+    /// The Rename modal.
+    #[must_use]
+    pub const fn rename(&self) -> &RenameModal {
+        &self.rename
+    }
+
+    /// `true` if `id` is the name of a user-named Feature or Element row: the only target of a
+    /// double-click Rename (`README_UI.md` §23). Markers, checkboxes, category headers and the
+    /// playhead are not.
+    #[must_use]
+    pub fn is_rename_target(id: WidgetId) -> bool {
+        tree_decode(id).is_some_and(|(tree, index, part)| {
+            part == TreePart::Name
+                && tree
+                    .nodes()
+                    .get(index)
+                    .is_some_and(|n| n.kind == NodeKind::Named)
+        })
+    }
+
+    /// Opens the Rename modal on the row named by `id`, starting from its full stored name.
+    /// Returns `false` (and does nothing) if `id` is not a rename target or a modal is open.
+    pub fn begin_rename(&mut self, id: WidgetId) -> bool {
+        let Some((tree, index, _)) = tree_decode(id).filter(|_| Self::is_rename_target(id)) else {
+            return false;
+        };
+        if self.modal_open() {
+            return false;
+        }
+        let name = full_label(
+            tree.nodes(),
+            index,
+            self.names[tree.slot()][index].as_deref(),
+        );
+        self.rename_target = Some((tree, index));
+        // The row keeps the focus; the modal remembers it and gives it back.
+        self.interaction.set_focused(Some(tree_id(tree, index)));
+        self.rename.open(&mut self.interaction, &name);
+        self.sync();
+        true
+    }
+
+    /// The UI theme chosen in the View menu. Light for every new shell.
+    #[must_use]
+    pub const fn theme(&self) -> ThemeChoice {
+        self.view.theme
+    }
+
+    /// The stored UI Scale preference (60/80/100/120), as the View menu shows it. It is
+    /// never a derived value: the shell holds no `k`, monitor or window-fit logic.
+    #[must_use]
+    pub fn preferred_scale_percent(&self) -> u32 {
+        self.view.scale_percent()
+    }
+
+    /// `true` once after the Fullscreen item was activated; the application owns the window
+    /// and decides (toggle, refusal).
+    pub fn take_fullscreen_request(&mut self) -> bool {
+        std::mem::take(&mut self.fullscreen_request)
     }
 
     /// Index of the active mock workbench, shown in the StatusBar.
@@ -311,7 +656,7 @@ impl ShellState {
     /// `true` while a modal overlay owns input.
     #[must_use]
     pub fn modal_open(&self) -> bool {
-        self.selection.is_open() || self.formula.is_open()
+        self.selection.is_open() || self.formula.is_open() || self.rename.is_open()
     }
 
     fn bounds(&self) -> GridRect {
@@ -324,10 +669,15 @@ impl ShellState {
     pub fn click(&mut self, hit: Option<HitTestResult>) -> bool {
         let id = hit.and_then(|h| h.widget_id);
         let bounds = self.bounds();
+        if self.editing_field().is_some_and(|f| Some(f) != id) {
+            self.numeric[self.operation.slot()].commit();
+        }
         let changed = if self.selection.is_open() {
             id.is_some_and(|id| self.selection.activate(id, bounds))
         } else if self.formula.is_open() {
             id.is_some_and(|id| self.formula.activate(id))
+        } else if self.rename.is_open() {
+            id.is_some_and(|id| self.rename.activate(id))
         } else if let Some(handled) = self.click_menu(id, hit) {
             handled
         } else {
@@ -345,6 +695,8 @@ impl ShellState {
         }
         let changed = if self.modal_open() {
             self.modal_key(key)
+        } else if let Some(handled) = self.numeric_key(key) {
+            handled
         } else {
             self.menu_or_base_key(key)
         };
@@ -356,32 +708,107 @@ impl ShellState {
     /// and modals are opened or dismissed; focus follows the active owner and is restored
     /// when a modal closes. Called after every input.
     fn sync(&mut self) {
+        self.finish_rename();
+        self.finish_formula();
         let layout = self.layout();
         let bounds = layout.grid;
         if self.modal_open() {
+            self.numeric[self.operation.slot()].commit();
             self.menu_bar.close();
             self.command_bar.close();
             self.typed.clear();
         }
         self.selection.sync_overlay(&mut self.overlays, bounds);
         self.formula.sync_overlay(&mut self.overlays, bounds);
-        let (bar, command) = (layout.menu_bar(), layout.command_bar());
+        self.rename.sync_overlay(&mut self.overlays, bounds);
+        let bar = layout.menu_bar();
         with_bar_menus(&self.view, |menus| {
             self.menu_bar
                 .sync_overlay(&mut self.overlays, menus, BAR_IDS, bar, bounds);
         });
-        self.command_bar.sync_overlay(
+        self.command_bar.sync_centered_overlay(
             &mut self.overlays,
             &COMMAND_MENUS,
             COMMAND_IDS,
-            command,
             bounds,
+            data::COMMAND_POPUP_WIDTH,
         );
         self.menu_bar.sync_focus(&mut self.interaction, BAR_IDS);
         self.command_bar
             .sync_focus(&mut self.interaction, COMMAND_IDS);
         self.selection.sync_focus(&mut self.interaction);
         self.formula.sync_focus(&mut self.interaction);
+        self.rename.sync_focus(&mut self.interaction);
+    }
+
+    /// Applies the name of a Rename that was confirmed, once the modal has closed; a cancelled
+    /// one changes nothing.
+    fn finish_rename(&mut self) {
+        if self.rename.is_open() {
+            return;
+        }
+        if let Some((tree, index)) = self.rename_target.take() {
+            if self.rename.status() == crate::ModalStatus::Confirmed {
+                self.names[tree.slot()][index] = Some(self.rename.text().to_owned());
+            }
+        }
+    }
+
+    /// Keeps the formula text of a FormulaEditor that was confirmed, for the numeric field it
+    /// was opened from; a cancelled one changes nothing.
+    fn finish_formula(&mut self) {
+        if self.formula.is_open() {
+            return;
+        }
+        let Some(field) = self.formula_target.take() else {
+            return;
+        };
+        if self.formula.status() != crate::ModalStatus::Confirmed {
+            return;
+        }
+        if let Some(mock) = self.numeric_mock(field) {
+            self.numeric[self.operation.slot()].set_formula(field, &mock, self.formula.text());
+        }
+    }
+
+    /// The mock text (`+|0.0 mm`) of numeric field `id` in the shown Action Box.
+    fn numeric_mock(&self, id: WidgetId) -> Option<String> {
+        let panel = self.panel().compose_box()?;
+        panel.numeric_text(id).map(str::to_owned)
+    }
+
+    /// Routes a key to the numeric field being edited. `None` if no field is edited, or for
+    /// the keys that open a menu (the edit is kept first) and then follow their normal path.
+    fn numeric_key(&mut self, key: ShellKey) -> Option<bool> {
+        self.editing_field()?;
+        let slot = self.operation.slot();
+        let fields = &mut self.numeric[slot];
+        let handled = match key {
+            ShellKey::Char(c) => fields.typed(c),
+            ShellKey::Backspace => fields.backspace(),
+            ShellKey::Left => fields.edit_key(EditKey::Left),
+            ShellKey::Right => fields.edit_key(EditKey::Right),
+            ShellKey::Edit(k) => fields.edit_key(k),
+            ShellKey::Up | ShellKey::Down => false,
+            ShellKey::Enter => {
+                fields.commit();
+                true
+            }
+            ShellKey::Escape => {
+                fields.discard();
+                true
+            }
+            ShellKey::Tab | ShellKey::BackTab => {
+                fields.commit();
+                self.step_ring(key == ShellKey::Tab);
+                return Some(true);
+            }
+            ShellKey::MenuBar | ShellKey::CommandBar | ShellKey::Alt(_) => {
+                fields.commit();
+                return None;
+            }
+        };
+        Some(handled)
     }
 
     // ---- pointer ----
@@ -418,59 +845,73 @@ impl ShellState {
     /// Activates the base-shell control `id`: the single path of pointer clicks and of
     /// Enter / Space on the focused widget. Returns `true` if `id` belongs to the shell.
     fn activate_widget(&mut self, id: WidgetId) -> bool {
-        if let Some((tree, index)) = tree_decode(id) {
-            let open = match tree {
-                Tree::Features => &mut self.features_open,
-                Tree::Elements => &mut self.elements_open,
-            };
-            if let (Some(flag), Some(node)) = (open.get_mut(index), tree.nodes().get(index)) {
-                if node.branch {
-                    *flag = !*flag;
-                }
-            }
-            self.interaction.set_focused(Some(id));
+        if let Some((tree, index, part)) = tree_decode(id) {
+            self.activate_tree(tree, index, part);
             return true;
         }
-        let in_extrude = id
-            .get()
-            .checked_sub(EXTRUDE_BASE)
-            .is_some_and(|rel| rel < EXTRUDE_SPAN);
-        if !in_extrude {
+        if !in_action_panel(id) {
             return false;
         }
         // The focus is set first so a modal opened below remembers this control.
         self.interaction.set_focused(Some(id));
-        if self.is_formula_button(id) {
-            self.formula.open(&mut self.interaction);
-        } else if self.is_selection_field(id) {
+        let slot = self.operation.slot();
+        if self.panel().is_formula_button(id) {
+            // The `☰` is slot 1 of the field it belongs to (slot 0).
+            let field = WidgetId::new(id.get() - 1);
+            let text = self.numeric[slot].formula(field).to_owned();
+            self.formula_target = Some(field);
+            self.formula.open(&mut self.interaction, &text);
+        } else if self.panel().is_numeric_field(id) {
+            if let Some(mock) = self.numeric_mock(id) {
+                self.numeric[slot].begin(id, &mock);
+            }
+        } else if self.panel().is_selection_field(id) {
             self.selection.open(&mut self.interaction);
         } else {
-            self.extrude.activate(id);
-            if !self.extrude.is_open() {
+            let button = self
+                .panel()
+                .live_control(id)
+                .filter(|&(key, slot)| key == K_ACTIONS && slot < 2)
+                .map(|(_, slot)| slot);
+            self.panel_mut().activate_id(id);
+            match button {
+                Some(0) => self.numeric[slot].confirm(),
+                Some(_) => self.numeric[slot].cancel(),
+                None => {}
+            }
+            if !self.panel().showing() {
                 self.interaction.set_focused(None);
             }
         }
         true
     }
 
-    /// `true` if `id` is the `☰` button of a numeric row of the open Extrude panel.
-    fn is_formula_button(&self, id: WidgetId) -> bool {
-        self.extrude.compose().is_some_and(|panel| {
-            panel.rows.iter().any(|row| {
-                matches!(row.kind, PanelRowKind::Numeric { .. })
-                    && panel.widget_id(row.key, 1) == Some(id)
-            })
-        })
-    }
-
-    /// `true` if `id` is a selection field (a text row) of the open Extrude panel.
-    fn is_selection_field(&self, id: WidgetId) -> bool {
-        self.extrude.compose().is_some_and(|panel| {
-            panel.rows.iter().any(|row| {
-                matches!(row.kind, PanelRowKind::Text { .. })
-                    && panel.widget_id(row.key, 0) == Some(id)
-            })
-        })
+    /// Applies a press on `part` of tree node `index`. The marker expands or collapses a
+    /// branch, the checkbox flips the visibility, every other part selects the row. The row
+    /// takes the keyboard focus in all cases. No geometry or model is touched.
+    fn activate_tree(&mut self, tree: Tree, index: usize, part: TreePart) {
+        let nodes = tree.nodes();
+        match part {
+            TreePart::Marker => {
+                let open = match tree {
+                    Tree::Features => &mut self.features_open,
+                    Tree::Elements => &mut self.elements_open,
+                };
+                if let (true, Some(flag)) = (has_children(nodes, index), open.get_mut(index)) {
+                    *flag = !*flag;
+                }
+            }
+            TreePart::Check => {
+                if let (Some(_), Some(flag)) = (
+                    nodes.get(index).and_then(|n| n.check),
+                    self.checks[tree.slot()].get_mut(index),
+                ) {
+                    *flag = !*flag;
+                }
+            }
+            TreePart::Row | TreePart::Name => self.selected = Some((tree, index)),
+        }
+        self.interaction.set_focused(Some(tree_id(tree, index)));
     }
 
     // ---- menus ----
@@ -499,6 +940,7 @@ impl ShellState {
                 let (slot, len) = match action.get() {
                     ACT_VIEW_PROJECTION => (&mut self.view.projection, PROJECTION.len()),
                     ACT_VIEW_SHADING => (&mut self.view.shading, SHADING.len()),
+                    ACT_VIEW_SCALE => (&mut self.view.scale, SCALE_PERCENTS.len()),
                     _ => return true,
                 };
                 *slot = match step {
@@ -510,19 +952,40 @@ impl ShellState {
         }
     }
 
-    /// Runs an activated menu command. Only two have an effect in the mock: Workbench rows
-    /// set the StatusBar's workbench, and Create > Extrude reopens a closed Extrude panel.
+    /// Runs an activated menu command. Workbench rows set the StatusBar's workbench,
+    /// Create > Extrude / Revolve / Loft / Sweep and Modify > Boolean show that Action Box
+    /// (reopening it if OK / Cancel closed it), View > Theme switches the theme and
+    /// View > Fullscreen leaves a request for the application.
     fn run_action(&mut self, action: u32) {
-        if action == ACT_EXTRUDE {
-            if !self.extrude.is_open() {
-                self.extrude.reopen();
-            }
+        if action == ACT_VIEW_THEME {
+            self.view.theme = self.view.theme.toggled();
+        } else if action == ACT_VIEW_FULLSCREEN {
+            self.fullscreen_request = true;
+        } else if let Some(operation) = ActionOperation::from_action(action) {
+            self.show_operation(operation);
         } else if let Some(i) = action
             .checked_sub(ACT_WORKBENCH)
             .and_then(|i| usize::try_from(i).ok())
             .filter(|&i| i < data::WORKBENCHES.len())
         {
             self.workbench = i;
+        }
+    }
+
+    /// Makes `operation` the shown Action Box. A box still being edited keeps its state; one
+    /// closed by OK / Cancel reopens with defaults. The boxes share one id range, so a focus
+    /// held in the panel is dropped when the operation changes.
+    fn show_operation(&mut self, operation: ActionOperation) {
+        self.numeric[self.operation.slot()].commit();
+        if self.operation != operation {
+            if self.interaction.focused.is_some_and(in_action_panel) {
+                self.interaction.set_focused(None);
+            }
+            self.operation = operation;
+        }
+        if !self.panel().showing() {
+            self.panel_mut().restart();
+            self.numeric[operation.slot()].reset();
         }
     }
 
@@ -546,14 +1009,15 @@ impl ShellState {
             ShellKey::Escape => ModalKey::Escape,
             ShellKey::Backspace => ModalKey::Backspace,
             ShellKey::Char(c) => ModalKey::Char(c),
-            ShellKey::Left
-            | ShellKey::Right
-            | ShellKey::MenuBar
-            | ShellKey::CommandBar
-            | ShellKey::Alt(_) => return false,
+            ShellKey::Left => ModalKey::Edit(EditKey::Left),
+            ShellKey::Right => ModalKey::Edit(EditKey::Right),
+            ShellKey::Edit(k) => ModalKey::Edit(k),
+            ShellKey::MenuBar | ShellKey::CommandBar | ShellKey::Alt(_) => return false,
         };
         if self.selection.is_open() {
             self.selection.key(modal, self.bounds())
+        } else if self.rename.is_open() {
+            self.rename.key(modal)
         } else {
             self.formula.key(modal)
         }
@@ -615,6 +1079,7 @@ impl ShellState {
             ShellKey::Tab
             | ShellKey::BackTab
             | ShellKey::Backspace
+            | ShellKey::Edit(_)
             | ShellKey::MenuBar
             | ShellKey::CommandBar
             | ShellKey::Alt(_) => return false,
@@ -657,8 +1122,16 @@ impl ShellState {
             ShellKey::Tab => self.step_ring(true),
             ShellKey::BackTab => self.step_ring(false),
             ShellKey::Enter | ShellKey::Char(' ') => {
-                let focused = self.interaction.focused;
-                focused.is_some_and(|id| self.activate_widget(id))
+                let Some(id) = self.interaction.focused else {
+                    return false;
+                };
+                // Enter / Space on a focused row expand or collapse it, like its marker.
+                if let Some((tree, index, TreePart::Row)) = tree_decode(id) {
+                    self.activate_tree(tree, index, TreePart::Marker);
+                    self.selected = Some((tree, index));
+                    return true;
+                }
+                self.activate_widget(id)
             }
             _ => false,
         }
@@ -678,3 +1151,5 @@ impl ShellState {
 mod resize_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_tests;

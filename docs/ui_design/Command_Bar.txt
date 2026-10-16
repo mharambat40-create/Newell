@@ -1,6 +1,6 @@
 "Command Bar"
 
- Workbench │ Construct │ Create │ Shape │ Modify │ Pattern │ Construct │ Utils 
+ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities 
 
 ╭─Workbench───────╮
 │ Part design     │

@@ -9,7 +9,7 @@
 //! Pure functions, so they are testable without a window. Control characters are dropped
 //! here, before they can reach a text area or the menu mnemonic matcher.
 
-use newell_ui::{ShellKey, UiPoint};
+use newell_ui::{EditKey, ShellKey, UiPoint};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 /// A physical pointer position as a [`UiPoint`]. Non-finite and negative coordinates are
@@ -26,7 +26,7 @@ pub fn ui_point(x: f64, y: f64) -> Option<UiPoint> {
 
 /// Translates a key press into zero or more [`ShellKey`]s.
 ///
-/// - Named keys: arrows, Tab (Shift+Tab is `BackTab`), Enter, Escape, Backspace, Space,
+/// - Named keys: arrows (Shift extends the selection), Home, End, Delete, Tab (Shift+Tab is `BackTab`), Enter, Escape, Backspace, Space,
 ///   F10 (MenuBar) and F6 (CommandBar). Other named keys give nothing.
 /// - Alt plus a letter or digit is an `Alt` mnemonic. The logical key is used when it is
 ///   ASCII; otherwise (macOS composes Alt+F into `ƒ`) the physical key decides.
@@ -44,7 +44,13 @@ pub fn translate_key(
         return named_key(*named, modifiers).into_iter().collect();
     }
     if modifiers.control_key() || modifiers.super_key() {
-        return Vec::new();
+        // Ctrl/Cmd+A selects all in the field being edited; other chords are not text.
+        let select_all = matches!(logical, Key::Character(s) if s.eq_ignore_ascii_case("a"));
+        return if select_all && !modifiers.alt_key() {
+            vec![ShellKey::Edit(EditKey::SelectAll)]
+        } else {
+            Vec::new()
+        };
     }
     if modifiers.alt_key() {
         let logical_char = match logical {
@@ -64,6 +70,13 @@ pub fn translate_key(
 
 fn named_key(key: NamedKey, modifiers: ModifiersState) -> Option<ShellKey> {
     Some(match key {
+        NamedKey::ArrowLeft if modifiers.shift_key() => ShellKey::Edit(EditKey::SelectLeft),
+        NamedKey::ArrowRight if modifiers.shift_key() => ShellKey::Edit(EditKey::SelectRight),
+        NamedKey::Home if modifiers.shift_key() => ShellKey::Edit(EditKey::SelectHome),
+        NamedKey::End if modifiers.shift_key() => ShellKey::Edit(EditKey::SelectEnd),
+        NamedKey::Home => ShellKey::Edit(EditKey::Home),
+        NamedKey::End => ShellKey::Edit(EditKey::End),
+        NamedKey::Delete => ShellKey::Edit(EditKey::Delete),
         NamedKey::ArrowLeft => ShellKey::Left,
         NamedKey::ArrowRight => ShellKey::Right,
         NamedKey::ArrowUp => ShellKey::Up,

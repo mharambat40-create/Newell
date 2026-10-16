@@ -37,7 +37,7 @@
 
 mod draw;
 
-use crate::{GridRect, WidgetId, place_popup};
+use crate::{GridRect, WidgetId, center_modal, place_popup};
 use crate::{HitTestResult, InteractionState, Overlay, OverlayKind, OverlayStack};
 
 pub use draw::{draw_menu_bar, draw_menu_popup, popup_size, title_rect};
@@ -148,10 +148,12 @@ pub struct MenuCheckbox<'a> {
 }
 
 /// A cyclic row showing `values[current]` between `◀` and `▶`; `current` is the caller's
-/// logical state.
+/// logical state. A non-empty `label` is drawn before the arrows, one space apart
+/// (`UI Scale ◀ 100% ▶`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuCycle<'a> {
     pub action: MenuAction,
+    pub label: &'a str,
     pub values: &'a [&'a str],
     pub current: usize,
     pub enabled: bool,
@@ -665,6 +667,32 @@ impl MenuState {
                 kind: OverlayKind::Popup,
                 rect: place_popup(anchor, popup_size(def), bounds),
             }),
+            None => {
+                stack.dismiss(ids.popup());
+            }
+        }
+    }
+
+    /// Like [`MenuState::sync_overlay`] for the CommandBar (`README_UI.md` §29.1): the popup is
+    /// centred in `bounds` instead of anchored under its title, and is at least `min_width`
+    /// cells wide (the fixed 18-cell frames of `Command_Bar.txt`).
+    pub fn sync_centered_overlay(
+        &self,
+        stack: &mut OverlayStack,
+        menus: &[MenuDef<'_>],
+        ids: MenuIds,
+        bounds: GridRect,
+        min_width: u32,
+    ) {
+        match self.open_menu().and_then(|i| capped(menus).get(i)) {
+            Some(def) => {
+                let (width, height) = popup_size(def);
+                stack.open(Overlay {
+                    id: ids.popup(),
+                    kind: OverlayKind::Popup,
+                    rect: center_modal((width.max(min_width), height), bounds),
+                });
+            }
             None => {
                 stack.dismiss(ids.popup());
             }

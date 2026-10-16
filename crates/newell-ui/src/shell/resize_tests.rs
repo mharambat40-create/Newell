@@ -47,7 +47,7 @@ fn reference_narrow_and_wide_layouts() {
         (wide.nav_width(), wide.action_width()),
         (NAV_WIDTH, PANEL_WIDTH)
     );
-    // Narrow: the NavigationPanel is capped at half the grid, the ActionPanel at the viewport.
+    // Narrow: the NavigationPanel is capped at half the grid, the Action Box at the viewport.
     let narrow = ShellState::new(30, 25);
     assert_eq!(narrow.nav_width(), 15);
     assert_eq!(narrow.action_width(), 14);
@@ -88,7 +88,7 @@ fn resize_path_does_not_matter() {
 fn nav_width_is_clamped() {
     let mut s = ShellState::new(82, 25);
     assert!(s.set_nav_width(1));
-    assert_eq!(s.nav_width(), 8);
+    assert_eq!(s.nav_width(), 14, "the minimum is 14 cells");
     assert!(s.set_nav_width(999));
     assert_eq!(s.nav_width(), 41, "at most half the grid");
     assert!(!s.set_nav_width(41), "no change reports false");
@@ -99,19 +99,18 @@ fn nav_width_is_clamped() {
 }
 
 #[test]
-fn action_width_is_clamped() {
+fn action_width_is_fixed_and_capped_by_the_viewport() {
+    assert_eq!(PANEL_WIDTH, 31);
+    for (cols, want) in [(82, 31), (240, 31), (24, 11)] {
+        let s = ShellState::new(cols, 25);
+        assert_eq!(s.action_width(), want, "{cols} columns");
+    }
+    // No input changes it: dragging a separator never resizes the Action Box.
     let mut s = ShellState::new(82, 25);
-    assert!(s.set_action_width(0));
-    assert_eq!(s.action_width(), 16);
-    assert!(s.set_action_width(u32::MAX));
-    assert_eq!(s.action_width(), 56, "at most the viewport interior");
-    let mut small = ShellState::new(24, 25);
-    small.set_action_width(0);
-    assert_eq!(
-        small.action_width(),
-        11,
-        "interior of 11 is below the minimum"
-    );
+    for col in [0, 30, 50, u32::MAX] {
+        s.drag_separator(Separator::Navigation, col, 0);
+        assert_eq!(s.action_width(), 31);
+    }
 }
 
 #[test]
@@ -129,18 +128,20 @@ fn nav_separator_is_the_panels_right_border_on_the_body_rows() {
 }
 
 #[test]
-fn action_separator_is_the_panels_left_border() {
+fn the_action_box_has_no_draggable_border() {
     let s = ShellState::new(82, 25);
-    let cells = separator_cells(&s, Separator::Action);
-    assert!(!cells.is_empty());
-    // The viewport interior ends at column 81; a 27-wide panel starts at 54.
-    assert!(cells.iter().all(|&(c, _)| c == 54));
+    // The Action Box occupies columns 50..80 under the NavCube; none of them is a separator.
+    for row in 0..25 {
+        for col in 50..81 {
+            assert_eq!(s.separator_at(col, row), None, "({col},{row})");
+        }
+    }
 }
 
 #[test]
 fn dragging_snaps_to_character_columns() {
     let mut s = ShellState::new(82, 25);
-    assert!(s.drag_separator(Separator::Navigation, 30));
+    assert!(s.drag_separator(Separator::Navigation, 30, 0));
     assert_eq!(s.nav_width(), 31);
     let g = s.compose().unwrap();
     assert!(
@@ -150,26 +151,23 @@ fn dragging_snaps_to_character_columns() {
     );
     assert!(glyph(&g, 30, 10).is_some());
     assert!(
-        !s.drag_separator(Separator::Navigation, 30),
+        !s.drag_separator(Separator::Navigation, 30, 0),
         "same column: no change"
     );
     // Far past either edge clamps instead of failing.
-    s.drag_separator(Separator::Navigation, u32::MAX);
+    s.drag_separator(Separator::Navigation, u32::MAX, 0);
     assert_eq!(s.nav_width(), 41);
-    s.drag_separator(Separator::Navigation, 0);
-    assert_eq!(s.nav_width(), 8);
-
-    assert!(s.drag_separator(Separator::Action, 50));
-    assert_eq!(s.action_width(), 31, "interior ends at column 81");
+    s.drag_separator(Separator::Navigation, 0, 0);
+    assert_eq!(s.nav_width(), 14);
 }
 
 #[test]
 fn dragging_changes_the_composed_regions() {
     let mut s = ShellState::new(82, 25);
     let before = s.compose().unwrap();
-    s.drag_separator(Separator::Navigation, 40);
+    s.drag_separator(Separator::Navigation, 40, 0);
     assert_ne!(before, s.compose().unwrap());
-    s.drag_separator(Separator::Navigation, 24);
+    s.drag_separator(Separator::Navigation, 24, 0);
     assert_eq!(
         before,
         s.compose().unwrap(),
@@ -190,7 +188,6 @@ fn panels_cannot_be_dragged_while_a_modal_or_menu_owns_input() {
 fn state_is_stable_across_resize() {
     let mut s = ShellState::new(82, 25);
     s.set_nav_width(32);
-    s.set_action_width(30);
     assert!(s.key(ShellKey::Tab));
     let focused = s.interaction().focused;
     assert!(focused.is_some());
@@ -244,8 +241,7 @@ fn tiny_and_zero_dimensions_stay_in_bounds() {
                 let _ = s.separator_at(col, row);
             }
         }
-        s.drag_separator(Separator::Navigation, 3);
-        s.drag_separator(Separator::Action, 3);
+        s.drag_separator(Separator::Navigation, 3, 0);
         s.key(ShellKey::Tab);
         s.click(None);
         assert_eq!(s.compose().unwrap().cols(), cols);

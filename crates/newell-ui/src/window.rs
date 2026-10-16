@@ -44,8 +44,8 @@ pub const fn composed_grid_size(metrics: GridMetrics, width_px: u32, height_px: 
     )
 }
 
-/// The five UI Scale preference values in percent (`ARCHITECTURE.md` §3.1.1).
-pub const SCALE_PERCENTS: [u32; 5] = [60, 80, 100, 120, 140];
+/// The four UI Scale preference values in percent (`ARCHITECTURE.md` §3.1.1).
+pub const SCALE_PERCENTS: [u32; 4] = [60, 80, 100, 120];
 /// The default preference, 100 %.
 pub const DEFAULT_SCALE_PERCENT: u32 = 100;
 /// The largest monitor reference scale: `k = 5` (20 × 45 px) is the design reference size.
@@ -112,7 +112,7 @@ pub struct ScaleDecision {
 }
 
 /// `effective_k` from the monitor's physical size, the mode and the preference in percent
-/// (clamped to 60…140). `None` or a zero size is an unknown monitor: reference 5, cap 7.
+/// (clamped to 60…120). `None` or a zero size is an unknown monitor: reference 5, cap 7.
 /// `k_req = (reference · percent + 50) / 100` (round half up; no tie exists because every
 /// preference is a multiple of 20), `k = clamp(k_req, 2, clamp(k_fit, 2, 7))`.
 #[must_use]
@@ -121,7 +121,7 @@ pub fn effective_scale(
     mode: ScaleMode,
     percent: u32,
 ) -> ScaleDecision {
-    let percent = percent.clamp(SCALE_PERCENTS[0], SCALE_PERCENTS[4]);
+    let percent = percent.clamp(SCALE_PERCENTS[0], SCALE_PERCENTS[3]);
     let known = monitor.filter(|&(w, h)| w > 0 && h > 0);
     let (reference, cap, fits) = match known {
         Some(size) => {
@@ -406,21 +406,21 @@ mod tests {
     const WINDOWED: ScaleMode = ScaleMode::Windowed;
     const FULLSCREEN: ScaleMode = ScaleMode::Fullscreen;
 
-    fn row(monitor: (u32, u32), mode: ScaleMode) -> [u32; 5] {
+    fn row(monitor: (u32, u32), mode: ScaleMode) -> [u32; 4] {
         SCALE_PERCENTS.map(|p| effective_scale(Some(monitor), mode, p).k)
     }
 
     #[test]
     fn example_table_windowed_and_fullscreen() {
-        type Row = ((u32, u32), [u32; 5], [u32; 5]);
+        type Row = ((u32, u32), [u32; 4], [u32; 4]);
         let table: [Row; 7] = [
-            ((1366, 768), [2, 2, 2, 2, 2], [2, 2, 2, 2, 2]),
-            ((1920, 1080), [2, 2, 2, 2, 3], [2, 2, 2, 2, 3]),
-            ((1920, 1200), [2, 3, 4, 4, 4], [2, 3, 4, 4, 4]),
-            ((2560, 1440), [3, 4, 5, 5, 5], [3, 4, 5, 5, 5]),
-            ((2560, 1664), [3, 4, 5, 5, 5], [3, 4, 5, 6, 6]),
-            ((3024, 1964), [3, 4, 5, 6, 6], [3, 4, 5, 6, 7]),
-            ((3840, 2160), [3, 4, 5, 6, 7], [3, 4, 5, 6, 7]),
+            ((1366, 768), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1080), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1200), [2, 3, 4, 4], [2, 3, 4, 4]),
+            ((2560, 1440), [3, 4, 5, 5], [3, 4, 5, 5]),
+            ((2560, 1664), [3, 4, 5, 5], [3, 4, 5, 6]),
+            ((3024, 1964), [3, 4, 5, 6], [3, 4, 5, 6]),
+            ((3840, 2160), [3, 4, 5, 6], [3, 4, 5, 6]),
         ];
         for (monitor, windowed, fullscreen) in table {
             assert_eq!(row(monitor, WINDOWED), windowed, "{monitor:?} windowed");
@@ -479,10 +479,6 @@ mod tests {
         assert_eq!(
             effective_scale(Some((1920, 1080)), FULLSCREEN, 120).requested,
             2
-        );
-        assert_eq!(
-            effective_scale(Some((1920, 1080)), WINDOWED, 140).requested,
-            3
         );
         // Reference 2 requests 1.2 and 1.6 at 60 / 80 %: both are raised to 2.
         assert_eq!(
@@ -571,7 +567,7 @@ mod tests {
 
     #[test]
     fn small_monitor_clamps_several_percentages_to_one_k() {
-        assert_eq!(row((1920, 1080), WINDOWED), [2, 2, 2, 2, 3]);
+        assert_eq!(row((1920, 1080), WINDOWED), [2, 2, 2, 2]);
         assert!(effective_scale(Some((1366, 768)), WINDOWED, 100).fits);
         assert!(effective_scale(Some((1920, 1080)), WINDOWED, 100).fits);
         // k = 2 does not fit a monitor below 656 × 540 usable: 82 × 30 stays, k stays 2.
@@ -585,19 +581,19 @@ mod tests {
             let d = effective_scale(unknown, WINDOWED, 100);
             assert_eq!((d.k, d.reference, d.fits), (5, 5, true));
         }
-        assert_eq!(effective_scale(None, WINDOWED, 140).k, 7);
+        assert_eq!(effective_scale(None, WINDOWED, 120).k, 6);
         assert_eq!(effective_scale(None, WINDOWED, 60).k, 3);
         assert_eq!(effective_scale(None, WINDOWED, 0).k, 3);
         assert_eq!(effective_scale(None, WINDOWED, 0).requested, 3);
-        assert_eq!(effective_scale(None, WINDOWED, 9999).k, 7);
+        assert_eq!(effective_scale(None, WINDOWED, 9999).k, 6);
     }
 
     #[test]
     fn extreme_monitors_do_not_panic() {
         assert_eq!(effective_scale(Some((1, 1)), WINDOWED, 100).k, 2);
         assert_eq!(
-            effective_scale(Some((u32::MAX, u32::MAX)), WINDOWED, 140).k,
-            7
+            effective_scale(Some((u32::MAX, u32::MAX)), WINDOWED, 120).k,
+            6
         );
         assert_eq!(
             effective_scale(Some((u32::MAX, u32::MAX)), FULLSCREEN, 100).k,

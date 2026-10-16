@@ -1,7 +1,7 @@
 # Newell — Milestone 2 UI Framework Plan
 
 **Milestone:** M2 — ASCII UI Framework & Application Shell  
-**Status:** M2.1–M2.15 complete; M2.16–M2.24 amended (§19, M2.16–M2.24)  
+**Status:** M2.1–M2.15 complete; M2.16–M2.25 implemented with automated validation; native/visual acceptance remains open (see `docs/validation/M1-M2-2026-10-16.md`).
 **Implementation scope:** `newell-ui`, `newell-render`, `newell-app`  
 **Architecture authority:** `ARCHITECTURE.md`
 
@@ -16,6 +16,14 @@ This document is an implementation plan. It does not override `ARCHITECTURE.md` 
 > M2.16–M2.24 sections below. Do not implement the superseded text. The one
 > exception is the M2.7 `║` active-segment separator, which stays as a
 > **temporary accepted deviation** until M2.21 (`ARCHITECTURE.md` §3.5).
+>
+> **Amendment (M2.25).** `ARCHITECTURE.md` §3.5 (*ASCII Hover Highlight*) now
+> authorises a discrete, text-only hover highlight. The M2.16–M2.24 sentences
+> "no hover", "hover removal" and "no hover state exists" describe those
+> milestones and stay as written; they do **not** forbid M2.25. The hover
+> removed in M2.16 (uniform, shader stripe, colour, `WidgetState::Hovered`)
+> stays removed and is not reintroduced; M2.25 is a different mechanism
+> (glyph substitution at composition time).
 
 ---
 
@@ -1602,7 +1610,7 @@ Scope:
 
 - **Automatic per-monitor UI scale** (`ARCHITECTURE.md` §3.1.1; ADR 0003 D3, D13).
   UI Scale is a user preference; the cell size adapts to the monitor. Three
-  separate per-window values: `preferred_scale_percent` (60/80/100/120/140;
+  separate per-window values: `preferred_scale_percent` (60/80/100/120;
   fixed at the default 100 until the M2.18 control exists, but every function
   takes it as a parameter and is tested with all five), `monitor_reference_scale`
   (`k_fit(windowed) ≤ 3 ? max(k_fit(windowed) − 1, 2) : min(k_fit(windowed), 5)`;
@@ -1657,7 +1665,7 @@ Scope:
   is refused (logged once) when 656 × 540 does not fit the monitor. Size,
   position and monitor are read back after every change.
 - Documented behaviour, not a defect: a small monitor clamps several preferences
-  to one `effective_k` (1920 × 1080 windowed: 60/80/100/120/140% give `k` = 2/2/2/2/3).
+  to one `effective_k` (1920 × 1080 windowed: 60/80/100/120% all give `k` = 2).
 - Native decorations off. The OS title bar and controls are replaced by the
   in-grid MenuBar row, including `[-] [□] [X]` (`Interface_Exemple.txt`).
 - Window controls are ordinary grid hit targets (minimise, maximise/restore,
@@ -1783,7 +1791,7 @@ rule belongs to M2.17):
 - MenuBar File/Edit/View/Help with the exact reference menus, including the
   View menu and the space-only Help popup in `Application_Menu_Bar.txt`.
 - `UI Scale ◀ 100% ▶`: a cyclic selector over the five preference values
-  60/80/100/120/140. It **shows and stores `preferred_scale_percent`**, never the
+  60/80/100/120. It **shows and stores `preferred_scale_percent`**, never the
   derived `effective_k`, so it reads `100%` on every monitor. `◀`/`▶` wrap; **no
   value is skipped or hidden**, even when the current monitor clamps several to
   the same `k`. A step stores the new preference and calls the M2.17 transition;
@@ -1805,9 +1813,9 @@ Acceptance:
 - The row shows the stored preference on both a Retina and a 1080p monitor and
   does not change when the window moves between them (stub monitor snapshots in
   tests, manual check with real monitors).
-- `◀`/`▶` visit all five values in order and wrap, on a monitor that maps most of them
-  to one `k` (1920 × 1080: `k` = 2/2/2/2/3, so the first four steps change only the
-  stored preference and run no transition, and the step to 140% runs exactly one).
+- `◀`/`▶` visit all four values in order and wrap, on a monitor that maps all of them
+  to one `k` (1920 × 1080: `k` = 2/2/2/2, so every step changes only the
+  stored preference and runs no transition).
 - A step that changes `effective_k` calls the M2.17 transition exactly once;
   a press cancelled by it does not activate on release; a second click acts on
   the control now under the pointer.
@@ -1820,6 +1828,14 @@ Acceptance:
   M2.17 derivation applies (1920 × 1080 → `k_fit(fs) = 4`).
 
 ### M2.19 — CommandBar and centered menus
+
+**Reference update:** the current `Command_Bar.txt` supersedes the historical
+menu list below. Use Workbench, Datum, Create, Shape, Modify, Pattern and
+Utilities, with the exact entries and separators in that file. Every popup is
+19 cells wide (Workbench 19 × 11 at col 31, row 9; Datum 19 × 6 at col 31,
+row 12 on an 82 × 30 grid). Boolean now belongs to Modify; existing Action Box
+behavior and keyboard aliases are preserved. The older CommandBar row in
+`Interface_Exemple.txt` is superseded; its other rows are unchanged.
 
 Scope: CommandBar row and the Workbench/Sketch/Create/Operate/Pattern/Refine/
 Construct/Inspect menus exactly as in `Command_Bar.txt` (the `Sketch` popup
@@ -1933,24 +1949,180 @@ with a live frame-rate value and the 21 progress states of `Interface_Elements.t
 (5 cells, 5% steps, `░ ▒ ▓ █`), plus a final cell-for-cell fidelity pass of the
 82 × 28 reference at `k = 5` and snapshots at the 82 × 30 minimum.
 
+Challenger findings resolved by the Architect (2026-10-16): quantization, FPS value
+rules, input precedence and outside-press handling, as stated below and in
+`README_UI.md` §27 and §27.1. `ARCHITECTURE.md` is unchanged.
+
 The frame-rate segment is fixed-width (`README_UI.md` §27): exactly 7 cells,
 a 3-cell right-aligned space-padded numeric field then `fps` then one blank, so
 the digit count never moves the separators, `Progress …` or the right border.
-Value rule: round to nearest, NaN/infinite/negative → `0`, above 999 → `999`
+Value rule (`README_UI.md` §27): a NaN, `+∞`, `−∞` or negative input → `0`; any
+other input is rounded to the nearest integer, and a value above 999 → `999`
 (saturated, field never widens). At `98` the row equals `Interface_Exemple.txt`.
 Other status text stays free text clipped whole-cell at the right border.
 Progress cells are `L`-tall block elements, an accepted limitation
 (`ARCHITECTURE.md` §3.1).
 
+Progress interaction (`README_UI.md` §27.1, `ARCHITECTURE.md` §3.5 exception):
+the whole `Progress […] N%` segment is one click target with one stable
+`WidgetId`, found by O(1) cell lookup (no hover, no retained tree), activated on
+left-button press, once per press (holding the button never repeats it). Text-cell
+updates only, no shader animation, one GPU draw call. Initial 0 %.
+The segment is a fixed 21 cells: `Progress [` + 5 bar cells + `]` + one separator
+space + a 4-cell left-aligned `N%` field with trailing padding (`0%  `, `5%  `,
+`10% `, `65% `, `100%`; `README_UI.md` §24, §27.1). Every value equals the
+`Interface_Elements.txt` row once trailing spaces are removed.
+Click at 0 % animates to 100 % in 5 s; click at 100 % animates to 0 % in 1 s;
+repeat indefinitely; clicks while `elapsed < duration` are ignored. The
+displayed value is `floor5(100·t/D)` ascending and `ceil5(100·(D − t)/D)`
+descending, with `t = min(elapsed, D)`, `D = duration`, computed in exact integer
+arithmetic on the monotonic elapsed time from an injectable controller clock
+(`Instant`, never frame count). `floor5(x)` is the largest multiple of 5 `≤ x`
+and `ceil5(x)` the smallest multiple of 5 `≥ x`; neither is nearest rounding
+(`README_UI.md` §27.1). The 21 states are kept.
+Wake-ups use `ControlFlow::WaitUntil(min(next fps tick, next progress step))`.
+The 60 FPS M1.3 redraw bootstrap is retired at M2.24 (`ARCHITECTURE.md` §3.5).
+Idle progress adds no deadline. The FPS field stays at its independent 5 Hz
+refresh. Scope limit: this one control only; no generic animation infrastructure.
+Consequence: while idle the redraw cadence is the 5 Hz tick, so a measured
+value reads about 5 fps when idle; `98` is an injected snapshot value only.
+Input precedence (`README_UI.md` §27.1, which is §25.1 plus the overlay rule): an
+active resize owns the pointer and the segment receives no press; a cell carrying
+a `widget_id`, including an overlay or popup cell, wins over a resize zone; a
+resize-zone press starts a resize without dismissing an open overlay; while an
+overlay is open the segment receives no press, and an outside press is consumed
+and dismisses the overlay only if that overlay's existing rule dismisses on
+outside presses.
+
+Progress acceptance: with a fake clock, a click at 0 % shows `100%` only from
+exactly 5 s and a click at 100 % shows `0%` only from exactly 1 s; ascending
+intermediate times give `floor5`, descending give `ceil5` (e.g. ascending at
+4.99 s shows `95%`, descending at 0.999 s shows `5%`); a unit test asserts `floor5(x) ≤ x`,
+`ceil5(x) ≥ x` and that exact multiples are returned unchanged (`floor5(100) = 100`,
+`ceil5(0) = 0`), so neither is a nearest rounding; a single jump of the clock
+(skipped frames) gives the same result as many small ones; a press at any
+instant strictly inside an animation changes nothing; a press and hold
+activates once; presses on every cell of the segment (first `P`, brackets,
+separator space, digits, `%`, trailing padding) are accepted when idle and the
+cells immediately left (` │ `) and right of it are not; an outside press while an
+overlay is open is consumed and leaves the progress value and clock unchanged,
+and dismisses the overlay only if that overlay's existing rule dismisses on outside
+presses (a test overlay with a non-dismissing rule stays open); a resize-zone press
+while an overlay is open starts a resize, dismisses nothing and leaves the segment
+unchanged;
+the segment keeps one `WidgetId` across all 21 states; the 21-cell segment gives
+`Progress [     ] 0%  `, `Progress [░    ] 5%  `, `Progress [▒    ] 10% ` and
+`Progress [█████] 100%` (each equal to its `Interface_Elements.txt` row after
+trailing-space trim), and the separators, the right border and the segment bounds
+never move; the wake-up deadline is
+`min(fps tick, progress step)`, idle schedules no progress redraw, the FPS
+sampling cadence is unchanged by a running animation; no hover state exists.
+
 Acceptance: FPS is measured, not assigned (the composition function takes it as
-an input, snapshots inject `98`); table test for `0, 5, 98, 99, 100, 144, 999,
-1000, 123456, -3, NaN, ∞` giving the 7-cell strings of §27, with the cells
+an input, snapshots inject `98`); table test for `0, 5, 98, 99, 100, 144, 998.5,
+999, 1000, 123456, -3, -0.4, NaN, +∞, −∞` giving the 7-cell strings of §27
+(`998.5`, `999`, `1000` and `123456` → `999fps `; `-3`, `-0.4`, `NaN`, `+∞` and
+`−∞` → `  0fps `), with the cells
 outside the field byte-identical across all values; updating it dirties only
 the status cells;
 every progress state renders exactly; the whole-application snapshot at each
 theme matches `Interface_Exemple.txt` at 82 × 28 content and, at 82 × 30, by the
 two-step rule of `README_UI.md` §25 (rows 26–27 removed equal the reference; the
 two rows equal the blank body-row template); no difference is invented.
+
+---
+
+### M2.25 — ASCII hover highlight
+
+Depends on M2.19–M2.24 (menus, Action Box rows, modals, StatusBar and the
+event-driven redraw of M2.24 must exist). Authority: `ARCHITECTURE.md` §3.5
+(*ASCII Hover Highlight*), `README_UI.md` §5.12, `Interface_Elements.txt`
+("Effet Hover"), `Special_ASCII.txt`.
+
+Scope:
+
+- `hovered: Option<WidgetId>` in the Controller (the only new state; no other
+  hover field, no timer, no per-cell flag, no uniform).
+- Four transformations, byte-exact, cell count unchanged:
+  Menu `│ Bridging Curve  │` → `╞ Bridging Curve  ╡`;
+  Parameter `│ │ Along     [Select…       ]│` → `│ ╞ Along     [Select…       ]╡`;
+  Checkbox `│ ╰╴□ End Offset              │` → `│ ╘ □ End Offset              ╡`;
+  Button `│      OK      │    Cancel    │` → `╞      OK      ╡    Cancel    │`.
+- Junction rule (`README_UI.md` §5.12): left slot `│` → `╞`; left slot `╰╴` →
+  `╘` + space; right slot `│` → `╡`. Header button boundaries additionally
+  accept `┆`; no other glyph is substituted.
+  Slots are the innermost `│`/`╰╴` left of the target and the `│` right of it
+  (frame, branch, nested connector or the separator between buttons).
+- Composition-time only: the composer receives `hovered` as an input and writes
+  at most three substituted glyphs while it composes the target's row. Hover is
+  never stored in persistent UI state, in the model or in a cell that outlives the
+  frame, and the `widget_id`/flags of every cell are identical with and without
+  hover. No change to `newell-render`, the glyph atlas, the shader or any
+  uniform (`╞ ╡ ╘` are already in the required set).
+- Targets: Menu rows, all Action Box parameter/checkbox rows (including cyclic
+  selectors), every Action Box header segment, and footer/modal buttons.
+  Parameter labels, padding and cyclic value text inherit a hover id from their
+  row through at most 31 grid-cell reads; click routing remains unchanged.
+  Header buttons substitute their own left/right `│` or `┆` with `╞`/`╡`,
+  preserving horizontal active-segment topology.
+  Disabled controls and other non-interactive cells never hover; a Menu row with `◀ ▶`, a
+  `[ ◐ Light ]` field or a checkbox is a Menu row.
+
+Controller rules:
+
+- Pointer motion: one integer cell resolution and one `widget_id` read (O(1),
+  with at most 31 cell reads for an inert Action Box label/value,
+  `ARCHITECTURE.md` §3.4), compare with the stored value, request a hover-related
+  redraw only when the hovered `WidgetId` changes, including transitions to or
+  from `None`. Preserve the existing region-specific `WidgetId` values; do not
+  replace them with a row-level key. Moving between two interactive regions in
+  the same row may change the hovered id and trigger one redraw without any
+  visible glyph change; this redundant redraw is accepted. Motion within the
+  same `WidgetId` requests no hover-related redraw.
+- `CursorLeft`, a move onto an ineligible cell, overlay opening over the target,
+  and resize start clear `hovered` (one redraw if it was `Some`).
+- Except for the hover-only Action Box label/value extension above, eligibility
+  equals "a left press here would activate this enabled widget now":
+  topmost overlay only; menus and modals make covered and outside cells
+  ineligible; a cell with a `widget_id` wins over a resize zone; an active
+  resize owns the pointer and suppresses hover updates until the first move
+  after it ends.
+- After each recomposition: one O(1) re-check of the cell under the last known
+  pointer position; clear when it no longer carries `hovered`. Never acquire a
+  new target without pointer motion.
+- Hover never alters press, click, drag, focus, selection or keyboard handling,
+  and does not disturb the M2.24 `WaitUntil` schedule (no new deadline).
+
+Acceptance:
+
+- Table test per kind: normal row → hovered row equals the four strings above
+  exactly (every character and space); the derived rows of `README_UI.md` §5.12
+  (`│ ╞ □ Starting Offset         ╡`, `│ ╘ End       [Select…       ]╡`,
+  Cancel hovered, modal OK/Cancel) pass the same test; the set of differing
+  cells equals the slots, nothing else.
+- Hovered frame vs normal frame: same dimensions, same `widget_id`/flags per
+  cell, same hit-test result for every cell.
+- Exit restores the normal frame cell for cell in the same frame; a hover→exit
+  sequence leaves no residue (frame equals the never-hovered frame).
+- Only one hovered id at any time; moving A → B → exit gives 1, 1, 1 redraws;
+  moving within A gives 0 extra redraws; exit with `None` gives 0.
+- Precedence: with a menu or modal open, covered controls and outside cells never
+  hover; a resize in progress clears hover and ignores motion; a popup cell on
+  the resize ring hovers; disabled rows and frame cells never hover;
+  Action Box labels and cyclic values highlight their own parameter row;
+  a recomposition that moves the target from under the pointer clears hover and
+  does not acquire another.
+- No hover on tree rows, MenuBar/CommandBar labels, window controls,
+  the progress segment or modal text fields.
+- Snapshots: M2.15/M2.24 snapshots (hover `None`) are unchanged except row 19 of
+  the shell, which follows the `README_UI.md` §25 *Row 19* rule; add one hover
+  snapshot per kind and one for row 19 (equal to the unmodified reference row).
+  Normal-state `.txt` references stay untouched.
+- `cargo test`/clippy gate as usual; the diff shows no change in
+  `newell-render`, `assets/` or shader code.
+
+Out of scope: hover for any other widget, hover colour or motion, tooltips,
+cursor-shape changes, touch hover, keyboard-focus visuals.
 
 ---
 
@@ -1979,6 +2151,10 @@ The M1.3 frame loop remains bootstrap behaviour.
 M2 should not silently redefine the final redraw architecture.
 
 Later event-driven invalidation may reduce unnecessary redraws.
+
+M2.24 is that step: the 60 FPS cadence is retired and the next wake-up is
+`min(5 Hz FPS tick, next progress step)` (`ARCHITECTURE.md` §3.5). `Renderer` and
+`FramePacer` are reused at 5 Hz.
 
 ### 20.4 Public test-only APIs
 
@@ -2017,7 +2193,7 @@ Their real model/kernel binding belongs to later milestones.
 - No placeholder logo atlas is required.
 - No runtime-generated logo atlas is allowed as a substitute for the architecture-defined PNG atlas.
 - Logo work is deferred until needed.
-- UI Scale is a user preference (60/80/100/120/140%); the cell size `k` adapts
+- UI Scale is a user preference (60/80/100/120%); the cell size `k` adapts
   automatically to the monitor (`ARCHITECTURE.md` §3.1.1, ADR 0003 D3/D13):
   `preferred_scale_percent`, `monitor_reference_scale` and `effective_k` are
   separate; the View menu always shows the preference; a small monitor may map
@@ -2033,6 +2209,9 @@ Their real model/kernel binding belongs to later milestones.
 - The glyph atlas is deterministic (required set per `k`, never modified; `?`
   for everything else); filtered sampling is for logo textures only.
 - `Rename` opens on double-click in M2.20; no keyboard shortcut.
+- M2.25 hover (approved by the human, `ARCHITECTURE.md` §3.5): glyph
+  substitution `╞ ╡ ╘` at composition time on one `hovered: Option<WidgetId>`;
+  four target kinds; exact rules in `README_UI.md` §5.12.
 - Extrude: complete base boxes outrank partial snippets; siblings are never
   deleted by a variant substitution (`README_UI.md` §2.6).
 

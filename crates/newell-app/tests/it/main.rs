@@ -7,7 +7,9 @@
 
 mod controller;
 mod harness;
+mod hover;
 mod input;
 mod pacing;
 mod rescale;
+mod tree;
 mod window;

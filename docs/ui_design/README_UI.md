@@ -594,7 +594,9 @@ two-colour rule (`ARCHITECTURE.md` §3.6).
 
 ## 5.10 Interaction state visuals
 
-Newell has no hover state and no hover visual (`ARCHITECTURE.md` §3.5).
+The only hover visual in Newell is the discrete ASCII hover highlight of
+§5.12 (M2.25, `ARCHITECTURE.md` §3.5). Hover has no colour, brightness, fade,
+animation or shader effect, and it is not a focus, selection or pressed visual.
 
 Logical focus, selection, pressed, disabled, checked and expanded state exist
 for keyboard navigation, activation and dragging. They are drawn **only** by
@@ -606,7 +608,8 @@ the ASCII structures documented in this directory:
 - the border topology of segmented selectors (§5.3);
 - `+|` / `-|` for direction (§5.4);
 - the selection-field texts `Select…`, `1 Element`, `N Elements` (§5.5);
-- the text-editing caret `▏` while a field is actively edited (§5.11).
+- the text-editing caret `▏` while a field is actively edited (§5.11);
+- the ASCII hover highlight `╞` `╡` `╘` on the single hovered target (§5.12).
 
 A state with no documented structure has no visual. An implementation MUST NOT
 add a generic foreground/background inversion, a marker such as `>` or `<`, an
@@ -627,7 +630,7 @@ the value of a numeric field, the Formula editor text area). It is the only
 approved indicator of editing and is specified for M2.23.
 
 - **When.** Drawn only while exactly one field is in edit mode. Not drawn for
-  merely focused, selected, hovered (there is no hover) or pressed fields.
+  merely focused, selected, hovered (§5.12 changes border glyphs only) or pressed fields.
 - **Colour.** The theme foreground (`#000000` Light, `#FFFFFF` Dark) over the
   background; no third colour, no inversion, **no blinking** (no animation,
   `ARCHITECTURE.md` §3.5). The glyph is an ordinary cell in the flat cell
@@ -656,6 +659,144 @@ approved indicator of editing and is specified for M2.23.
 - **Not a rejection rule.** A field being visually full does not reject input;
   any maximum text length is a data rule outside this specification.
 - **Keyboard only in M2.23.** Pointer placement of the caret is not specified.
+
+---
+
+## 5.12 ASCII hover highlight (M2.25)
+
+Binding rules: `ARCHITECTURE.md` §3.5 (*ASCII Hover Highlight*). Exact examples:
+`Interface_Elements.txt` ("Effet Hover") and `Special_ASCII.txt`. The hover
+highlight replaces a few border glyphs of the one row or button under the
+pointer. Nothing else changes.
+
+**The four transformations.** Each pair is the exact approved text, spaces
+included. Every transformation keeps the cell count of the row.
+
+| Kind | Normal | Hovered | Cells changed |
+|---|---|---|---|
+| Menu | `│ Bridging Curve  │` | `╞ Bridging Curve  ╡` | left `│` → `╞`, right `│` → `╡` |
+| Parameter | `│ │ Along     [Select…       ]│` | `│ ╞ Along     [Select…       ]╡` | branch `│` → `╞`, right `│` → `╡` |
+| Checkbox | `│ ╰╴□ End Offset              │` | `│ ╘ □ End Offset              ╡` | `╰╴` → `╘` + space, right `│` → `╡` |
+| Button | `│      OK      │    Cancel    │` | `╞      OK      ╡    Cancel    │` | left `│` → `╞`, following `│` → `╡` |
+
+The Checkbox normal text is the canonical row of `Action_Box_Extrude.txt`
+(right border `│`), also used in `Interface_Elements.txt` ("Effet Hover") and
+`ARCHITECTURE.md` §3.5. The right border becomes `╡` only in the hovered state.
+
+**Context-sensitive junction rule.** The substituted glyph depends on the glyph
+being replaced and on the side of the hovered target, never on the row's text:
+
+| Slot | Original glyph | Hovered glyph |
+|---|---|---|
+| left boundary of the hovered target | `│` | `╞` |
+| left boundary, last-child connector (two cells) | `╰` `╴` | `╘` + one space |
+| right boundary of the hovered target | `│` | `╡` |
+
+- The **left slot** is the innermost cell on the left of the target's content
+  that is a `│` or the `╰╴` pair: the Action Box frame `│` of a row without a
+  connector, the branch `│` of a row with one (the frame `│` before it is not
+  changed), the nested `╰╴` of a deeper row (the shallower `│` and `╰╴` are not
+  changed), the popup frame `│` of a menu row, or the frame/separator `│` that
+  precedes a button.
+- The **right slot** is the `│` immediately after the target's content: the
+  frame `│` of a row, or the `│` separator that follows a button.
+- Except for the header `┆` extension below, a slot holding any other glyph
+  (`║`, `├`, `╭ ╮ ╰ ╯`, `─`, `┆`, a space) is never substituted, and a slot
+  is never created where none exists. A target
+  without a substitutable slot has no hover visual.
+- `╞` and `╡` replace `│`; for Action Box header buttons they also replace
+  a `┆` separator at that button's exact boundary. `╘` only replaces the `╰╴`
+  pair. Header hover never changes the horizontal active-segment topology.
+- Examples derived from the same rule (not additional transformations):
+  `│ │ □ Starting Offset         │` → `│ ╞ □ Starting Offset         ╡`
+  (row 19 of `Interface_Exemple.txt`, a checkbox row with a branch `│`);
+  `│ ╰╴End       [Select…       ]│` → `│ ╘ End       [Select…       ]╡`;
+  `│      OK      │    Cancel    │` with `Cancel` hovered →
+  `│      OK      ╞    Cancel    ╡`; the same rule applies to the OK/Cancel row
+  of the modals (`Rename`, `Enter Name`).
+
+**Hoverable targets.** Only these four kinds exist:
+
+- **Menu**: an enabled item row of an application or CommandBar popup menu
+  (§28, §29), including the rows that contain `◀ ▶`, `[ ◐ Light ]` or a
+  checkbox: the whole row is the target.
+- **Parameter**: any Action Box parameter row, including fields `[ … ]` and
+  cyclic selectors `◀ value ▶`. The target is the whole row: the interactive regions of the row (`+|`, the value, `☰`,
+  §37) all light the same two slots.
+- **Checkbox**: an Action Box row that contains `□` or `■`. The target is the
+  whole row.
+- **Button**: one Action Box header segment (`Solid`, `Surface`, `New`, `Add`,
+  `Remove`, or Boolean `Add`, `Cut`, `Inter`) or one `OK`/`Cancel` button of an
+  Action Box or modal. Only that button's own two boundaries change:
+  `│` or `┆` becomes `╞` on its left and `╡` on its right.
+
+Action Box parameter labels, padding and cyclic value text inherit a hover
+region from the same row. Resolve this only for hover, using at most the fixed
+31 cells of the Action Box row; preserve click routing and all existing
+region-specific WidgetIds. This applies to every Action Box, including Profile,
+Start type and Magnitude in Loft.
+
+Every other control outside these Action Box rows and buttons (tree rows and
+markers, MenuBar and CommandBar labels, window controls, scroll indicators, the progress
+segment, text fields of modals, labels, spaces, frames) has no hover visual and
+never becomes the hovered target.
+
+**One hovered target.** The Controller stores at most one
+`hovered: Option<WidgetId>`. Moving between two regions of the same row (for
+example `+|` to `0.0`) changes the stored id but not the glyphs.
+
+**Eligibility.** Except for the Action Box label/value extension above, a cell
+is hoverable exactly when a left-button press on it,
+now, would route to an enabled, interactive widget of one of the four kinds
+(§25.1 precedence, rule 1, and the overlay rules of §27.1), so:
+
+- Disabled controls never hover. The Action Box label/value extension above is
+  hover-only; other non-interactive cells never hover. Border, frame and inert
+  chrome cells are not targets; they carry no `widget_id` and this milestone
+  gives them none.
+- While a menu, popup or modal is open, only cells of the topmost overlay are
+  eligible. Everything it covers, and everything outside it, is not hoverable.
+  Opening an overlay clears a hover it obscures; closing it clears the hover.
+- An active window resize owns the pointer (§25.1): hover is cleared when the
+  resize starts, is not updated while it runs, and is acquired again only by the
+  first pointer move after it ends. A resize zone with no `widget_id` is not a
+  target.
+- A cell that carries a `widget_id` wins over a resize zone (§25.1 rule 1), so a
+  popup cell on the ring can hover.
+- Hover never changes press, click, drag, focus, selection or keyboard
+  behaviour, and does not change which cell or `widget_id` any hit-test returns.
+  The hit map of a hovered frame is identical to the normal frame.
+
+**Lifecycle.**
+
+- Set and changed only by pointer motion; cleared by pointer exit
+  (`CursorLeft`) or by the pointer moving onto a cell that is not eligible.
+- After every recomposition (state change, overlay open/close, scroll, panel
+  drag, scale or theme change, resize end) the Controller re-checks, with one
+  O(1) lookup, that the cell under the last known pointer position still carries
+  the hovered id; if not, or if the target no longer exists, hover is cleared.
+  A recomposition never acquires a new target without a pointer motion.
+- A redraw is requested only when the stored value changes (`None` → `Some`,
+  `Some(a)` → `Some(b)`, `Some` → `None`). Motion inside one target requests
+  nothing. Hover wakes no timer and adds no periodic redraw.
+- On exit the normal glyphs reappear in the same frame that clears the id: the
+  highlight exists only at composition time and is never written into persistent
+  state, so there is nothing to restore later and no leftover cell.
+
+**Cost.** Pointer motion resolves the cell with the existing integer division
+and one `widget_id` read (O(1), `ARCHITECTURE.md` §3.4), compares it with the
+stored value, and stops. No bounding-box scan, retained widget tree, extra
+render pass, uniform or draw call exists. The composer substitutes at most
+three cells (a Checkbox: the pair and the right slot).
+
+**Not hover.** No colour, brightness, inversion, underline, fade, transition or
+animation; no change of text, spacing, width, height or layout; no shader or
+atlas change (`╞ ╡ ╘` are already in the required glyph set, §35). The M2.24
+progress animation remains the only animation (`ARCHITECTURE.md` §3.5).
+
+**References unchanged.** The normal-state `.txt` references keep their exact
+characters. A snapshot without a pointer (hover `None`) shows the normal glyphs;
+hovered snapshots are separate states.
 
 ---
 
@@ -2126,6 +2267,14 @@ Each cell therefore corresponds to 20%.
 
 Partial fill characters encode 5% increments.
 
+**Percentage field (M2.24).** The bar and the `N%` value are composed from the
+same displayed value. The segment is exactly **21 cells**: `Progress [` (10) +
+the 5-cell bar + `]` (1) + one separator space (1) + a 4-cell **left-aligned**
+percentage field with trailing padding (4). The field values are `0%  `, `5%  `,
+`10% `, `65% `, `100%`. Every row of `Interface_Elements.txt`, including the rows
+for 0 %, 5 % and 100 %, equals the rendered segment once trailing spaces are
+removed. The canonical `.txt` is not edited.
+
 ---
 
 # 25. Application shell
@@ -2180,6 +2329,16 @@ difference:
    `║` + 23 spaces + `║` + 56 spaces + `║` (82 cells: the outer frame, the
    Elements pane interior, the panel separator and the viewport interior). No
    other content appears in them.
+
+**Row 19 is a hover state.** Row 19 of `Interface_Exemple.txt`
+(`│ ╞ □ Starting Offset         ╡║`) shows the pointer over the `Starting Offset`
+checkbox row (§5.12); its normal state is `│ │ □ Starting Offset         │║`, as
+in `Action_Box_Extrude.txt`. The reference file is not edited. The default
+snapshot (hover `None`) is compared with the reference after replacing, in
+reference row 19 only, `╞` by `│` at the branch column and `╡` by `│` at the
+right frame column of the Action Box; a separate hover snapshot (that row
+hovered) equals the unmodified reference row. No other cell of the reference is
+a hover state.
 
 Any other expected difference between the two sizes is a defect in the
 snapshot or in the layout, not in the reference. States that differ from the
@@ -2403,7 +2562,8 @@ with spaces (never zeros):
 | 98 | ` 98fps ` (identical to `Interface_Exemple.txt`) |
 | 144 | `144fps ` (the left blank is used by the third digit) |
 | 999 | `999fps ` |
-| > 999 | `999fps ` (saturated, see below) |
+| finite, above 999 (for example 1000) | `999fps ` (saturated, see below) |
+| NaN, `+∞`, `−∞`, negative | `  0fps ` |
 
 Consequences: the separators, `Progress [███░ ] 65%` and the right border stay in
 the same columns for every value from 0 to 999; no adjacent field shifts when
@@ -2412,19 +2572,124 @@ three digits the field touches the left separator, an accepted consequence of
 keeping the reference width.
 
 **Value rules** (pure composition function; the input is a measured number, not
-a clock read): round to the nearest integer (halves away from zero), a NaN,
-infinite or negative input is shown as `0`, and any value above 999 is shown as
-`999` (saturation: the field never grows to four digits and never shows a `+`,
-`>` or `…`). The digits are always the plain ASCII digits `0`–`9`.
+a clock read), applied in this order:
+
+1. A NaN, `+∞`, `−∞` or negative input is shown as `0`. Infinite values are not
+   "finite values above 999" and never saturate to `999`.
+2. Any other input (finite and non-negative) is rounded to the nearest integer,
+   halves away from zero.
+3. A value above 999 after step 2 is shown as `999` (saturation: the field never
+   grows to four digits and never shows a `+`, `>` or `…`).
+
+The digits are always the plain ASCII digits `0`–`9`.
 
 **Other status text.** The segments are composed left to right, joined by
 ` │ `. The document name and the contextual status are free text: a different
 length moves the segments after it, and text that would pass the right border is
 clipped whole-cell and never wraps (the §26 ellipsis rule does not apply to the
 status bar). Only the frame-rate field is fixed-width, so the frame rate itself
-never moves another field. The status bar contains no pointer target whose
-position matters to the user; the progress bar is display-only. A snapshot
-comparison with `Interface_Exemple.txt` injects the value `98`.
+never moves another field. The status bar's only pointer target is the
+progress segment (below). A snapshot comparison with `Interface_Exemple.txt`
+injects the value `98` and the progress value `65`.
+
+## 27.1 Progress segment: click-driven demo animation
+
+**Target.** The entire `Progress [█████] N%` segment (from `P` through `%`,
+every cell it owns, including the brackets, the separator space, the percentage
+digits and their trailing padding) is one click target with **one stable
+`WidgetId`**. The segment is located by O(1)
+cell lookup (`ARCHITECTURE.md` §3.4); there is no bounding-box scan, no
+retained widget tree and no hover effect (§3.5, §5.12: the progress segment is
+not one of the four hoverable kinds). Cells outside the segment,
+including the ` │ ` separator before it, are not part of the target. The
+segment activates on **left-button press**, once per press; holding the button
+down never repeats the activation. This is the one animation authorised by
+`ARCHITECTURE.md` §3.5; it is text-cell updates only, with no shader animation.
+
+**State machine.** The progress value is one of the 21 states of §24
+(0–100 %, steps of 5 %). The initial state is `0%`.
+
+| State | Click | Result |
+|---|---|---|
+| idle at 0 % | accepted | animate 0 → 100 % over **5 s** |
+| idle at 100 % | accepted | animate 100 → 0 % over **1 s** |
+| animating (either direction) | **ignored** | nothing: no queueing, no reversal, no restart |
+
+When an animation ends the state is exactly `100%` or `0%` and the cycle may
+be repeated indefinitely. Idle states other than 0 and 100 do not exist for
+this control (the other 19 states are only transient frames, or are injected
+into the pure composition function by tests and snapshots).
+
+**Time.** Progress is a function of **elapsed time**, never of frame count or
+redraw count, read as monotonic `Instant` deltas from an injectable clock.
+With `t = min(elapsed, duration)` and `D = duration`, in exact integer arithmetic
+on the elapsed nanoseconds (no floating point):
+
+- ascending (0 → 100 %): `p = floor5(100 · t / D)` = `5 · ⌊20 · t / D⌋`, so `100 %`
+  only when `t ≥ 5 s`;
+- descending (100 → 0 %): `p = ceil5(100 · (D − t) / D)` = `5 · ⌈20 · (D − t) / D⌉`,
+  so `0 %` only when `t ≥ 1 s`.
+
+`floor5(x)` is the largest multiple of 5 that is `≤ x`; `ceil5(x)` is the smallest
+multiple of 5 that is `≥ x`. Neither is a nearest-value rounding: `floor5` never
+returns more than `x`, `ceil5` never returns less than `x`, and an exact multiple
+of 5 is returned unchanged. The integer forms keep the endpoints exact at
+`t = 5 s` and `t = 1 s`. The animation is
+**active while `elapsed < duration`**, and this does not depend on the displayed
+value. A slow or stalled frame skips states but never changes the total
+duration, and one large clock jump gives the same value as many small steps.
+The composition function takes the integer percentage as input and reads no
+clock, like the frame-rate field.
+
+**Redraw scheduling.** The next wake-up is `min(next fps tick, next progress
+step)` (`ControlFlow::WaitUntil`). Progress steps fall on multiples of
+`duration / 20` (250 ms ascending, 50 ms descending). While idle, progress adds
+no deadline.
+
+**Independence from FPS.** The `fps` field keeps its own fixed **5 Hz**
+refresh (§27 above). Animation redraws do not change the FPS sampling cadence
+and the FPS refresh does not advance, restart or stall the animation.
+
+**Input precedence.** On left-button press, the first matching rule applies. The
+order is that of §25.1, with the overlay rule of this section added; no other
+order exists.
+
+1. An active resize (§25.1) owns the pointer. The segment receives no press.
+2. A cell carrying a `widget_id` routes to its widget (§25.1, rule 1). Overlay
+   and popup cells are such cells, so they win over resize zones. Exception: while
+   an overlay or popup is open, the segment never receives a press; rule 5
+   applies to it.
+3. A press on a resize zone (§25.1, rule 2) starts a resize and does not dismiss
+   an open overlay.
+4. An inert MenuBar row cell starts a window drag (§25.1, rule 3).
+5. Otherwise, while an overlay or popup is open, the press is an outside press. It
+   is consumed and never activates the segment. It dismisses the overlay only if
+   that overlay's existing overlay rule (§29.1) dismisses on an outside press; an
+   overlay whose rule does not dismiss on outside presses stays open. Consumption
+   does not depend on dismissal.
+6. Otherwise normal routing applies: a segment cell activates the animation when
+   idle.
+
+Hit-testing stays O(1) with one stable `WidgetId`.
+
+**Rendering.** The segment is exactly **21 cells**: `Progress [` (10) + five bar
+cells `░ ▒ ▓ █` in 5 % steps (§5.9, §24) + `]` (1) + one separator space (1) +
+a **4-cell left-aligned percentage field** with trailing padding (4). Its left
+bound (`P`), right bound (`%` or the last padding cell) and the right border never
+move. The separator space and padding belong to the clickable segment.
+
+| value | segment (21 cells, between the ` │ ` separators) |
+|---|---|
+| 0 | `Progress [     ] 0%  ` |
+| 5 | `Progress [░    ] 5%  ` |
+| 10 | `Progress [▒    ] 10% ` |
+| 65 | `Progress [███░ ] 65% ` |
+| 100 | `Progress [█████] 100%` |
+
+Every value equals the row of `Interface_Elements.txt` with the same value once
+trailing spaces are removed (§24). In `Interface_Exemple.txt` the segment is the
+last status segment, so the extra padding cell reduces the trailing blanks before
+the right border (`║`) and moves nothing.
 
 ---
 
@@ -2527,15 +2792,14 @@ UI Scale states (`Application_Menu_Bar.txt`):
 │ UI Scale ◀  80% ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ UI Scale ◀ 120% ▶ │
-│ UI Scale ◀ 140% ▶ │
 ```
 
-`UI Scale` is a cyclic selector (§5.2) over exactly five **preference** values
-(60%, 80%, 100%, 120%, 140%). A percentage is not a fixed physical size: the
+`UI Scale` is a cyclic selector (§5.2) over exactly four **preference** values
+(60%, 80%, 100%, 120%). A percentage is not a fixed physical size: the
 application derives the integer cell size factor `k` automatically for the
 monitor showing the window (`ARCHITECTURE.md` §3.1.1). On the reference display
 the values are 60% = 12×27 px, 80% = 16×36, 100% = 20×45 (default),
-120% = 24×54, 140% = 28×63. On another monitor the same percentage can give a
+120% = 24×54. On another monitor the same percentage can give a
 smaller cell: 100% is 20×45 on the MacBook Air Retina display and 8×18 (`k = 2`,
 one step smaller) on a Full HD 1920×1080 monitor.
 
@@ -2543,11 +2807,11 @@ one step smaller) on a Full HD 1920×1080 monitor.
   `100%` on both monitors, and moving the window between monitors never changes
   the text of the row or the stored preference. The adaptation shows no dialog
   and no notice.
-- `◀` selects the previous and `▶` the next of the five values, wrapping like
+- `◀` selects the previous and `▶` the next of the four values, wrapping like
   every other cyclic selector, and stores it as the new preference. **No value is
   skipped or hidden**, even when the current monitor clamps several of them to
-  the same cell size: on a 1920×1080 monitor 60/80/100/120% all give 8×18 px and
-  140% gives 12×27, so most steps change the preference and nothing visible. This is intended
+  the same cell size: on a 1920×1080 monitor 60/80/100/120% all give 8×18 px, so
+  no step changes anything visible. This is intended
   (`ARCHITECTURE.md` §3.1.1, *Several percentages may share one `k`*).
 - `100%` is the default preference, and the menu opens in Light theme by default.
 - When the cell size changes (a step that changes `effective_k`, or the window
@@ -2607,7 +2871,10 @@ tab characters MUST NOT appear in any `.txt` reference.
 
 # 29. Command Bar
 
-The Command Bar exposes one Workbench menu, one Sketch menu and command groups.
+The Command Bar follows `Command_Bar.txt`: Workbench, Datum, Create, Shape,
+Modify, Pattern and Utilities, in that order. Its corrected header agrees with
+the seven popup definitions. This supersedes the CommandBar row in the older
+`Interface_Exemple.txt` shell reference; other shell rows remain authoritative.
 
 Current workbenches:
 
@@ -2623,29 +2890,23 @@ Manufacture
 PLM
 ```
 
-Sketch (`Command_Bar.txt`):
+Datum contains `[S]ketch`, `[Pl]ane`, `[A]xis` and `[P]oint`.
+Sketch and the other unimplemented commands remain UI-only mocks: they close
+the popup without creating geometry, features or Model/BrepKIT operations.
 
-```text
-╭─Sketch─────────╮
-│ [N]ew Sketch   │
-╰────────────────╯
-```
-
-`[N]ew Sketch` is UI-only and mock-only like every command in M2: it performs
-only the existing mock action (closing the popup and any mock state change the
-plan defines). It creates no sketch, no geometry and no feature, and calls
-neither the Model nor BrepKIT. Sketch editing is a later milestone.
-
-Current command groups:
+Current command groups (exact labels, separators and order are in the reference):
 
 | Group | Commands |
 |---|---|
-| Create | `[E]xtrude`, `[R]evolve`, `[L]oft`, `[S]weep` |
-| Operate | `[B]oolean`, `[S]plit [F]ace`, `[S]plit [B]ody`, `[T]ransform` |
-| Pattern | `[Mi]rror`, `[Li]near`, `[Ci]rcular`, `[Cu]rve` |
-| Refine | `[F]illet`, `[C]hamfer`, `[S]hell`, `[D]raft` |
-| Construct | `[Pl]ane`, `[A]xis`, `[P]oint` |
-| Inspect | `[M]esure`, `[S]plit [V]iew`, `Curvature`, `Properties` |
+| Create | `[E]xtrude`, `[R]evolve`, `[L]oft`, `[S]weep`; Hole, Thread, Thicken; Helix, Primitive Body |
+| Shape | Projected Curve, Bridging Curve, Composit Curve, Intersect Curve; Offset Surface, Fill Surface, Constrained |
+| Modify | `[F]illet`, `[C]hamfer`, Shell, Draft, Face Blend; Boolean, Split Face, Split Body; Transform, Delete Face, Move Face |
+| Pattern | Mirror, Linear, Circular, Curve |
+| Utilities | `[M]esure`, Split View, Curvature, Properties |
+
+Semicolons in this table denote separator rows. Existing keyboard aliases for
+commands moved between groups are retained within their new popup, including
+`B` for Boolean and the multi-letter Pattern aliases (`Mi`, `Li`, `Ci`, `Cu`).
 
 Bracketed characters identify the mnemonic associated with the command.
 
@@ -2669,8 +2930,8 @@ is scoped to the popup that is open (`[S]` appears in several popups).
 
 ## 29.1 Placement of CommandBar popups
 
-The CommandBar popups (Workbench, Sketch, Create, Operate, Pattern, Refine,
-Construct, Inspect) are centred in the grid, not anchored under their header.
+The CommandBar popups (Workbench, Datum, Create, Shape, Modify, Pattern,
+Utilities) are centred in the grid, not anchored under their header.
 For a popup of `popup_width × popup_height` cells (frame included) in a grid of
 `grid_cols × grid_rows` cells:
 
@@ -2682,7 +2943,7 @@ row = floor((grid_rows − popup_height) / 2)
 with integer arithmetic on non-negative values: if a difference is negative the
 coordinate is 0 (the popup is clipped at the right/bottom grid edge, never at
 the left/top edge and never wrapped). The popup size is that of its `.txt`
-reference (for example Workbench 18 × 11, Sketch 18 × 3), unchanged by
+reference (for example Workbench 19 × 11, Datum 19 × 6), unchanged by
 centring. The grid is the whole composed grid (82 × 30 or larger), not the
 viewport region, so the result is stable under panel resizing.
 
@@ -2908,6 +3169,10 @@ atlas holds exactly that set, built once per `k`; any other character is drawn
 as `?` and nothing is added at run time. Adding a character to a `.txt` reference
 therefore adds it to the required set (and the font-coverage test must pass).
 
+`╞`, `╡` and `╘` of this palette are the hover glyphs of §5.12 (they also occur
+in `Interface_Elements.txt` and `Interface_Exemple.txt`, so no atlas change is
+needed); `Special_ASCII.txt` lists the exact hover substitutions.
+
 A character does not receive a universal interaction merely because it appears
 in this file.
 
@@ -2986,7 +3251,9 @@ contains separate interaction regions for:
 - formula action `☰`.
 
 The complete text field MUST NOT necessarily be treated as one indivisible
-interaction target.
+interaction target. For the hover highlight (§5.12) the regions of one
+Parameter, Checkbox or Menu row are one visual target: the row's border slots
+change whichever of its regions holds the pointer.
 
 This remains subject to the O(1) hit-testing rules in `ARCHITECTURE.md`.
 
@@ -2997,7 +3264,7 @@ This remains subject to the O(1) hit-testing rules in `ARCHITECTURE.md`.
 | File | Purpose |
 |---|---|
 | `Interface_Exemple.txt` | complete application-shell composition |
-| `Interface_Elements.txt` | reusable fields, modals, progress, profile ordering, Formula editor and Action Box header states |
+| `Interface_Elements.txt` | reusable fields, modals, progress, profile ordering, Formula editor, Action Box header states and the four hover examples ("Effet Hover", §5.12) |
 | `Application_Menu_Bar.txt` | File/Edit/View/Help menu states |
 | `Command_Bar.txt` | workbench and CAD command menus |
 | `Action_Box_Extrude.txt` | Extrude base panels and every currently defined line/branch variant |
@@ -3005,7 +3272,7 @@ This remains subject to the O(1) hit-testing rules in `ARCHITECTURE.md`.
 | `Action_Box_Loft.txt` | Loft base panels and every currently defined line/branch variant |
 | `Action_Box_Sweep.txt` | Sweep base panels and every currently defined line/branch variant |
 | `Action_Box_Boolean.txt` | Boolean Add/Cut/Inter panels and line/branch variants |
-| `Special_ASCII.txt` | visual character palette |
+| `Special_ASCII.txt` | visual character palette and hover substitutions |
 
 ---
 

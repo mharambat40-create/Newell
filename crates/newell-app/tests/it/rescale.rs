@@ -71,7 +71,7 @@ fn shell_state_survives_a_scale_change() {
     // Open the File menu and move the selection.
     c.pointer_moved(at(m5, 3, 1));
     assert!(c.pointer_pressed().grid);
-    assert_eq!(glyph(c.grid(), 1, 2), Some('┌'), "File menu open");
+    assert_eq!(glyph(c.grid(), 1, 2), Some('╭'), "File menu open");
     let state_before = c.shell().interaction().to_owned();
     let popup_open = c.grid().clone();
 
@@ -87,7 +87,7 @@ fn shell_state_survives_a_scale_change() {
         &popup_open,
         "the open menu is recomposed identically"
     );
-    assert_eq!(glyph(c.grid(), 1, 2), Some('┌'));
+    assert_eq!(glyph(c.grid(), 1, 2), Some('╭'));
     // Keyboard input still reaches the open menu after the transition.
     assert!(c.key(ShellKey::Escape).grid);
     assert_eq!(glyph(c.grid(), 1, 2), Some('═'));

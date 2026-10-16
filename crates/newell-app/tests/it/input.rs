@@ -6,7 +6,7 @@
 // (at your option) any later version.
 
 use newell_app::input::{translate_key, ui_point};
-use newell_ui::{ShellKey, UiPoint};
+use newell_ui::{EditKey, ShellKey, UiPoint};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
 
 const NONE: ModifiersState = ModifiersState::empty();
@@ -85,6 +85,29 @@ fn typed_text_becomes_chars_without_control_characters() {
 fn ctrl_and_super_chords_are_not_text() {
     for mods in [ModifiersState::CONTROL, ModifiersState::SUPER] {
         assert!(translate_key(&ch("c"), unknown(), Some("c"), mods).is_empty());
+    }
+}
+
+#[test]
+fn editing_keys_translate_for_the_field_being_edited() {
+    let edit = |k| vec![ShellKey::Edit(k)];
+    assert_eq!(named(NamedKey::Home, NONE), edit(EditKey::Home));
+    assert_eq!(named(NamedKey::End, NONE), edit(EditKey::End));
+    assert_eq!(named(NamedKey::Delete, NONE), edit(EditKey::Delete));
+    let shift = ModifiersState::SHIFT;
+    assert_eq!(named(NamedKey::ArrowLeft, shift), edit(EditKey::SelectLeft));
+    assert_eq!(
+        named(NamedKey::ArrowRight, shift),
+        edit(EditKey::SelectRight)
+    );
+    assert_eq!(named(NamedKey::Home, shift), edit(EditKey::SelectHome));
+    assert_eq!(named(NamedKey::End, shift), edit(EditKey::SelectEnd));
+    assert_eq!(named(NamedKey::ArrowLeft, NONE), vec![ShellKey::Left]);
+    for mods in [ModifiersState::CONTROL, ModifiersState::SUPER] {
+        assert_eq!(
+            translate_key(&ch("a"), unknown(), Some("a"), mods),
+            edit(EditKey::SelectAll)
+        );
     }
 }
 

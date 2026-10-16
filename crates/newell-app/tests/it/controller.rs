@@ -61,7 +61,8 @@ fn starts_with_the_composed_reference_shell() {
     assert_eq!(c.grid(), &c.shell().compose().unwrap());
 }
 
-/// There is no hover: moving the pointer over widgets, without a press, changes nothing.
+/// Moving the pointer over widgets that are not hover targets (M2.25), without a press, changes
+/// nothing. Hover over the targets is covered in `hover.rs`.
 #[test]
 fn pointer_motion_without_a_press_changes_nothing() {
     let mut c = controller();
@@ -81,7 +82,7 @@ fn press_opens_the_file_menu_and_escape_closes_it() {
     c.pointer_moved(at(3, 1));
     let u = c.pointer_pressed();
     assert!(u.grid);
-    assert_eq!(glyph(c.grid(), 1, 2), Some('┌'));
+    assert_eq!(glyph(c.grid(), 1, 2), Some('╭'));
     assert!(c.key(ShellKey::Escape).grid);
     assert_eq!(glyph(c.grid(), 1, 2), Some('═'));
 }
@@ -262,12 +263,13 @@ fn dragging_outside_the_window_clamps() {
 }
 
 #[test]
-fn dragging_the_action_separator_resizes_the_panel() {
+fn the_action_box_has_a_fixed_width_and_no_draggable_border() {
     let mut c = controller();
-    c.pointer_moved(at(54, 15));
+    // The box's left border (column 50 at 82 columns) is inert frame, not a separator.
+    c.pointer_moved(at(50, 15));
     c.pointer_pressed();
-    assert!(c.dragging());
-    assert!(c.pointer_moved(at(50, 15)).grid);
+    assert!(!c.dragging());
+    assert!(!c.pointer_moved(at(40, 15)).grid);
     assert_eq!(c.shell().action_width(), 31);
     c.pointer_released();
 }

@@ -3,22 +3,22 @@ source: crates/newell-ui/tests/it/snapshots.rs
 expression: "snapshot(&ShellState::new(40, 20))"
 ---
 ╔══════════════════════════════════════╗
-║ File  Edit  View  Help   [-] [□] [X] ║
+║ File │ Edit │ View │ Help            ║
 ╠══════════════════════════════════════╣
-║ Workbench  Sketch  Create  Operate  P║
+║ Workbench │ Datum │ Create │ Shape │ ║
 ╠══════════════════╦═══════════════════╣
-║[-] Features      ║┌─────────────────┐║
-║ ├ □ Sketch_Profil║│Extrude          │║
-║ ├[-] Hub_Features║│─────────────────│║
-║ │ ├ □ Extrude_Bas║│ Solid  ║Surface │║
-║ │ ├ ■ Sketch_Hole║│ New ║ Add │Remov│║
-║ │ └ □ Extrude_Cut║│◀     Blind     ▶│║
-╠══════════════════╣│Depth       [0.☰]│║
-║[-] Elements      ║│□ Invert         │║
-║ ├[-] Solid Bodies║│□ Starting Offset│║
-║ │ ├ ■ Rim_Body   ║│□ Symmetric      │║
-║ │ └ □ Hub_Body   ║│□ Second end posi│║
-║ ├ □ Surfaces(0)  ║└─────────────────┘║
+║[-]Features       ║╭─Extrude─────┬────║
+║ ├ □ Sketch_Profi…║│    Solid    │    ║
+║ ├[-] Hub_Features║├───────┬─────┘╴╴╴┐║
+║ │ ├ Extrude_Base ║│  New  │   Add   ┆║
+║ │ ├ ■ Sketch_Hole║├───────┘╴╴╴╴╴╴╴╴╴┘║
+║ │ ╰╴Extrude_Cut_…║│ Profile     [Sele║
+╠══════════════════╣│ Extend   ◀     Bl║
+║[-]Elements       ║│ │ Depth   [+|0.0 ║
+║ ├[-]Solid Bodies…║│ │ Along     [Sele║
+║ │ ├ ■ Rim_Body   ║│ │ □ Starting Offs║
+║ │ ╰╴□ Hub_Body   ║│ ╰╴□ End Offset   ║
+║ ├ Surfaces(0)    ║│ □ Symetric       ║
 ╠══════════════════╩═══════════════════╣
 ║ Roue V1* │ Part design │ Fully Constr║
 ╚══════════════════════════════════════╝
@@ -30,10 +30,10 @@ expression: "snapshot(&ShellState::new(40, 20))"
 ........................................
 ........................................
 ........................................
-.....................1111111............
 ........................................
-.....................33333333...........
-.....................33333..............
+........................................
+........................................
+........................................
 ........................................
 ........................................
 ........................................

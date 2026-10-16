@@ -194,7 +194,7 @@ impl SelectionPanel {
                 Some(id) => self.activate(id, bounds),
                 None => false,
             },
-            ModalKey::Char(_) | ModalKey::Backspace => false,
+            ModalKey::Char(_) | ModalKey::Backspace | ModalKey::Edit(_) => false,
         }
     }
 

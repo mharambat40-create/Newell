@@ -6,6 +6,8 @@
 // (at your option) any later version.
 //! Keys the application shell reacts to (already translated from window events).
 
+use crate::EditKey;
+
 /// A translated keyboard input. The shell routes it to the modal, the menus or the base
 /// shell; see [`crate::ShellState::key`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +31,8 @@ pub enum ShellKey {
     Alt(char),
     /// A typed, printable character (a space is `Char(' ')`).
     Char(char),
+    /// Home, End, Delete and the selecting variants, for the field being edited.
+    Edit(EditKey),
 }
 
 impl ShellKey {

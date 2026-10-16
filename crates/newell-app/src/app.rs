@@ -13,10 +13,10 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use newell_render::Renderer;
+use newell_render::{Renderer, Theme};
 use newell_ui::{
-    DEFAULT_SCALE_PERCENT, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode, WindowAction,
-    composed_grid_size, effective_scale, fit_window, min_window_size,
+    DEFAULT_SCALE_PERCENT, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
+    WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -25,7 +25,7 @@ use winit::event::{ElementState, InnerSizeWriter, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::monitor::MonitorHandle;
-use winit::window::{ResizeDirection, Window, WindowId};
+use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::AppError;
 use crate::controller::{Press, ShellController, Update};
@@ -144,6 +144,10 @@ pub(crate) struct App {
     maximized: bool,
     /// The OS reported the window as fully hidden (minimised, covered): no frame is delivered.
     occluded: bool,
+    /// Monitor size for which a refused fullscreen request was already logged.
+    fullscreen_refusal_logged: Option<(u32, u32)>,
+    /// Start of the monotonic clock handed to the controller for double-click timing.
+    epoch: Instant,
 }
 
 impl App {
@@ -168,6 +172,8 @@ impl App {
             control: ControlArm::default(),
             maximized: false,
             occluded: false,
+            fullscreen_refusal_logged: None,
+            epoch: Instant::now(),
         }
     }
 
@@ -180,8 +186,60 @@ impl App {
         event_loop.exit();
     }
 
+    /// Carries the View menu's choices out of the shell: the theme goes to the renderer's
+    /// uniform, a changed UI Scale preference to the scale manager (one transition if
+    /// `effective_k` changes), and a Fullscreen request to the window.
+    fn sync_view_choices(&mut self) {
+        let Some(shell) = &mut self.shell else { return };
+        let theme = match shell.shell().theme() {
+            ThemeChoice::Light => Theme::Light,
+            ThemeChoice::Dark => Theme::Dark,
+        };
+        let percent = shell.shell().preferred_scale_percent();
+        let fullscreen = shell.take_fullscreen_request();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_theme(theme);
+        }
+        if percent != self.scale.preferred_percent() {
+            self.scale.set_preferred_percent(percent);
+            // A preference whose `k` is unchanged only stores the preference.
+            self.reconcile_with("preference", None, true);
+        }
+        if fullscreen {
+            self.toggle_fullscreen();
+        }
+    }
+
+    /// View > Fullscreen: leaves fullscreen, or enters it on the hosting monitor unless even
+    /// `k = 2` would not fit there (refused, logged once per monitor size). The derivation of
+    /// `k` and the window fit stay with the M2.17 transition, run by `reconcile`.
+    fn toggle_fullscreen(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        self.cancel_resize(CancelReason::StateChanged);
+        if window.fullscreen().is_some() {
+            window.set_fullscreen(None);
+        } else {
+            let monitor = host_monitor(&window);
+            let size = monitor.as_ref().map(|m| (m.size().width, m.size().height));
+            if size.is_some_and(|size| k_fit(size, ScaleMode::Fullscreen) < 2) {
+                if self.fullscreen_refusal_logged != size {
+                    self.fullscreen_refusal_logged = size;
+                    log(
+                        "fullscreen refused: the monitor is smaller than the 82 x 30 minimum grid at k = 2",
+                    );
+                }
+                return;
+            }
+            window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+        }
+        self.reconcile("fullscreen", None);
+    }
+
     /// Uploads what `update` says changed and asks for a redraw.
     fn apply(&mut self, update: Update) {
+        self.sync_view_choices();
         if !update.any() {
             return;
         }
@@ -323,6 +381,19 @@ impl App {
     /// `writer` is the `ScaleFactorChanged` size writer, when called from that event: the target
     /// size is then written through it. Returns `true` if the writer was used.
     fn reconcile(&mut self, reason: &str, writer: Option<&mut InnerSizeWriter>) -> bool {
+        self.reconcile_with(reason, writer, false)
+    }
+
+    /// [`Self::reconcile`]; with `skip_same_k` a change that leaves `effective_k` as it is
+    /// (a UI Scale preference several percentages share) records its inputs and stops: no
+    /// transition runs. A window still being moved is not skipped, so the pending monitor
+    /// change is applied with it.
+    fn reconcile_with(
+        &mut self,
+        reason: &str,
+        writer: Option<&mut InnerSizeWriter>,
+        skip_same_k: bool,
+    ) -> bool {
         let Some(window) = self.window.clone() else {
             return false;
         };
@@ -330,6 +401,9 @@ impl App {
         let Some(rescale) = self.scale.evaluate(monitor, scale_mode(&window)) else {
             return false;
         };
+        if skip_same_k && !rescale.k_changed && self.moved_at.is_none() {
+            return false;
+        }
         self.log_runtime(reason, &window, &rescale);
         if rescale.log_limit {
             log(
@@ -522,6 +596,7 @@ impl App {
         };
         let size = window.inner_size();
         let Some(shell) = &mut self.shell else { return };
+        shell.set_time(self.epoch.elapsed());
         match shell.press((size.width, size.height), resizable) {
             Press::Shell(update) => self.apply(update),
             Press::Window(action) => self.control.arm(action),
@@ -561,7 +636,18 @@ impl App {
 
     /// Native resize first; on `NotSupported` (macOS) remember it, log once and manage the
     /// resize here. `Ignored` and `Os` errors are logged and do nothing.
+    /// Removes the ASCII hover target and uploads the grid if it changed (M2.25).
+    fn clear_hover(&mut self) {
+        let update = self
+            .shell
+            .as_mut()
+            .map(ShellController::clear_hover)
+            .unwrap_or_default();
+        self.apply(update);
+    }
+
     fn start_resize(&mut self, window: &Window, zone: ResizeZone) {
+        self.clear_hover();
         if !self.resize.native_unsupported() {
             match window.drag_resize_window(direction(zone)) {
                 Ok(()) => {
@@ -791,16 +877,27 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } if self.resize.is_active() => {
-                // The shell keeps the pointer for the next press; it sees no drag.
-                if let Some(shell) = &mut self.shell {
-                    shell.pointer_moved(ui_point(position.x, position.y));
-                }
+                // The shell keeps the pointer for the next press; it sees no drag and no hover.
+                let update = self
+                    .shell
+                    .as_mut()
+                    .map(|shell| {
+                        shell.pointer_moved_during_resize(ui_point(position.x, position.y))
+                    })
+                    .unwrap_or_default();
+                self.apply(update);
                 self.resize_pointer(position);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ui_point(position.x, position.y);
+                // An OS-managed resize owns the pointer: no hover until its first move after it.
+                let native = self.native_resizing;
                 if let Some(shell) = &mut self.shell {
-                    let update = shell.pointer_moved(point);
+                    let update = if native {
+                        shell.pointer_moved_during_resize(point)
+                    } else {
+                        shell.pointer_moved(point)
+                    };
                     self.apply(update);
                 }
             }

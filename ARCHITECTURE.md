@@ -840,18 +840,29 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 
 ### 3.5 Interaction Model (ASCII Hover Highlight)
 
-> **[APPROVED ARCHITECTURAL CHANGE — M2.16]** Hover-specific behaviour was
-> intentionally and permanently removed from Newell. The previous §3.5
-> "Hover & Interactivity" (`WidgetState::Hovered`, shader colour shift,
-> left-border highlight, logo brightness multiplier) is superseded. Its
-> absence in code is NOT a regression. Reintroducing any of it without a prior
-> amendment of this document is a violation.
+> **[APPROVED ARCHITECTURAL CHANGE — M2.16; M2.25 EXCEPTION]** M2.16
+> removed the previous hover implementation, including colour-based
+> highlighting, brightness changes and GPU effects. Its absence in code is
+> NOT a regression. M2.25 explicitly authorizes hover exclusively through
+> instantaneous Unicode border-character substitutions, as specified below,
+> without colour changes, animations or GPU effects. Any hover implementation
+> outside this approved M2.25 exception remains an architectural violation.
 
 - **Pointer routing (unchanged):** The Controller resolves pointer position to a grid cell and `widget_id` via O(1) division (`mouse_x / cell_width`), including Sub-Cell Modulo Logic (§3.4). This applies to click, press, release, drag and scroll. No bounding-box iteration is allowed.
 - **Retained interaction mechanisms:** Hit-testing, clicking, dragging, keyboard focus and navigation, selection, pressed state during a click/drag, disabled state, expansion/checked state and all other non-hover interactions remain fully in force.
 ### ASCII Hover Highlight (M2.25)
 
 M2.25 authorizes discrete, text-only hover highlighting.
+
+The approved Action Box extension includes all parameter and checkbox rows,
+including cyclic selectors, and every header segment (Solid, Surface, New,
+Add, Remove and Boolean operations). Header segments use their own two
+boundaries like OK/Cancel: `│` or `┆` becomes `╞` on the left and `╡` on the
+right, without changing the active-segment horizontal topology.
+Parameter labels, padding and cyclic value text may inherit an existing
+region id for hover only through at most 31 cell reads in their Action Box
+row. Click routing and region-specific WidgetIds remain unchanged. This
+fixed-width lookup preserves O(1) resolution and introduces no stored state.
 
 **Controller**
 - The Controller MAY store `hovered: Option<WidgetId>`.
@@ -879,7 +890,7 @@ Parameter:
 → `│ ╞ Along     [Select…       ]╡`
 
 Checkbox:
-`│ ╰╴□ End Offset              ╡`
+`│ ╰╴□ End Offset              │`
 → `│ ╘ □ End Offset              ╡`
 
 Button:

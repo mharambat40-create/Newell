@@ -6,52 +6,87 @@
 // (at your option) any later version.
 //! Shell layout and composition: pure functions from [`ShellState`] to a flat [`CellGrid`].
 
-use super::data::{COMMAND_MENUS, status_text, visible_rows, with_bar_menus};
-use super::{BAR_IDS, COMMAND_IDS, ShellState, Tree, WINDOW_BASE, tree_id};
-use crate::widgets::Canvas;
+use super::data::{
+    COMMAND_MENUS, Line, NodeKind, clamp_playhead, full_label, has_children, status_text,
+    top_level_count, visible_lines, with_bar_menus,
+};
+use super::{
+    BAR_IDS, COMMAND_IDS, PLAYHEAD_ID, ShellState, Tree, TreePart, WINDOW_BASE, tree_id,
+    tree_part_id,
+};
+use crate::widgets::{Canvas, owned_blank};
 use crate::{
-    BorderLine, CellGrid, GridRect, TreeNodeKind, TreeRow, UiError, WidgetContext, WidgetId,
-    WidgetState, WidgetStyles, compose_overlays, draw_border, draw_label, draw_menu_bar,
-    draw_menu_popup, draw_tree_row, title_rect,
+    BorderLine, CellGrid, GridRect, InteractionState, TreeNodeKind, TreeRow, TreeRowIds, UiError,
+    WidgetContext, WidgetId, WidgetState, WidgetStyles, compose_overlays, draw_border, draw_label,
+    draw_menu_bar, draw_menu_popup, draw_tree_row, title_rect,
 };
 
 /// Default NavigationPanel width, frame included.
 pub(super) const NAV_WIDTH: u32 = 25;
 /// Narrowest NavigationPanel, frame included (a smaller grid caps it at half its width).
-const NAV_MIN: u32 = 8;
+const NAV_MIN: u32 = 14;
 /// Rows above the body: MenuBar and CommandBar frames sharing their middle border.
-const TOP_ROWS: u32 = 4;
+pub(super) const TOP_ROWS: u32 = 4;
+/// Features pane height of the reference, frame included (`Interface_Exemple.txt`: rows 5..17).
+/// At the default split every row of the body beyond the reference body belongs to Elements
+/// (`README_UI.md` §25).
+const DEFAULT_FEATURES_ROWS: u32 = 13;
+/// Shortest Features or Elements pane, frame included: border, header and border.
+const PANE_MIN: u32 = 3;
 /// Rows of the StatusBar frame.
 const STATUS_ROWS: u32 = 3;
 /// NavCube placeholder size, frame included.
 const CUBE_WIDTH: u32 = 9;
 const CUBE_HEIGHT: u32 = 4;
-/// Default Extrude ActionPanel width, frame included (`Interface_Exemple.txt`).
-pub(super) const PANEL_WIDTH: u32 = 27;
-/// Narrowest ActionPanel, frame included (a narrower viewport caps it at its width).
-const PANEL_MIN: u32 = 16;
-/// Title row, separator and the two frame rows around the panel's body rows.
-const PANEL_CHROME_ROWS: u32 = 4;
+/// Action Box width, frame included: fixed (`README_UI.md` §2.2, `Interface_Exemple.txt`).
+pub(super) const PANEL_WIDTH: u32 = crate::action_box::BOX_WIDTH;
 /// Window controls drawn at the right end of the MenuBar, with a trailing space.
 const WINDOW_CONTROLS: [&str; 3] = ["[-]", "[□]", "[X]"];
 const WINDOW_CONTROLS_WIDTH: u32 = 12;
 
-/// The user-chosen widths of the two resizable panels, in whole cells. They are wishes: the
-/// widths actually used are clamped to the current grid by [`Layout`], so a window that shrinks
-/// and grows back restores them.
+/// The Features / Elements split the user dragged: the Features pane (frame included) was
+/// `features` rows in a body of `body` rows. A body of another height scales it, so a window
+/// resize keeps the proportion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Split {
+    pub features: u32,
+    pub body: u32,
+}
+
+/// The user-chosen sizes of the resizable panels, in whole cells. They are wishes: the sizes
+/// actually used are clamped to the current grid by [`Layout`], so a window that shrinks and
+/// grows back restores them. `split` is `None` until the divider is dragged (the reference
+/// split). The Action Box is not resizable: its width is fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PanelWidths {
     pub nav: u32,
-    pub action: u32,
+    pub split: Option<Split>,
 }
 
 impl Default for PanelWidths {
     fn default() -> Self {
         Self {
             nav: NAV_WIDTH,
-            action: PANEL_WIDTH,
+            split: None,
         }
     }
+}
+
+/// Features pane height (frame included) in a body of `body` rows: the reference height (at
+/// most three fifths of the body) by default, else the dragged split scaled to the body. At
+/// least [`PANE_MIN`] rows each for the two panes where the body allows it.
+pub(super) fn features_rows(body: u32, split: Option<Split>) -> u32 {
+    let wanted = match split {
+        Some(s) if s.body > 0 => {
+            let scaled = (u64::from(s.features) * u64::from(body) + u64::from(s.body) / 2)
+                / u64::from(s.body);
+            u32::try_from(scaled).unwrap_or(u32::MAX)
+        }
+        _ => (body.saturating_mul(3) / 5).min(DEFAULT_FEATURES_ROWS),
+    };
+    // The panes share one border row, so Elements gets `body - features + 1` rows.
+    let max = body.saturating_add(1).saturating_sub(PANE_MIN);
+    wanted.clamp(PANE_MIN.min(max), max)
 }
 
 /// NavigationPanel width actually used on a grid `cols` wide: at least [`NAV_MIN`] and at most
@@ -61,18 +96,21 @@ pub(super) fn nav_width(cols: u32, wanted: u32) -> u32 {
     wanted.clamp(NAV_MIN.min(half), half)
 }
 
-/// ActionPanel width actually used in a viewport interior `inner` cells wide.
-pub(super) fn action_width(inner: u32, wanted: u32) -> u32 {
-    wanted.clamp(PANEL_MIN.min(inner), inner)
+/// Action Box width actually used in a viewport interior `inner` cells wide: the fixed
+/// [`PANEL_WIDTH`], or the interior if that is narrower (the box is then cropped).
+pub(super) fn action_width(inner: u32) -> u32 {
+    PANEL_WIDTH.min(inner)
 }
 
-/// A draggable vertical separator. Dragging snaps to a character column and resizes the panel
-/// on its right (`Navigation`: the NavigationPanel's right border) or the ActionPanel on its
-/// left (`Action`: the panel's left border).
+/// A draggable separator. Dragging snaps to a character column and resizes the panel
+/// on its right (`Navigation`: the NavigationPanel's right border).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Separator {
     Navigation,
-    Action,
+    /// The horizontal divider between the Features and Elements panes (their shared border).
+    Split,
+    /// The playhead separator row of the Features tree (`│ ─────────────────── `).
+    Playhead,
 }
 
 /// The framed regions of the shell, in whole cells. Neighbouring frames share their
@@ -89,7 +127,7 @@ pub(super) struct Layout {
     pub status: GridRect,
     /// Effective NavigationPanel width (frame included).
     pub nav: u32,
-    /// Effective ActionPanel width (frame included).
+    /// Effective Action Box width (frame included).
     pub action: u32,
 }
 
@@ -99,7 +137,7 @@ impl Layout {
         let status_top = rows.saturating_sub(STATUS_ROWS);
         // Body frames run from row `TOP_ROWS` to the status frame's top row, inclusive.
         let body = status_top.saturating_sub(TOP_ROWS - 1);
-        let features_h = body.saturating_mul(3) / 5;
+        let features_h = features_rows(body, widths.split);
         let (elements_top, elements_h) = if features_h == 0 {
             (TOP_ROWS, body)
         } else {
@@ -123,7 +161,7 @@ impl Layout {
             viewport,
             status: GridRect::new(0, status_top, cols, STATUS_ROWS),
             nav,
-            action: action_width(viewport.inset(1).width(), widths.action),
+            action: action_width(viewport.inset(1).width()),
         }
     }
 
@@ -138,31 +176,32 @@ impl Layout {
     }
 
     /// The separator under cell `(col, row)`, by arithmetic on the layout (no cell scan). The
-    /// NavigationPanel's right border spans the body rows; the ActionPanel's left border spans
-    /// the panel (`action_rows` body rows) when it is open.
-    pub(super) fn separator_at(
-        &self,
-        col: u32,
-        row: u32,
-        action_rows: Option<usize>,
-    ) -> Option<Separator> {
+    /// NavigationPanel's right border spans the body rows.
+    pub(super) fn separator_at(&self, col: u32, row: u32) -> Option<Separator> {
         let in_rows =
             |r: &GridRect| u64::from(row) >= u64::from(r.row()) && u64::from(row) < r.bottom();
         if self.nav >= 2 && col == self.nav - 1 && in_rows(&self.viewport) {
             return Some(Separator::Navigation);
         }
-        let panel = self.action_panel(action_rows?);
-        (panel.width() >= 2 && col == panel.col() && in_rows(&panel)).then_some(Separator::Action)
+        // The divider is the shared border row of the two panes, between the frame ring and
+        // the panel's right border.
+        if self.features.height() > 0
+            && self.elements.height() > 0
+            && row == self.elements.row()
+            && col >= 1
+            && col + 1 < self.nav
+        {
+            return Some(Separator::Split);
+        }
+        None
     }
 
-    /// The Extrude ActionPanel: right-aligned, `rows` body rows tall, clipped to the viewport.
-    /// It sits directly under the NavCube when it fits there; otherwise it moves up over the
-    /// cube rather than losing its OK / Cancel row.
+    /// The Extrude Action Box: right-aligned, `rows` rows tall (frame included), clipped to
+    /// the viewport. It sits directly under the NavCube when it fits there; otherwise it moves
+    /// up over the cube rather than losing its OK / Cancel row.
     pub(super) fn action_panel(&self, rows: usize) -> GridRect {
         let inner = self.viewport.inset(1);
-        let height = u32::try_from(rows)
-            .unwrap_or(u32::MAX)
-            .saturating_add(PANEL_CHROME_ROWS);
+        let height = u32::try_from(rows).unwrap_or(u32::MAX);
         let top = CUBE_HEIGHT.min(inner.height().saturating_sub(height));
         inner
             .split_top(top)
@@ -180,24 +219,55 @@ impl ShellState {
     }
 
     /// Composes the whole shell: frames, bars, trees, viewport, NavCube, the Extrude
-    /// ActionPanel, then the open overlays on top. The output depends only on this state.
+    /// Action Box, then the open overlays on top. The output depends only on this state.
     ///
     /// # Errors
     /// Only if the grid size is rejected by [`CellGrid::new`].
     pub fn compose(&self) -> Result<CellGrid, UiError> {
+        self.compose_hovered(None).map(|(grid, _)| grid)
+    }
+
+    /// Composes the shell with the ASCII hover target `hovered` (M2.25, `README_UI.md` §5.12).
+    /// The target is highlighted only where it is eligible: while an overlay is open, only the
+    /// topmost overlay may be hovered, so the Action Box beneath it is never highlighted. The
+    /// grid equals [`Self::compose`] apart from the substituted border glyphs, and `hovered` is
+    /// not stored. Returns the grid and whether the hovered target was highlighted.
+    ///
+    /// # Errors
+    /// Only if the grid size is rejected by [`CellGrid::new`].
+    pub fn compose_hovered(&self, hovered: Option<WidgetId>) -> Result<(CellGrid, bool), UiError> {
         let mut grid = CellGrid::new(self.cols, self.rows)?;
         let styles = WidgetStyles::default();
-        let ctx = WidgetContext {
+        let below = InteractionState {
+            hovered: hovered.filter(|_| self.overlays.is_empty()),
+            ..self.interaction
+        };
+        let above = InteractionState {
+            hovered,
+            ..self.interaction
+        };
+        let base = WidgetContext {
             styles: &styles,
-            interaction: &self.interaction,
+            interaction: &below,
+        };
+        let top = WidgetContext {
+            styles: &styles,
+            interaction: &above,
         };
         let layout = self.layout();
-        self.draw_chrome(&mut grid, &ctx, &layout);
-        if let Some(panel) = self.extrude.compose() {
-            panel.draw(&mut grid, &ctx, layout.action_panel(panel.rows.len()));
+        self.draw_chrome(&mut grid, &base, &layout);
+        let mut lit = false;
+        if let Some(panel) = self.panel().compose_box() {
+            let (_, drawn) = panel.draw_with(
+                &mut grid,
+                &base,
+                layout.action_panel(panel.height()),
+                Some(self.fields()),
+            );
+            lit |= drawn;
         }
-        self.draw_overlays(&mut grid, &ctx, layout.grid);
-        Ok(grid)
+        lit |= self.draw_overlays(&mut grid, &top, layout.grid);
+        Ok((grid, lit))
     }
 
     fn draw_chrome(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, layout: &Layout) {
@@ -251,6 +321,19 @@ impl ShellState {
         );
     }
 
+    /// The lines of `tree` currently shown (before clipping to the pane): the visible nodes
+    /// and, in the Features tree, the playhead separator.
+    pub(super) fn tree_lines(&self, tree: Tree) -> Vec<Line> {
+        let (open, playhead) = match tree {
+            Tree::Features => (
+                &self.features_open,
+                clamp_playhead(self.playhead, top_level_count(tree.nodes())),
+            ),
+            Tree::Elements => (&self.elements_open, None),
+        };
+        visible_lines(tree.nodes(), open, playhead)
+    }
+
     fn draw_tree(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, tree: Tree) {
         let inner = frame.inset(1);
         let nodes = tree.nodes();
@@ -258,11 +341,12 @@ impl ShellState {
             Tree::Features => &self.features_open,
             Tree::Elements => &self.elements_open,
         };
-        let shown = visible_rows(nodes, open);
-        for (line, row) in shown.iter().enumerate().take(inner.height() as usize) {
-            let Some(node) = nodes.get(row.index) else {
-                continue;
-            };
+        for (line, shown) in self
+            .tree_lines(tree)
+            .iter()
+            .enumerate()
+            .take(inner.height() as usize)
+        {
             let at = GridRect::new(
                 inner.col(),
                 inner
@@ -271,9 +355,29 @@ impl ShellState {
                 inner.width(),
                 1,
             );
+            let row = match shown {
+                Line::Playhead => {
+                    draw_playhead(grid, ctx, at);
+                    continue;
+                }
+                Line::Node(row) => row,
+            };
+            let Some(node) = nodes.get(row.index) else {
+                continue;
+            };
+            let label = full_label(
+                nodes,
+                row.index,
+                self.names[tree.slot()][row.index].as_deref(),
+            );
             let tree_row = TreeRow {
-                id: tree_id(tree, row.index),
-                kind: if node.branch {
+                ids: TreeRowIds {
+                    row: tree_id(tree, row.index),
+                    marker: tree_part_id(tree, row.index, TreePart::Marker),
+                    check: tree_part_id(tree, row.index, TreePart::Check),
+                    name: tree_part_id(tree, row.index, TreePart::Name),
+                },
+                kind: if has_children(nodes, row.index) {
                     TreeNodeKind::Branch
                 } else {
                     TreeNodeKind::Leaf
@@ -281,10 +385,12 @@ impl ShellState {
                 depth: node.depth,
                 last: row.last,
                 trunk: &row.trunk,
-                label: node.label,
+                spaced: node.kind == NodeKind::Named,
+                check: node.check.map(|_| self.checks[tree.slot()][row.index]),
+                label: &label,
                 state: WidgetState {
                     expanded: open.get(row.index).copied().unwrap_or(false),
-                    checked: node.checked,
+                    selected: self.selected == Some((tree, row.index)),
                     ..WidgetState::default()
                 },
             };
@@ -292,21 +398,31 @@ impl ShellState {
         }
     }
 
-    fn draw_overlays(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, bounds: GridRect) {
-        // At most one of: a menu popup, the SelectionPanel, the FormulaEditor. Each modal's
+    /// Draws the open overlay layer. Returns `true` if the hovered target was highlighted.
+    fn draw_overlays(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        bounds: GridRect,
+    ) -> bool {
+        // At most one of: a menu popup, the SelectionPanel, the FormulaEditor, the Rename modal. Each modal's
         // `draw` composes the whole stack, so drawing two would erase the first one's content.
         if self.selection.is_open() {
             self.selection.draw(grid, ctx, &self.overlays, bounds);
+            false
         } else if self.formula.is_open() {
-            self.formula.draw(grid, ctx, &self.overlays, bounds);
+            self.formula.draw(grid, ctx, &self.overlays, bounds)
+        } else if self.rename.is_open() {
+            self.rename.draw(grid, ctx, &self.overlays, bounds)
         } else {
+            let mut lit = false;
             compose_overlays(grid, ctx, &self.overlays, bounds, |g, overlay, inner| {
                 if overlay.id == BAR_IDS.popup() {
                     with_bar_menus(&self.view, |menus| {
-                        draw_menu_popup(g, ctx, inner, BAR_IDS, menus, &self.menu_bar);
+                        lit |= draw_menu_popup(g, ctx, inner, BAR_IDS, menus, &self.menu_bar);
                     });
                 } else if overlay.id == COMMAND_IDS.popup() {
-                    draw_menu_popup(
+                    lit |= draw_menu_popup(
                         g,
                         ctx,
                         inner,
@@ -316,22 +432,46 @@ impl ShellState {
                     );
                 }
             });
+            lit
         }
     }
 
-    /// Widget ids of the base shell in reading order: the Features rows, the Elements rows,
-    /// then the Extrude ActionPanel controls. This is the keyboard focus ring; it is read
-    /// from the composed `grid` only when Tab is pressed, never for pointer hit-testing.
+    /// Widget ids of the base shell in reading order: the Features rows, the Elements rows
+    /// (the row id of each node shown, never the playhead), then the Extrude Action Box
+    /// controls. This is the keyboard focus ring; the panel ids are read from the composed
+    /// `grid` only when Tab is pressed, never for pointer hit-testing.
     pub(super) fn focus_ring(&self, grid: &CellGrid) -> Vec<WidgetId> {
         let layout = self.layout();
         let mut ring = Vec::new();
-        collect_ids(grid, layout.features.inset(1), &mut ring);
-        collect_ids(grid, layout.elements.inset(1), &mut ring);
-        if let Some(panel) = self.extrude.compose() {
-            collect_ids(grid, layout.action_panel(panel.rows.len()), &mut ring);
+        for (tree, frame) in [
+            (Tree::Features, layout.features),
+            (Tree::Elements, layout.elements),
+        ] {
+            let shown = frame.inset(1).height() as usize;
+            for line in self.tree_lines(tree).iter().take(shown) {
+                if let Line::Node(row) = line {
+                    ring.push(tree_id(tree, row.index));
+                }
+            }
+        }
+        if let Some(panel) = self.panel().compose_box() {
+            collect_ids(grid, layout.action_panel(panel.height()), &mut ring);
         }
         ring
     }
+}
+
+/// The playhead separator row: `│ ─────────────────── ` (`Interface_Exemple.txt`), the `│`
+/// continuing the guide of the top-level features. Every cell is owned by the playhead id so it
+/// can be dragged; it is not a feature and is never selected or focused.
+fn draw_playhead(grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect) {
+    let style = ctx.styles.normal;
+    let id = WidgetId::new(PLAYHEAD_ID);
+    let mut canvas = Canvas::new(grid, rect);
+    canvas.fill(0, canvas.width(), 0, owned_blank(style, id));
+    canvas.text(0, 0, " │ ", style, Some(id));
+    let dashes = canvas.width().saturating_sub(4).min(canvas.reach());
+    canvas.text(3, 0, &"─".repeat(dashes as usize), style, Some(id));
 }
 
 fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect) {

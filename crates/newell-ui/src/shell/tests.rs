@@ -137,28 +137,27 @@ fn base_shell_has_every_region() {
     let command_bar = text(&g, 3);
     for title in [
         "Workbench",
-        "Sketch",
+        "Datum",
         "Create",
-        "Operate",
+        "Shape",
+        "Modify",
         "Pattern",
-        "Refine",
-        "Construct",
-        "Inspect",
+        "Utilities",
     ] {
         assert!(command_bar.contains(title), "{title}");
     }
-    assert!(text(&g, 5).contains("[-] Features"));
-    assert!(text(&g, 15).contains("[-] Elements"));
+    assert!(text(&g, 5).contains("[-]Features"));
+    assert!(text(&g, 15).contains("[-]Elements"));
     assert!(text(&g, 5).contains("3D Viewport"));
     assert!(
         text(&g, 23)
             .contains("Roue V1* │ Part design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%")
     );
     // The Extrude panel is open at the reference position, under the NavCube.
-    assert!(has(&g, "Solid") && has(&g, "Depth") && has(&g, "Invert"));
+    assert!(has(&g, "Solid") && has(&g, "Depth") && has(&g, "Symetric"));
     assert!(
         has(&g, "OK") && has(&g, "Cancel"),
-        "the panel is not clipped at 82x25"
+        "the panel keeps its OK / Cancel row at 82x25"
     );
     assert!(!has(&g, "Merge with all"));
 }
@@ -199,7 +198,7 @@ fn file_menu_opens_lists_entries_and_closes_on_activation() {
     let mut s = shell();
     assert!(click_text(&mut s, "File"));
     let g = s.compose().unwrap();
-    assert_eq!(glyph(&g, 1, 2), '┌');
+    assert_eq!(glyph(&g, 1, 2), '╭');
     for (row, label) in [
         "New", "Open", "Recent", "Save", "Save As", "Import", "Export", "Option",
     ]
@@ -212,7 +211,7 @@ fn file_menu_opens_lists_entries_and_closes_on_activation() {
         );
     }
     // A popup does not block the rest of the grid.
-    let (col, row) = find(&g, "Invert").unwrap();
+    let (col, row) = find(&g, "Symetric").unwrap();
     assert!(hit_at(&g, col, row).unwrap().widget_id.is_some());
 
     assert!(click_text(&mut s, "Save As"));
@@ -251,7 +250,7 @@ fn only_one_menu_is_open_and_outside_clicks_close_it() {
     // A click on a control while a menu is open only closes the menu.
     click_text(&mut s, "File");
     let before = s.extrude;
-    click_text(&mut s, "Invert");
+    click_text(&mut s, "Symetric");
     assert_eq!(s.extrude, before);
     assert!(!s.menu_bar.is_active());
 }
@@ -295,7 +294,9 @@ fn keyboard_menu_navigation_mirrors_pointer_state() {
     assert_eq!(s.menu_bar.open_menu(), Some(2));
     s.key(ShellKey::Right);
     assert_eq!(s.view.projection, 1);
-    keys(&mut s, &[ShellKey::Down, ShellKey::Down, ShellKey::Enter]);
+    // Shading, UI Scale and Theme come before the first checkbox (`Tree panel`).
+    keys(&mut s, &[ShellKey::Down; 4]);
+    keys(&mut s, &[ShellKey::Enter]);
     assert!(!s.view.checks[0]);
     assert!(s.menu_bar.open_menu().is_some());
     s.key(ShellKey::MenuBar);
@@ -321,7 +322,7 @@ fn typed_mnemonics_assemble_multi_letter_tokens() {
     s.key(ShellKey::Char('i'));
     assert!(!s.command_bar.is_active(), "[Mi]rror activated");
 
-    click_text(&mut s, "Operate");
+    click_text(&mut s, "Modify");
     type_str(&mut s, "sb");
     assert!(!s.command_bar.is_active(), "[S]plit [B]ody activated");
 
@@ -334,51 +335,55 @@ fn typed_mnemonics_assemble_multi_letter_tokens() {
 #[test]
 fn create_extrude_reopens_a_closed_panel_but_keeps_an_open_one() {
     let mut s = shell();
-    click_text(&mut s, "Invert");
-    assert!(s.extrude().values.invert);
+    click_text(&mut s, "Symetric");
+    assert!(s.extrude().values.symmetric);
     click_text(&mut s, "Create");
     click_text(&mut s, "[E]xtrude");
-    assert!(s.extrude().values.invert, "an open panel keeps its edits");
+    assert!(
+        s.extrude().values.symmetric,
+        "an open panel keeps its edits"
+    );
 
     click_text(&mut s, "Cancel");
-    assert!(!s.extrude().is_open() && !has(&s.compose().unwrap(), "Invert"));
+    assert!(!s.extrude().is_open() && !has(&s.compose().unwrap(), "Symetric"));
     click_text(&mut s, "Create");
     click_text(&mut s, "[E]xtrude");
-    assert!(s.extrude().is_open() && !s.extrude().values.invert);
-    assert!(has(&s.compose().unwrap(), "Invert"));
+    assert!(s.extrude().is_open() && !s.extrude().values.symmetric);
+    assert!(has(&s.compose().unwrap(), "Symetric"));
 }
 
 // ---- trees ----
 
 #[test]
 fn navigation_trees_start_as_in_the_reference() {
+    // At 82x25 the Features pane is clipped after `Chamfer_Edges` (the full panel is compared
+    // with the reference at 82x28 in `tree_tests`).
     let g = shell().compose().unwrap();
     for label in [
         "Features",
-        "Sketch_Profile_Ma",
+        "Sketch_Profile_Ma…",
         "Hub_Features",
         "Extrude_Base",
         "Sketch_Hole",
-        "Extrude_Cut_Cent",
+        "Extrude_Cut_Center",
         "Fillet_Inner",
         "Chamfer_Edges",
-        "Pattern_Circular",
         "Elements",
         "Solid Bodies(2)",
         "Rim_Body",
         "Hub_Body",
         "Surfaces(0)",
-        "[+] Construct",
+        "[+]Construct",
     ] {
         assert!(has(&g, label), "{label}");
     }
-    assert!(text(&g, 6).contains("├ □ Sketch_Profile_Ma"));
+    assert!(text(&g, 6).contains("├ □ Sketch_Profile_Ma…║"));
     assert!(text(&g, 7).contains("├[-] Hub_Features"));
-    assert!(text(&g, 8).contains("│ ├ □ Extrude_Base"));
+    assert!(text(&g, 8).contains("│ ├ Extrude_Base"));
     assert!(text(&g, 9).contains("│ ├ ■ Sketch_Hole"));
-    assert!(text(&g, 10).contains("│ └ □ Extrude_Cut_Cent"));
-    assert!(text(&g, 13).contains("└ □ Pattern_Circular"));
-    assert!(text(&g, 20).contains("└[+] Construct"));
+    assert!(text(&g, 10).contains("│ ╰╴Extrude_Cut_Center║"));
+    assert!(text(&g, 12).contains("│ ─────────────────── ║"));
+    assert!(text(&g, 20).contains("╰[+]Construct"));
     assert!(!has(&g, "Plane_XY"), "Construct starts collapsed");
 }
 
@@ -388,7 +393,7 @@ fn tree_expand_and_collapse_keep_ids_and_trees_independent() {
     let fillet = id_of(&s, "Fillet_Inner");
     let rim = id_of(&s, "Rim_Body");
 
-    assert!(click_text(&mut s, "Hub_Features"));
+    assert!(click_text(&mut s, "[-] Hub_Features"));
     let g = s.compose().unwrap();
     assert!(!has(&g, "Extrude_Base") && !has(&g, "Sketch_Hole"));
     assert!(text(&g, 7).contains("├[+] Hub_Features"));
@@ -396,27 +401,28 @@ fn tree_expand_and_collapse_keep_ids_and_trees_independent() {
     assert_eq!(id_of(&s, "Fillet_Inner"), fillet, "ids ignore position");
     assert_eq!(id_of(&s, "Rim_Body"), rim);
 
-    click_text(&mut s, "Hub_Features");
+    click_text(&mut s, "[+] Hub_Features");
     assert!(has(&s.compose().unwrap(), "Extrude_Base"));
 
-    click_text(&mut s, "[+] Construct");
+    click_text(&mut s, "[+]Construct");
     let g = s.compose().unwrap();
-    assert!(has(&g, "Plane_XY") && has(&g, "[-] Construct"));
+    assert!(has(&g, "Plane_XY") && has(&g, "[-]Construct"));
 
-    click_text(&mut s, "[-] Features");
+    click_text(&mut s, "[-]Features");
     let g = s.compose().unwrap();
-    assert!(!has(&g, "Hub_Features") && !has(&g, "Pattern_Circular"));
+    assert!(!has(&g, "Hub_Features") && !has(&g, "Chamfer_Edges"));
+    assert!(!has(&g, "│ ─────"), "no playhead without features");
     assert!(has(&g, "Plane_XY"), "Elements still expanded");
 }
 
 #[test]
-fn tree_leaf_click_focuses_without_changing_the_tree() {
+fn tree_leaf_click_selects_and_focuses_without_changing_the_tree() {
     let mut s = shell();
     let before = (s.features_open, s.elements_open);
-    let id = id_of(&s, "Extrude_Base");
     assert!(click_text(&mut s, "Extrude_Base"));
     assert_eq!((s.features_open, s.elements_open), before);
-    assert_eq!(s.interaction().focused, Some(id));
+    assert_eq!(s.interaction().focused, Some(tree_id(Tree::Features, 3)));
+    assert_eq!(s.selected, Some((Tree::Features, 3)));
 }
 
 #[test]
@@ -456,19 +462,24 @@ fn initial_open_features() -> [bool; data::MAX_NODES] {
 
 // ---- Extrude integration ----
 
+/// A shell at the minimum grid height, tall enough for the fully disclosed Action Box.
+fn tall() -> ShellState {
+    ShellState::new(COLS, 30)
+}
+
 #[test]
 fn extrude_panel_discloses_rows_through_the_shell() {
-    let mut s = shell();
+    let mut s = tall();
     assert!(click_text(&mut s, "Add"));
     assert!(has(&s.compose().unwrap(), "Merge with all"));
     assert!(click_text(&mut s, "Starting Offset"));
     assert!(has(&s.compose().unwrap(), "Dist"));
     assert!(click_text(&mut s, "Merge with all"));
-    assert!(has(&s.compose().unwrap(), "Merge scope"));
+    assert!(has(&s.compose().unwrap(), "Targets"));
 
     // The first `▶` on screen is the termination cycle.
     let g = s.compose().unwrap();
-    let (col, row) = (0..ROWS)
+    let (col, row) = (0..30)
         .find_map(|r| (0..COLS).find(|&c| glyph(&g, c, r) == '▶').map(|c| (c, r)))
         .unwrap();
     click_at(&mut s, col, row);
@@ -483,18 +494,129 @@ fn extrude_panel_discloses_rows_through_the_shell() {
 #[test]
 fn extrude_ok_closes_and_cancel_restores_the_opening_values() {
     let mut s = shell();
-    click_text(&mut s, "Invert");
+    click_text(&mut s, "Symetric");
     click_text(&mut s, "OK");
     assert!(!s.extrude().is_open() && !has(&s.compose().unwrap(), "Starting Offset"));
     assert_eq!(s.interaction().focused, None);
 
     let mut s = shell();
-    click_text(&mut s, "Invert");
+    click_text(&mut s, "Symetric");
     click_text(&mut s, "Cancel");
     assert_eq!(s.extrude().status, crate::ExtrudeStatus::Cancelled);
     assert!(
-        !s.extrude().values.invert,
+        !s.extrude().values.symmetric,
         "values restored to the opening ones"
+    );
+}
+
+const EXAMPLE_TXT: &str = include_str!("../../../../docs/ui_design/Interface_Exemple.txt");
+
+/// The Action Box of `Interface_Exemple.txt` (82 x 28): rows 9..25, columns 50..81. Reference
+/// row 19 is the hovered Starting Offset row (`README_UI.md` §25); the default shell has no
+/// pointer, so its two hover slots hold the normal `│`.
+fn example_box() -> Vec<String> {
+    let mut rows: Vec<String> = EXAMPLE_TXT
+        .lines()
+        .skip(9)
+        .take(16)
+        .map(|l| l.chars().skip(50).take(31).collect())
+        .collect();
+    rows[9] = rows[9].replace(['╞', '╡'], "│");
+    rows
+}
+
+#[test]
+fn action_box_equals_the_interface_example_at_the_reference_and_minimum_grids() {
+    let want = example_box();
+    assert_eq!(want.len(), 16);
+    assert_eq!(want[0], "╭─Extrude─────┬───────────────╮");
+    for (cols, rows) in [(82, 28), (82, 30), (120, 40)] {
+        let g = ShellState::new(cols, rows).compose().unwrap();
+        // Right-aligned under the NavCube: the box ends at the viewport's inner right edge.
+        let right = cols - 1;
+        let left = right - 31;
+        let got: Vec<String> = (9..25)
+            .map(|r| text(&g, r).chars().skip(left as usize).take(31).collect())
+            .collect();
+        assert_eq!(got, want, "{cols}x{rows}");
+        // Frame cells of the viewport stay intact on both sides of the box.
+        assert_eq!(glyph(&g, right, 12), '║', "{cols}x{rows}");
+    }
+}
+
+#[test]
+fn action_box_is_fixed_width_whatever_the_grid() {
+    for cols in [82, 100, 160] {
+        let s = ShellState::new(cols, 30);
+        assert_eq!(s.action_width(), 31, "{cols}");
+    }
+}
+
+#[test]
+fn keyboard_focus_visits_the_action_box_controls_in_reading_order() {
+    let mut s = shell();
+    let g = s.compose().unwrap();
+    let ring = s.focus_ring(&g);
+    let boxed: Vec<WidgetId> = ring
+        .into_iter()
+        .filter(|id| id.get() >= ACTION_BASE && id.get() < ACTION_BASE + ID_SPAN)
+        .collect();
+    let id = |key: u32, slot: u32| s.extrude().id(key, slot);
+    use crate::extrude::{K_ACTIONS, K_GEOMETRY, K_PROFILE, K_RESULT};
+    assert_eq!(
+        boxed[..7],
+        [
+            id(K_GEOMETRY, 0),
+            id(K_GEOMETRY, 1),
+            id(K_RESULT, 0),
+            id(K_RESULT, 1),
+            id(K_RESULT, 2),
+            id(K_PROFILE, 0),
+            s.extrude().id(crate::extrude::K_EXTEND, 0),
+        ]
+    );
+    assert_eq!(
+        boxed[boxed.len() - 2..],
+        [id(K_ACTIONS, 0), id(K_ACTIONS, 1)]
+    );
+    // Space on the focused `Surface` segment selects it, like a click.
+    s.interaction.set_focused(Some(id(K_GEOMETRY, 1)));
+    assert!(s.key(ShellKey::Char(' ')));
+    assert_eq!(
+        s.extrude().values.geometry,
+        crate::ExtrudeGeometryType::Surface
+    );
+    assert!(has(
+        &s.compose().unwrap(),
+        "╭─Extrude─────┬───────────────╮"
+    ));
+}
+
+#[test]
+fn clicking_header_borders_routes_to_the_adjacent_segment() {
+    let mut s = tall();
+    let g = s.compose().unwrap();
+    // Row 10 is `│    Solid    │    Surface    │` of the box that starts at column 50.
+    let m = metrics();
+    let divider = 50 + 14;
+    let hit = |x| {
+        hit_test(UiPoint { x, y: 10 * 10 + 5 }, m, &g)
+            .and_then(|h| h.widget_id)
+            .unwrap()
+    };
+    let (left_half, right_half) = (divider * 6, divider * 6 + 5);
+    assert_eq!(
+        hit(left_half),
+        s.extrude().id(crate::extrude::K_GEOMETRY, 0)
+    );
+    assert_eq!(
+        hit(right_half),
+        s.extrude().id(crate::extrude::K_GEOMETRY, 1)
+    );
+    assert!(click_at(&mut s, divider + 3, 10));
+    assert_eq!(
+        s.extrude().values.geometry,
+        crate::ExtrudeGeometryType::Surface
     );
 }
 
@@ -507,7 +629,14 @@ fn open_selection(s: &mut ShellState) {
         .find_map(|r| (0..COLS).find(|&c| glyph(&g, c, r) == '▶').map(|c| (c, r)))
         .unwrap();
     click_at(s, col, row);
-    assert!(click_text(s, "none"));
+    assert!(click_selection_field(s));
+}
+
+/// Clicks inside the `Selection` field of the `Up to` branch (`[Select…       ]`).
+fn click_selection_field(s: &mut ShellState) -> bool {
+    let g = s.compose().unwrap();
+    let (col, row) = find(&g, "Selection ").unwrap();
+    click_at(s, col + 12, row)
 }
 
 #[test]
@@ -530,7 +659,12 @@ fn formula_button_opens_the_formula_editor() {
     assert!(click_at(&mut s, col, row));
     assert!(s.formula().is_open() && !s.selection().is_open());
     let g = s.compose().unwrap();
-    assert!(has(&g, "Formula") && has(&g, "Fx = (#EntraxeA"));
+    assert!(
+        has(&g, "╭─Formula") && has(&g, "│┌───"),
+        "outlined and empty"
+    );
+    assert!(!has(&g, "Fx"));
+    assert_eq!(s.formula().draft(), "");
     assert_eq!(s.interaction().focused, s.formula().focus());
 }
 
@@ -539,14 +673,14 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     let mut s = shell();
     let g = s.compose().unwrap();
     let (col, row) = find(&g, "☰").unwrap();
-    // Uncovered spots: a tree row, both bars, and the right part of the Invert row (the
+    // Uncovered spots: a tree row, both bars, and the right part of the Symetric row (the
     // modal spans columns 21..61).
-    let invert_row = find(&g, "Invert").unwrap().1;
+    let invert_row = find(&g, "Symetric").unwrap().1;
     let spots: Vec<(&str, (u32, u32))> = vec![
         ("Hub_Features", find(&g, "Hub_Features").unwrap()),
         ("Workbench", find(&g, "Workbench").unwrap()),
         ("File", find(&g, "File").unwrap()),
-        ("Invert row", (70, invert_row)),
+        ("Symetric row", (70, invert_row)),
     ];
     assert!(g.get(70, invert_row).unwrap().widget_id.is_some());
     click_at(&mut s, col, row);
@@ -582,7 +716,7 @@ fn formula_cancel_and_ok_restore_focus_and_text() {
     type_str(&mut s, "ab");
     s.key(ShellKey::Escape);
     assert!(!s.formula().is_open());
-    assert_eq!(s.formula().text(), MOCK_FORMULA);
+    assert_eq!(s.formula().text(), "");
     assert_eq!(
         s.interaction().focused,
         Some(button),
@@ -591,15 +725,136 @@ fn formula_cancel_and_ok_restore_focus_and_text() {
     assert!(s.overlays.is_empty());
 
     click_text(&mut s, "☰");
-    assert_eq!(
-        s.formula().draft(),
-        MOCK_FORMULA,
-        "draft restarts from applied"
-    );
+    assert_eq!(s.formula().draft(), "", "the cancelled draft was dropped");
     type_str(&mut s, "ab");
     s.key(ShellKey::Enter);
-    assert_eq!(s.formula().text(), format!("{MOCK_FORMULA}ab"));
+    assert_eq!(s.formula().text(), "ab");
     assert_eq!(s.interaction().focused, Some(button));
+
+    click_text(&mut s, "☰");
+    assert_eq!(
+        s.formula().draft(),
+        "ab",
+        "the field keeps its confirmed draft"
+    );
+    s.key(ShellKey::Escape);
+}
+
+#[test]
+fn formula_drafts_belong_to_their_field() {
+    let mut s = shell();
+    // Toggle `Starting Offset` on so a second numeric row (`Dist`) is shown.
+    click_text(&mut s, "Starting Offset");
+    let g = s.compose().unwrap();
+    let rows: Vec<(u32, u32)> = (0..ROWS)
+        .flat_map(|r| (0..COLS).map(move |c| (c, r)))
+        .filter(|&(c, r)| glyph(&g, c, r) == '☰')
+        .collect();
+    assert_eq!(rows.len(), 2, "two numeric fields");
+    click_at(&mut s, rows[0].0, rows[0].1);
+    type_str(&mut s, "first");
+    s.key(ShellKey::Enter);
+    click_at(&mut s, rows[1].0, rows[1].1);
+    assert_eq!(s.formula().draft(), "", "the other field is independent");
+    type_str(&mut s, "second");
+    s.key(ShellKey::Enter);
+    click_at(&mut s, rows[0].0, rows[0].1);
+    assert_eq!(s.formula().draft(), "first");
+    s.key(ShellKey::Escape);
+    click_at(&mut s, rows[1].0, rows[1].1);
+    assert_eq!(s.formula().draft(), "second");
+}
+
+fn depth_field(s: &ShellState) -> (u32, u32) {
+    let g = s.compose().unwrap();
+    let (col, row) = find(&g, "Depth").unwrap();
+    (col + 12, row)
+}
+
+#[test]
+fn numeric_field_edits_with_caret_limits_sign_and_commit() {
+    let mut s = shell();
+    let (col, row) = depth_field(&s);
+    let g = s.compose().unwrap();
+    assert!(has(&g, "[+|0.0 mm       ☰]") && !has(&g, "▏"));
+    // Clicking the field starts the edit; the caret appears in its own cell at the end.
+    assert!(click_at(&mut s, col, row));
+    assert!(s.editing_field().is_some());
+    assert!(has(&s.compose().unwrap(), "[+|0.0▏ mm      ☰]"));
+    keys(&mut s, &[ShellKey::Edit(EditKey::SelectAll)]);
+    type_str(&mut s, "12345678.99");
+    assert!(
+        has(&s.compose().unwrap(), "[+|12345678.9▏ m☰]"),
+        "limit, caret, clipped suffix"
+    );
+    keys(&mut s, &[ShellKey::Edit(EditKey::Home)]);
+    assert!(has(&s.compose().unwrap(), "[+|▏12345678.9 m☰]"));
+    type_str(&mut s, "9");
+    assert!(
+        has(&s.compose().unwrap(), "[+|▏12345678.9 m☰]"),
+        "ninth digit refused"
+    );
+    type_str(&mut s, "-");
+    assert!(has(&s.compose().unwrap(), "[-|▏12345678.9 m☰]"));
+    keys(&mut s, &[ShellKey::Enter]);
+    assert!(s.editing_field().is_none());
+    let g = s.compose().unwrap();
+    assert!(has(&g, "[-|12345678.9 mm☰]") && !has(&g, "▏"));
+}
+
+#[test]
+fn numeric_field_escape_reverts_and_other_clicks_commit() {
+    let mut s = shell();
+    let (col, row) = depth_field(&s);
+    click_at(&mut s, col, row);
+    keys(&mut s, &[ShellKey::Edit(EditKey::SelectAll)]);
+    type_str(&mut s, "7");
+    keys(&mut s, &[ShellKey::Escape]);
+    assert!(has(&s.compose().unwrap(), "[+|0.0 mm       ☰]"));
+    click_at(&mut s, col, row);
+    keys(&mut s, &[ShellKey::Edit(EditKey::SelectAll)]);
+    type_str(&mut s, "7");
+    // A click elsewhere (a tree row) keeps the value and ends the edit.
+    click_text(&mut s, "Hub_Features");
+    assert!(s.editing_field().is_none());
+    assert!(has(&s.compose().unwrap(), "[+|7.0 mm       ☰]"));
+}
+
+#[test]
+fn numeric_editing_owns_keys_and_menus_end_it() {
+    let mut s = shell();
+    let (col, row) = depth_field(&s);
+    click_at(&mut s, col, row);
+    // Letters are refused but consumed: they are not menu mnemonics while editing.
+    assert!(!s.key(ShellKey::Char('f')));
+    assert!(!s.menu_bar.is_active());
+    type_str(&mut s, "5");
+    s.key(ShellKey::Alt('f'));
+    assert!(
+        s.editing_field().is_none(),
+        "opening a menu keeps the edit first"
+    );
+    assert!(s.menu_bar.is_active());
+    assert!(
+        has(&s.compose().unwrap(), "[+|0.0 mm       ☰]"),
+        "5 was refused"
+    );
+}
+
+#[test]
+fn numeric_enter_and_space_on_the_focused_field_start_the_edit() {
+    let mut s = shell();
+    let (col, row) = depth_field(&s);
+    click_at(&mut s, col, row);
+    keys(&mut s, &[ShellKey::Enter]);
+    assert!(s.editing_field().is_none());
+    keys(&mut s, &[ShellKey::Enter]);
+    assert!(s.editing_field().is_some(), "Enter on the focused field");
+    keys(&mut s, &[ShellKey::Tab]);
+    assert!(
+        s.editing_field().is_none(),
+        "Tab ends the edit and moves on"
+    );
 }
 
 #[test]
@@ -628,7 +883,7 @@ fn selection_cancel_and_ok_restore_focus_and_state() {
     let restored = s.interaction().focused;
 
     // Reopen, toggle, OK applies.
-    click_text(&mut s, "none");
+    assert!(click_selection_field(&mut s));
     s.key(ShellKey::Char(' '));
     let g = s.compose().unwrap();
     let (col, row) = cell_of(&g, ok);
@@ -663,20 +918,20 @@ fn tab_walks_trees_then_extrude_controls_and_enter_activates() {
     s.key(ShellKey::BackTab);
     let last = s.interaction().focused;
     assert!(
-        last.is_some_and(|id| id.get() >= EXTRUDE_BASE),
+        last.is_some_and(|id| id.get() >= ACTION_BASE),
         "wrapped to the panel"
     );
 
-    let invert = id_of(&s, "Invert");
+    let symmetric = id_of(&s, "Symetric");
     for _ in 0..100 {
-        if s.interaction().focused == Some(invert) {
+        if s.interaction().focused == Some(symmetric) {
             break;
         }
         s.key(ShellKey::Tab);
     }
-    assert_eq!(s.interaction().focused, Some(invert));
+    assert_eq!(s.interaction().focused, Some(symmetric));
     s.key(ShellKey::Char(' '));
-    assert!(s.extrude().values.invert);
+    assert!(s.extrude().values.symmetric);
 }
 
 /// Focus and press are logical state with no visual of their own: no marker glyph is invented
@@ -735,9 +990,11 @@ fn every_cell_owner_belongs_to_exactly_one_id_range() {
                 BAR_IDS.decode(id).is_some(),
                 COMMAND_IDS.decode(id).is_some(),
                 tree_decode(id).is_some(),
-                (EXTRUDE_BASE..SELECTION_BASE).contains(&id.get()),
+                (ACTION_BASE..SELECTION_BASE).contains(&id.get()),
                 (SELECTION_BASE..FORMULA_BASE).contains(&id.get()),
                 (FORMULA_BASE..FORMULA_BASE + 4).contains(&id.get()),
+                (RENAME_BASE..RENAME_BASE + 4).contains(&id.get()),
+                id.get() == PLAYHEAD_ID,
                 ShellState::window_action(id).is_some(),
             ];
             assert_eq!(owners.iter().filter(|&&o| o).count(), 1, "{id:?}");
@@ -749,17 +1006,25 @@ fn every_cell_owner_belongs_to_exactly_one_id_range() {
 fn id_ranges_are_disjoint_and_trees_fit() {
     const { assert!(MENU_BAR_BASE + MenuIds::SPAN <= COMMAND_BAR_BASE) };
     const { assert!(COMMAND_BAR_BASE + MenuIds::SPAN <= TREE_BASE) };
-    const { assert!(TREE_BASE + TREE_SPAN <= EXTRUDE_BASE) };
-    const { assert!(EXTRUDE_BASE + EXTRUDE_SPAN <= SELECTION_BASE) };
+    const { assert!(TREE_BASE + TREE_SPAN <= ACTION_BASE) };
+    const { assert!(ACTION_BASE + ID_SPAN <= SELECTION_BASE) };
     const { assert!(SELECTION_BASE + 14 <= FORMULA_BASE) };
-    const { assert!(FORMULA_BASE + 4 <= WINDOW_BASE) };
+    const { assert!(FORMULA_BASE + 4 <= RENAME_BASE) };
+    const { assert!(RENAME_BASE + 4 <= WINDOW_BASE) };
+    const { assert!(PLAYHEAD_ID == TREE_BASE + NODE_IDS && PLAYHEAD_ID < ACTION_BASE) };
     const { assert!(FEATURES.len() <= MAX_NODES && ELEMENTS.len() <= MAX_NODES) };
     for tree in [Tree::Features, Tree::Elements] {
         for index in 0..tree.nodes().len() {
-            assert_eq!(tree_decode(tree_id(tree, index)), Some((tree, index)));
+            for part in TreePart::ALL {
+                assert_eq!(
+                    tree_decode(tree_part_id(tree, index, part)),
+                    Some((tree, index, part))
+                );
+            }
         }
     }
     assert_eq!(tree_decode(tree_id(Tree::Features, FEATURES.len())), None);
+    assert_eq!(tree_decode(WidgetId::new(PLAYHEAD_ID)), None);
     assert_eq!(tree_decode(WidgetId::new(0)), None);
 }
 
@@ -796,7 +1061,7 @@ fn tiny_and_degenerate_grids_are_safe() {
             s.compose().unwrap();
             s.key(ShellKey::Tab);
             s.key(ShellKey::Escape);
-            s.formula.open(&mut s.interaction);
+            s.formula.open(&mut s.interaction, "");
             s.sync();
             s.compose().unwrap();
         }

@@ -4,29 +4,52 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//! FormulaEditor (M2.12): a modal single text area with OK / Cancel.
+//! FormulaEditor (M2.12, M2.23): a modal two-row text area with OK / Cancel.
+//!
+//! The artwork is `docs/ui_design/Interface_Elements.txt`, "☰ variants", with an empty text
+//! area (`README_UI.md` §22):
+//!
+//! ```text
+//! ╭─Formula─────────────────────────╮
+//! │┌───────────────────────────────┐│
+//! ││                               ││
+//! ││                               ││
+//! │└───────────────────────────────┘│
+//! │─────────────────────────────────│
+//! │       OK       │     Cancel     │
+//! ╰─────────────────────────────────╯
+//! ```
 //!
 //! The editor stores and shows the text verbatim. It has no parser and no evaluator, and
-//! nothing here refers to model parameters. [`FormulaEditor::open`] copies the applied text
-//! into a draft and focuses the text area. OK applies the draft; Cancel and Escape discard it.
+//! nothing here refers to model parameters. [`FormulaEditor::open`] takes the text kept for the
+//! field being edited, copies it into a draft and focuses the text area. OK applies the draft;
+//! Cancel and Escape discard it. Lifecycle, focus restoration and key routing follow
+//! [`super::RenameModal`]; Enter on the text area confirms, as in a single-line dialog.
 //!
-//! Composition, focus and input follow [`super::SelectionPanel`]: see its module docs.
-//! Enter on the text area confirms, as in a single-line dialog.
+//! The text fills the two rows of the area as one 62-cell line. The caret `▏`
+//! (`README_UI.md` §5.11) is composed in while the text area has focus; the visible window
+//! starts at `max(0, c + 1 − 62)`. The draft never contains the caret.
 
 use super::modal::{ModalKey, ModalStatus, step_focus};
-use super::{
-    Overlay, OverlayKind, OverlayStack, center_modal, compose_overlays, draw_ok_cancel,
-    modal_layout,
-};
-use crate::widgets::{Canvas, WidgetContext, owned_blank};
-use crate::{CellGrid, GridRect, InteractionState, WidgetId, WidgetState, draw_label};
+use super::{Overlay, OverlayKind, OverlayStack, center_modal, compose_overlays};
+use crate::widgets::{Canvas, TextEdit, WidgetContext, caret_window, hover_row, shared};
+use crate::{BorderAxis, CellGrid, GridRect, InteractionState, SharedBorder, WidgetId};
 
-/// Frame size, including the border. The text area is the body: 38 cells wide, 5 rows.
-const SIZE: (u32, u32) = (40, 9);
+/// Frame size, including the border.
+const SIZE: (u32, u32) = (35, 8);
+/// Cells of one text row, and of the two rows together.
+const ROW_CELLS: usize = 31;
+const AREA_CELLS: usize = 2 * ROW_CELLS;
 /// Longest text the editor holds, in characters. Keeps edits bounded.
 const MAX_LEN: usize = 256;
-/// Caret shown after the text while the text area has focus.
-const CARET: char = '_';
+const TITLE: &str = "Formula";
+
+/// Rows of the artwork.
+const BOX_TOP_ROW: u32 = 1;
+const TEXT_ROW: u32 = 2;
+const BOX_BOTTOM_ROW: u32 = 4;
+const SEPARATOR_ROW: u32 = 5;
+const BUTTON_ROW: u32 = 6;
 
 /// Offsets from the base id.
 const SURFACE: u32 = 0;
@@ -43,27 +66,30 @@ enum Slot {
     Cancel,
 }
 
+fn fits(text: &str) -> bool {
+    text.chars().count() <= MAX_LEN
+}
+
 /// The FormulaEditor state. Widget ids are `base_id` plus a fixed offset per control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormulaEditor {
     base_id: u32,
     applied: String,
-    draft: String,
+    edit: TextEdit,
     focus: Option<WidgetId>,
     return_focus: Option<WidgetId>,
     status: ModalStatus,
 }
 
 impl FormulaEditor {
-    /// A closed editor holding `initial` (cut to `MAX_LEN` characters). `base_id` is the id
-    /// of the modal surface; the controls use the ids that follow it.
+    /// A closed, empty editor. `base_id` is the id of the modal surface; the controls use the
+    /// ids that follow it.
     #[must_use]
-    pub fn new(base_id: u32, initial: &str) -> Self {
-        let applied: String = initial.chars().take(MAX_LEN).collect();
+    pub fn new(base_id: u32) -> Self {
         Self {
             base_id,
-            draft: applied.clone(),
-            applied,
+            applied: String::new(),
+            edit: TextEdit::default(),
             focus: None,
             return_focus: None,
             status: ModalStatus::Closed,
@@ -82,7 +108,7 @@ impl FormulaEditor {
         self.status
     }
 
-    /// The applied text.
+    /// The text applied by the last OK (or given to the last `open`).
     #[must_use]
     pub fn text(&self) -> &str {
         &self.applied
@@ -90,8 +116,8 @@ impl FormulaEditor {
 
     /// The text being edited while open.
     #[must_use]
-    pub fn draft(&self) -> &str {
-        &self.draft
+    pub fn draft(&self) -> String {
+        self.edit.string()
     }
 
     /// The id that holds keyboard focus while the editor is open.
@@ -106,16 +132,17 @@ impl FormulaEditor {
         WidgetId::new(self.base_id)
     }
 
-    /// Opens the editor: the draft restarts from the applied text and focus moves to the
+    /// Opens the editor on `text` (cut to the length limit, caret at its end) and focuses the
     /// text area. Focus held by `inter` is remembered and restored when the editor closes.
     /// Opening an open editor does not change that memory. If `inter` still holds focus on
     /// this editor (no sync after the last close), the earlier memory is kept.
-    pub fn open(&mut self, inter: &mut InteractionState) {
+    pub fn open(&mut self, inter: &mut InteractionState, text: &str) {
         let stale = inter.focused.is_some_and(|f| self.slot(f).is_some());
         if !self.is_open() && !stale {
             self.return_focus = inter.focused;
         }
-        self.draft = self.applied.clone();
+        self.applied = text.chars().take(MAX_LEN).collect();
+        self.edit = TextEdit::new(&self.applied);
         self.status = ModalStatus::Open;
         self.focus = Some(self.id(TEXT));
         inter.set_focused(self.focus);
@@ -124,8 +151,9 @@ impl FormulaEditor {
     /// Applies a keyboard key. Returns `true` if the key was handled. Keys are ignored while
     /// the editor is closed.
     ///
-    /// On the text area, characters are inserted and Backspace deletes; Enter confirms. On
-    /// the buttons, Enter and Space activate. Focus moves with Tab/Down and BackTab/Up.
+    /// On the text area, characters are inserted, Backspace and Delete remove, the caret moves
+    /// and selects with the editing keys; Enter confirms. On the buttons, Enter and Space
+    /// activate. Focus moves with Tab/Down and BackTab/Up.
     pub fn key(&mut self, key: ModalKey) -> bool {
         if !self.is_open() {
             return false;
@@ -141,10 +169,11 @@ impl FormulaEditor {
                 self.confirm();
                 true
             }
-            ModalKey::Char(c) if self.on_text() => self.push(c),
-            ModalKey::Backspace if self.on_text() => self.draft.pop().is_some(),
+            ModalKey::Char(c) if self.on_text() => self.edit.insert(c, fits),
+            ModalKey::Backspace if self.on_text() => self.edit.backspace(fits),
+            ModalKey::Edit(k) if self.on_text() => self.edit.apply(k, fits),
             ModalKey::Enter | ModalKey::Char(' ') => self.activate_focus(),
-            ModalKey::Char(_) | ModalKey::Backspace => false,
+            ModalKey::Char(_) | ModalKey::Backspace | ModalKey::Edit(_) => false,
         }
     }
 
@@ -194,74 +223,120 @@ impl FormulaEditor {
         }
     }
 
-    /// Draws the editor into the modal that `stack` holds for it.
+    /// Draws the editor into the modal that `stack` holds for it. Returns `true` if the hovered
+    /// button was highlighted (M2.25).
     pub fn draw(
         &self,
         grid: &mut CellGrid,
         ctx: &WidgetContext<'_>,
         stack: &OverlayStack,
         bounds: GridRect,
-    ) {
-        compose_overlays(grid, ctx, stack, bounds, |g, overlay, inner| {
+    ) -> bool {
+        let mut lit = false;
+        compose_overlays(grid, ctx, stack, bounds, |g, overlay, _inner| {
             if overlay.id == self.surface() {
-                self.draw_content(g, ctx, inner);
+                let rect = overlay.rect.intersection(&bounds);
+                self.draw_art(g, ctx, rect);
+                lit |= self.hover_buttons(g, ctx, rect);
             }
         });
+        lit
     }
 
-    fn draw_content(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, inner: GridRect) {
-        let layout = modal_layout(inner);
-        draw_label(grid, layout.title, "Formula", ctx.styles.normal);
+    /// Substitutes the frame of the hovered button of the OK / Cancel row (M2.25,
+    /// `README_UI.md` §5.12): OK is `│       OK       │` and Cancel `│     Cancel     │`, the
+    /// divider between them is its shared slot and the last cell of the row the frame.
+    fn hover_buttons(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect) -> bool {
+        let row = rect.row().saturating_add(BUTTON_ROW);
+        let x = rect.col();
+        let target = match ctx.interaction.hovered {
+            Some(id) if id == self.id(OK) => 1..17,
+            Some(id) if id == self.id(CANCEL) => 18..34,
+            _ => return false,
+        };
+        let (from, span) = (
+            x,
+            x.saturating_add(target.start)..x.saturating_add(target.end),
+        );
+        hover_row(grid, row, from, span)
+    }
 
-        let id = self.id(TEXT);
-        let style = ctx.style_of(id, WidgetState::default());
-        let mut canvas = Canvas::new(grid, layout.body);
-        for dy in 0..canvas.height() {
-            canvas.fill(0, canvas.width(), dy, owned_blank(style, id));
-        }
-        let width = canvas.width() as usize;
-        if width > 0 {
-            let mut chars: Vec<char> = self.draft.chars().collect();
-            if self.on_text() {
-                chars.push(CARET);
-            }
-            for (row, line) in chars.chunks(width).enumerate() {
-                let text: String = line.iter().collect();
-                let dy = u32::try_from(row).unwrap_or(u32::MAX);
-                canvas.text(0, dy, &text, style, Some(id));
-            }
+    /// The reference artwork over `rect`, clipped to it. The frame cells are owned by the
+    /// surface, the outlined text area by its own id, each button by its id and the `│`
+    /// between the buttons is a shared border routed by sub-cell position.
+    fn draw_art(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect) {
+        let style = ctx.styles.normal;
+        let (surface, text) = (Some(self.surface()), Some(self.id(TEXT)));
+        let (ok, cancel) = (self.id(OK), self.id(CANCEL));
+        let inner = (SIZE.0 - 2) as usize;
+        let last = SIZE.0 - 1;
+        let mut canvas = Canvas::new(grid, rect);
+
+        let fill = "─".repeat(inner - TITLE.chars().count() - 1);
+        canvas.text(0, 0, &format!("╭─{TITLE}{fill}╮"), style, surface);
+
+        let outline = "─".repeat(inner - 2);
+        for (row, left, right) in [(BOX_TOP_ROW, '┌', '┐'), (BOX_BOTTOM_ROW, '└', '┘')] {
+            canvas.text(0, row, "│", style, surface);
+            canvas.text(1, row, &format!("{left}{outline}{right}"), style, text);
+            canvas.text(last, row, "│", style, surface);
         }
 
-        draw_ok_cancel(
-            grid,
-            ctx,
-            layout.actions,
-            self.id(OK),
-            self.id(CANCEL),
-            WidgetState::default(),
+        let caret = self.on_text().then(|| self.edit.caret());
+        let shown: Vec<char> = caret_window(self.edit.chars(), "", caret, AREA_CELLS)
+            .chars()
+            .collect();
+        for (row, line) in (TEXT_ROW..).zip(0..2) {
+            let from = (line * ROW_CELLS).min(shown.len());
+            let to = (from + ROW_CELLS).min(shown.len());
+            let cells: String = shown[from..to].iter().collect();
+            canvas.text(0, row, "│", style, surface);
+            canvas.text(
+                1,
+                row,
+                &format!("│{cells:<width$}│", width = ROW_CELLS),
+                style,
+                text,
+            );
+            canvas.text(last, row, "│", style, surface);
+        }
+
+        canvas.text(
+            0,
+            SEPARATOR_ROW,
+            &format!("│{}│", "─".repeat(inner)),
+            style,
+            surface,
+        );
+
+        canvas.text(0, BUTTON_ROW, "│", style, surface);
+        canvas.text(1, BUTTON_ROW, "       OK       ", style, Some(ok));
+        let border = SharedBorder {
+            axis: BorderAxis::Vertical,
+            low: Some(ok),
+            high: Some(cancel),
+        };
+        canvas.put(17, BUTTON_ROW, shared('│', style, border));
+        canvas.text(18, BUTTON_ROW, "     Cancel     ", style, Some(cancel));
+        canvas.text(last, BUTTON_ROW, "│", style, surface);
+
+        canvas.text(
+            0,
+            SIZE.1 - 1,
+            &format!("╰{}╯", "─".repeat(inner)),
+            style,
+            surface,
         );
     }
 
     fn move_focus(&mut self, forward: bool) -> bool {
-        let ring = self.ring();
+        let ring = [self.id(TEXT), self.id(OK), self.id(CANCEL)];
         self.focus = step_focus(&ring, self.focus, forward);
         true
     }
 
     fn activate_focus(&mut self) -> bool {
-        match self.focus {
-            Some(id) => self.activate(id),
-            None => false,
-        }
-    }
-
-    /// Appends `c` to the draft unless the draft is at `MAX_LEN`.
-    fn push(&mut self, c: char) -> bool {
-        if self.draft.chars().count() >= MAX_LEN {
-            return false;
-        }
-        self.draft.push(c);
-        true
+        self.focus.is_some_and(|id| self.activate(id))
     }
 
     fn on_text(&self) -> bool {
@@ -269,18 +344,13 @@ impl FormulaEditor {
     }
 
     fn confirm(&mut self) {
-        self.applied = self.draft.clone();
+        self.applied = self.edit.string();
         self.status = ModalStatus::Confirmed;
     }
 
     fn cancel(&mut self) {
-        self.draft = self.applied.clone();
+        self.edit = TextEdit::new(&self.applied);
         self.status = ModalStatus::Cancelled;
-    }
-
-    /// Focus order: text area, OK, Cancel.
-    fn ring(&self) -> [WidgetId; 3] {
-        [self.id(TEXT), self.id(OK), self.id(CANCEL)]
     }
 
     fn id(&self, offset: u32) -> WidgetId {
@@ -301,17 +371,16 @@ impl FormulaEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::WidgetStyles;
     use crate::widgets::testing::{id, text_row};
+    use crate::widgets::{EditKey, WidgetStyles};
     use crate::{Cell, CellContent, StyleId};
 
     const BASE: u32 = 700;
     /// A control that lies under the modal.
     const BACKGROUND: u32 = 900;
-    const INITIAL: &str = "Fx = (#EntraxeA - 2mm) / 5 * 3";
 
     fn bounds() -> GridRect {
-        GridRect::new(0, 0, 40, 12)
+        GridRect::new(0, 0, 80, 24)
     }
 
     fn text_id() -> WidgetId {
@@ -330,72 +399,138 @@ mod tests {
         s.chars().map(ModalKey::Char).collect()
     }
 
-    /// Opens an editor with `BACKGROUND` focused under it, then applies `keys`.
+    /// Opens an editor on `initial` with `BACKGROUND` focused under it, then applies `keys`.
     fn open_with(initial: &str, keys: &[ModalKey]) -> (FormulaEditor, InteractionState) {
         let mut inter = InteractionState::default();
         inter.set_focused(Some(id(BACKGROUND)));
-        let mut f = FormulaEditor::new(BASE, initial);
-        f.open(&mut inter);
+        let mut f = FormulaEditor::new(BASE);
+        f.open(&mut inter, initial);
         for &k in keys {
             f.key(k);
         }
         (f, inter)
     }
 
-    /// Draws the editor into a fresh `cols` x `rows` grid, syncing overlay and focus first.
-    fn frame(f: &FormulaEditor, inter: &InteractionState, cols: u32, rows: u32) -> CellGrid {
-        let bounds = GridRect::new(0, 0, cols, rows);
-        let mut g = CellGrid::new(cols, rows).unwrap();
+    fn frame(f: &FormulaEditor, inter: &InteractionState, area: GridRect) -> CellGrid {
+        let mut g = CellGrid::new(area.width(), area.height()).unwrap();
         let mut stack = OverlayStack::default();
-        f.sync_overlay(&mut stack, bounds);
+        f.sync_overlay(&mut stack, area);
         let styles = WidgetStyles::default();
         let ctx = WidgetContext {
             styles: &styles,
             interaction: inter,
         };
-        f.draw(&mut g, &ctx, &stack, bounds);
+        f.draw(&mut g, &ctx, &stack, area);
         g
     }
 
-    /// Whether any row shows `needle`; `text_row` draws empty cells as `.`, read here as spaces.
-    fn has(g: &CellGrid, needle: &str) -> bool {
-        (0..g.rows()).any(|r| text_row(g, r).replace('.', " ").contains(needle))
+    /// The modal's 8 rows in an 80x24 frame.
+    fn lines(f: &FormulaEditor) -> Vec<String> {
+        let g = frame(f, &InteractionState::default(), bounds());
+        let at = center_modal(SIZE, bounds());
+        (at.row()..at.row() + at.height())
+            .map(|r| {
+                text_row(&g, r)
+                    .chars()
+                    .skip(at.col() as usize)
+                    .take(at.width() as usize)
+                    .map(|c| if c == '.' { ' ' } else { c })
+                    .collect()
+            })
+            .collect()
     }
 
-    /// Body row `row` of the 40x12 frame, without the border column.
-    fn body_text(g: &CellGrid, row: u32) -> String {
-        text_row(g, row).chars().skip(1).take(38).collect()
+    fn reference(rows: [&str; 2]) -> Vec<String> {
+        vec![
+            "╭─Formula─────────────────────────╮".to_owned(),
+            "│┌───────────────────────────────┐│".to_owned(),
+            format!("││{:<31}││", rows[0]),
+            format!("││{:<31}││", rows[1]),
+            "│└───────────────────────────────┘│".to_owned(),
+            "│─────────────────────────────────│".to_owned(),
+            "│       OK       │     Cancel     │".to_owned(),
+            "╰─────────────────────────────────╯".to_owned(),
+        ]
     }
 
     #[test]
     fn closed_until_opened_and_open_focuses_the_text_area() {
-        let mut f = FormulaEditor::new(BASE, INITIAL);
+        let mut f = FormulaEditor::new(BASE);
         assert!(!f.is_open());
         assert_eq!(f.status(), ModalStatus::Closed);
-        assert_eq!(f.text(), INITIAL);
         let mut inter = InteractionState::default();
         inter.set_focused(Some(id(BACKGROUND)));
-        f.open(&mut inter);
+        f.open(&mut inter, "");
         assert!(f.is_open());
         assert_eq!(f.focus(), Some(text_id()));
         assert_eq!(inter.focused, Some(text_id()));
-        assert_eq!(f.draft(), INITIAL);
+        assert_eq!(f.draft(), "");
     }
 
     #[test]
-    fn typing_and_backspace_edit_the_draft_only() {
+    fn modal_is_empty_centered_and_matches_the_reference() {
+        let (mut f, _) = open_with("", &[]);
+        // Focus on the text area: only the caret is in the empty area.
+        assert_eq!(lines(&f), reference(["▏", ""]));
+        f.key(ModalKey::Tab);
+        assert_eq!(lines(&f), reference(["", ""]));
+        let at = center_modal(SIZE, bounds());
+        assert_eq!(
+            (at.col(), at.row(), at.width(), at.height()),
+            (22, 8, 35, 8)
+        );
+        let mut stack = OverlayStack::default();
+        f.sync_overlay(&mut stack, bounds());
+        assert!(f.is_open());
+    }
+
+    #[test]
+    fn typing_moving_selecting_and_deleting_edit_the_draft_only() {
         let (mut f, _) = open_with("", &typed("a+b"));
         assert_eq!(f.draft(), "a+b");
         assert!(f.text().is_empty(), "not applied yet");
-        assert!(f.key(ModalKey::Char(' ')));
-        assert!(f.key(ModalKey::Backspace));
-        assert_eq!(f.draft(), "a+b");
-        assert!(f.key(ModalKey::Backspace));
-        assert_eq!(f.draft(), "a+");
-        assert!(f.key(ModalKey::Backspace));
+        assert!(f.key(ModalKey::Edit(EditKey::Left)));
+        assert!(f.key(ModalKey::Char('*')));
+        assert_eq!(f.draft(), "a+*b");
+        assert_eq!(lines(&f)[2], format!("││{:<31}││", "a+*▏b"));
+        assert!(f.key(ModalKey::Edit(EditKey::Home)));
+        assert!(f.key(ModalKey::Edit(EditKey::Delete)));
+        assert_eq!(f.draft(), "+*b");
+        assert!(f.key(ModalKey::Edit(EditKey::SelectAll)));
+        assert!(f.key(ModalKey::Char('x')));
+        assert_eq!(f.draft(), "x");
         assert!(f.key(ModalKey::Backspace));
         assert!(!f.key(ModalKey::Backspace), "nothing left to delete");
         assert_eq!(f.draft(), "");
+    }
+
+    #[test]
+    fn two_rows_then_the_window_scrolls_with_the_caret() {
+        let text: String = (0..70).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let (mut f, _) = open_with(&text[..40], &[]);
+        let rows = lines(&f);
+        assert_eq!(rows[2], format!("││{}││", &text[..31]));
+        assert_eq!(
+            rows[3],
+            format!("││{:<31}││", format!("{}▏", &text[31..40]))
+        );
+        // 61 characters + the caret fill the 62 cells exactly.
+        f.key(ModalKey::Edit(EditKey::End));
+        for c in text[40..61].chars() {
+            f.key(ModalKey::Char(c));
+        }
+        let rows = lines(&f);
+        assert_eq!(rows[2], format!("││{}││", &text[..31]));
+        assert_eq!(rows[3], format!("││{}▏││", &text[31..61]));
+        // One more character scrolls the first one out of the left boundary.
+        f.key(ModalKey::Char(text.chars().nth(61).unwrap()));
+        let rows = lines(&f);
+        assert_eq!(rows[2], format!("││{}││", &text[1..32]));
+        assert_eq!(rows[3], format!("││{}▏││", &text[32..62]));
+        // Caret at the start: the window is back at the start.
+        f.key(ModalKey::Edit(EditKey::Home));
+        assert!(lines(&f)[2].starts_with("││▏"));
+        assert!(!f.draft().contains('▏'));
     }
 
     #[test]
@@ -404,7 +539,6 @@ mod tests {
         let (mut f, _) = open_with(&long, &[]);
         assert_eq!(f.text().chars().count(), MAX_LEN);
         assert!(!f.key(ModalKey::Char('y')), "already full");
-        assert_eq!(f.draft().chars().count(), MAX_LEN);
         assert!(f.key(ModalKey::Backspace));
         assert!(f.key(ModalKey::Char('y')));
         assert_eq!(f.draft().chars().count(), MAX_LEN);
@@ -412,10 +546,10 @@ mod tests {
 
     #[test]
     fn ok_confirms_the_draft_and_restores_prior_focus() {
-        let (mut f, mut inter) = open_with(INITIAL, &typed(" * 2"));
+        let (mut f, mut inter) = open_with("a", &typed("bc"));
         assert!(f.activate(ok()));
         assert_eq!(f.status(), ModalStatus::Confirmed);
-        assert_eq!(f.text(), "Fx = (#EntraxeA - 2mm) / 5 * 3 * 2");
+        assert_eq!(f.text(), "abc");
         f.sync_focus(&mut inter);
         assert_eq!(inter.focused, Some(id(BACKGROUND)));
         assert!(!f.key(ModalKey::Char('!')), "closed");
@@ -430,24 +564,31 @@ mod tests {
     }
 
     #[test]
-    fn cancel_restores_the_prior_text() {
-        let (mut f, mut inter) = open_with(INITIAL, &typed(" + junk"));
-        assert!(f.activate(cancel()));
-        assert_eq!(f.status(), ModalStatus::Cancelled);
-        assert_eq!(f.text(), INITIAL);
-        assert_eq!(f.draft(), INITIAL);
-        f.sync_focus(&mut inter);
-        assert_eq!(inter.focused, Some(id(BACKGROUND)));
+    fn cancel_and_escape_discard_the_draft() {
+        for by_button in [true, false] {
+            let (mut f, mut inter) = open_with("keep", &typed(" junk"));
+            if by_button {
+                assert!(f.activate(cancel()));
+            } else {
+                assert!(f.key(ModalKey::Escape));
+            }
+            assert_eq!(f.status(), ModalStatus::Cancelled);
+            assert_eq!(f.text(), "keep");
+            assert_eq!(f.draft(), "keep");
+            f.sync_focus(&mut inter);
+            assert_eq!(inter.focused, Some(id(BACKGROUND)));
+        }
     }
 
     #[test]
-    fn escape_cancels_and_discards_the_draft() {
-        let (mut f, mut inter) = open_with(INITIAL, &typed("zz"));
-        assert!(f.key(ModalKey::Escape));
-        assert_eq!(f.status(), ModalStatus::Cancelled);
-        assert_eq!(f.text(), INITIAL);
+    fn each_open_starts_from_the_text_it_is_given() {
+        let (mut f, mut inter) = open_with("first", &typed("1"));
+        f.key(ModalKey::Escape);
         f.sync_focus(&mut inter);
-        assert_eq!(inter.focused, Some(id(BACKGROUND)));
+        f.open(&mut inter, "second");
+        assert_eq!(f.draft(), "second");
+        f.open(&mut inter, "");
+        assert_eq!(f.draft(), "");
     }
 
     #[test]
@@ -461,7 +602,6 @@ mod tests {
         assert_eq!(f.focus(), Some(text_id()), "wraps to the text area");
         assert!(f.key(ModalKey::BackTab));
         assert_eq!(f.focus(), Some(cancel()), "backward wraps to Cancel");
-        // A stale id from under the modal does nothing.
         let before = f.clone();
         assert!(!f.activate(id(BACKGROUND)));
         assert_eq!(f, before);
@@ -473,10 +613,10 @@ mod tests {
         assert_eq!(f.focus(), Some(ok()));
         assert!(!f.key(ModalKey::Char('x')));
         assert!(!f.key(ModalKey::Backspace));
+        assert!(!f.key(ModalKey::Edit(EditKey::Home)));
         assert_eq!(f.draft(), "");
         assert!(f.key(ModalKey::Char(' ')), "Space activates OK");
         assert_eq!(f.status(), ModalStatus::Confirmed);
-        assert_eq!(f.text(), "");
     }
 
     #[test]
@@ -488,51 +628,41 @@ mod tests {
     }
 
     #[test]
-    fn draw_wraps_the_text_and_shows_the_caret_only_while_focused() {
-        // Body is 38 cells wide and 5 rows. 50 characters plus the caret wrap onto two rows.
-        // Empty cells read as `.` in `text_row`, so the expectations are prefixes.
-        let digits = "0123456789".repeat(5);
-        let (f, inter) = open_with(&digits, &[]);
-        let g = frame(&f, &inter, 40, 12);
-        assert_eq!(body_text(&g, 3), digits[..38]);
-        assert!(body_text(&g, 4).starts_with(&format!("{}_", &digits[38..])));
-        assert!(has(&g, "Formula"));
-        assert!(has(&g, "OK") && has(&g, "Cancel"));
-        // Off the text area (focus on OK): no caret.
-        let (f2, mut inter2) = open_with(&digits, &[ModalKey::Tab]);
-        f2.sync_focus(&mut inter2);
-        let g2 = frame(&f2, &inter2, 40, 12);
-        assert!(body_text(&g2, 4).starts_with(&digits[38..]));
-        assert!(!has(&g2, "_"));
-    }
-
-    #[test]
-    fn ids_are_stable_and_the_text_area_owns_its_body() {
-        let (f, inter) = open_with(INITIAL, &[]);
-        let g = frame(&f, &inter, 40, 12);
-        // Body row 3, first cell (inside the border column).
-        assert_eq!(g.get(1, 3).unwrap().widget_id, Some(text_id()));
-        assert_eq!(g.get(38, 3).unwrap().widget_id, Some(text_id()));
+    fn controls_own_their_cells_and_the_surface_blocks_the_rest() {
+        let (f, inter) = open_with("", &[]);
+        let g = frame(&f, &inter, bounds());
+        let at = center_modal(SIZE, bounds());
+        let owner = |dx: u32, dy: u32| g.get(at.col() + dx, at.row() + dy).unwrap().widget_id;
+        assert_eq!(owner(2, 2), Some(text_id()));
+        assert_eq!(owner(32, 3), Some(text_id()));
+        assert_eq!(
+            owner(10, 1),
+            Some(text_id()),
+            "the outline is the text area"
+        );
+        assert_eq!(owner(0, 2), Some(f.surface()));
+        assert_eq!(owner(5, 6), Some(ok()));
+        assert_eq!(owner(30, 6), Some(cancel()));
+        assert_eq!(owner(17, 6), None, "shared border");
         assert_eq!(f.surface(), id(BASE));
         assert_eq!(ok(), id(BASE + 2));
         assert_eq!(cancel(), id(BASE + 3));
-        assert!(has(&g, "Fx = (#EntraxeA"));
     }
 
     #[test]
     fn covered_background_is_not_hittable_and_ignores_activation() {
         let mut inter = InteractionState::default();
-        let mut f = FormulaEditor::new(BASE, INITIAL);
-        f.open(&mut inter);
-        let mut g = CellGrid::new(40, 12).unwrap();
+        let mut f = FormulaEditor::new(BASE);
+        f.open(&mut inter, "");
+        let mut g = CellGrid::new(80, 24).unwrap();
         let covered = Cell {
             content: CellContent::Glyph('x'),
             style: StyleId::DEFAULT,
             widget_id: Some(id(BACKGROUND)),
             shared_border: None,
         };
-        for r in 0..12 {
-            for c in 0..40 {
+        for r in 0..24 {
+            for c in 0..80 {
                 *g.get_mut(c, r).unwrap() = covered;
             }
         }
@@ -547,13 +677,13 @@ mod tests {
         let outside = g.get(0, 0).unwrap();
         assert_eq!(outside.widget_id, None);
         assert_eq!(outside.content, CellContent::Glyph('x'));
-        assert_eq!(g.get(5, 1).unwrap().widget_id, Some(f.surface()));
+        assert_eq!(g.get(23, 8).unwrap().widget_id, Some(f.surface()));
     }
 
     #[test]
     fn reopening_without_a_sync_keeps_the_prior_focus_memory() {
-        let (mut f, mut inter) = open_with(INITIAL, &[ModalKey::Escape]);
-        f.open(&mut inter);
+        let (mut f, mut inter) = open_with("", &[ModalKey::Escape]);
+        f.open(&mut inter, "");
         assert!(f.key(ModalKey::Escape));
         f.sync_focus(&mut inter);
         assert_eq!(inter.focused, Some(id(BACKGROUND)));
@@ -561,14 +691,13 @@ mod tests {
 
     #[test]
     fn keys_and_activation_are_ignored_while_closed() {
-        let mut f = FormulaEditor::new(BASE, INITIAL);
+        let mut f = FormulaEditor::new(BASE);
         assert!(!f.key(ModalKey::Char('a')));
         assert!(!f.key(ModalKey::Enter));
         assert!(!f.key(ModalKey::Escape));
         assert!(!f.activate(ok()));
-        assert_eq!(f.text(), INITIAL);
         assert_eq!(f.status(), ModalStatus::Closed);
-        let g = frame(&f, &InteractionState::default(), 40, 12);
+        let g = frame(&f, &InteractionState::default(), bounds());
         assert!(g.cells().iter().all(|c| c.widget_id.is_none()));
     }
 
@@ -581,19 +710,19 @@ mod tests {
             ModalKey::BackTab,
             ModalKey::Char(' '),
             ModalKey::Backspace,
+            ModalKey::Edit(EditKey::Left),
             ModalKey::Escape,
         ];
-        for (w, h) in [(0, 0), (1, 1), (2, 2), (4, 3), (10, 4), (40, 9)] {
+        for (w, h) in [(0, 0), (1, 1), (2, 2), (4, 3), (10, 4), (35, 8)] {
             let mut inter = InteractionState::default();
-            let mut f = FormulaEditor::new(BASE, INITIAL);
-            f.open(&mut inter);
+            let mut f = FormulaEditor::new(BASE);
+            f.open(&mut inter, "abc");
             for &k in &keys {
                 f.key(k);
                 f.sync_focus(&mut inter);
             }
-            let g = frame(&f, &inter, w, h);
+            let g = frame(&f, &inter, GridRect::new(0, 0, w, h));
             assert_eq!((g.cols(), g.rows()), (w, h));
-            // Off-grid draws and activations are harmless as well.
             f.activate(ok());
             let mut stray = OverlayStack::default();
             f.sync_overlay(&mut stray, GridRect::new(100, 100, 30, 30));

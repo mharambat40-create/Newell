@@ -136,7 +136,7 @@ impl Default for ScaleManager {
 }
 
 impl ScaleManager {
-    /// The user's preference in percent (60/80/100/120/140). Never changed by a monitor.
+    /// The user's preference in percent (60/80/100/120). Never changed by a monitor.
     #[must_use]
     pub const fn preferred_percent(&self) -> u32 {
         self.percent
@@ -381,6 +381,110 @@ mod tests {
         assert_eq!(k_of(&mut m, &more_space), 5);
     }
 
+    /// The UI Scale control steps through the four preferences; on 1920 × 1080 every step gives
+    /// `k = 2`, so no step runs a transition (`k_changed` false).
+    #[test]
+    fn full_hd_preference_steps_change_no_k() {
+        let mut m = ScaleManager::default();
+        m.start(2);
+        assert_eq!(k_of(&mut m, &full_hd_right()), 2);
+        let mut seen = Vec::new();
+        for percent in [120, 60, 80, 100] {
+            m.set_preferred_percent(percent);
+            let r = m.evaluate(Some(full_hd_right()), WINDOWED).unwrap();
+            seen.push((percent, r.decision.k, r.k_changed));
+            assert_eq!(m.preferred_percent(), percent);
+        }
+        assert_eq!(
+            seen,
+            [
+                (120, 2, false),
+                (60, 2, false),
+                (80, 2, false),
+                (100, 2, false)
+            ]
+        );
+    }
+
+    /// On the Retina panel the four preferences are `k` = 3 / 4 / 5 / 5 and the preference
+    /// is stored independently of the derived `k`.
+    #[test]
+    fn retina_preference_ladder_keeps_the_stored_percent() {
+        let mut m = ScaleManager::default();
+        m.start(5);
+        let ks: Vec<u32> = [60, 80, 100, 120]
+            .into_iter()
+            .map(|p| {
+                m.set_preferred_percent(p);
+                let k = k_of(&mut m, &macbook());
+                assert_eq!(m.preferred_percent(), p);
+                k
+            })
+            .collect();
+        assert_eq!(ks, [3, 4, 5, 5]);
+    }
+
+    /// `ARCHITECTURE.md` §3.1.1 worked table: `effective_k` for 60 / 80 / 100 / 120 %.
+    #[test]
+    fn effective_k_matches_the_architecture_table_for_every_preference() {
+        type Row = ((u32, u32), [u32; 4], [u32; 4]);
+        let rows: [Row; 7] = [
+            ((1366, 768), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1080), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1200), [2, 3, 4, 4], [2, 3, 4, 4]),
+            ((2560, 1440), [3, 4, 5, 5], [3, 4, 5, 5]),
+            ((2560, 1664), [3, 4, 5, 5], [3, 4, 5, 6]),
+            ((3024, 1964), [3, 4, 5, 6], [3, 4, 5, 6]),
+            ((3840, 2160), [3, 4, 5, 6], [3, 4, 5, 6]),
+        ];
+        for (size, windowed, fullscreen) in rows {
+            let monitor = MonitorInfo::new(None, (0, 0), size, 1.0);
+            for (mode, expected) in [(WINDOWED, windowed), (ScaleMode::Fullscreen, fullscreen)] {
+                let ks: Vec<u32> = [60, 80, 100, 120]
+                    .into_iter()
+                    .map(|p| {
+                        let mut m = ScaleManager::default();
+                        m.set_preferred_percent(p);
+                        m.evaluate(Some(monitor.clone()), mode).unwrap().decision.k
+                    })
+                    .collect();
+                assert_eq!(ks, expected, "{size:?} {mode:?}");
+            }
+        }
+    }
+
+    /// The full UI Scale cycle 60 → 80 → 100 → 120 → 60 on one manager: the stored
+    /// preference follows every step and the wrap returns to the 60 % cell.
+    #[test]
+    fn full_cycle_wraps_back_to_60() {
+        for (monitor, expected) in [
+            (full_hd_right(), [2, 2, 2, 2, 2]),
+            (
+                MonitorInfo::new(None, (0, 0), (1920, 1200), 1.0),
+                [2, 3, 4, 4, 2],
+            ),
+            (
+                MonitorInfo::new(None, (0, 0), (3840, 2160), 1.0),
+                [3, 4, 5, 6, 3],
+            ),
+        ] {
+            let mut m = ScaleManager::default();
+            m.start(expected[2]);
+            let mut ks = Vec::new();
+            for p in [60, 80, 100, 120, 60] {
+                m.set_preferred_percent(p);
+                let k = match m.evaluate(Some(monitor.clone()), WINDOWED) {
+                    Some(r) => r.decision.k,
+                    None => m.effective_k().unwrap(),
+                };
+                assert_eq!(m.preferred_percent(), p);
+                assert_eq!(m.effective_k(), Some(k));
+                ks.push(k);
+            }
+            assert_eq!(ks, expected, "{:?}", monitor.size);
+        }
+    }
+
     #[test]
     fn fullscreen_and_preference_changes_rederive_k() {
         let mut m = ScaleManager::default();
@@ -392,7 +496,7 @@ mod tests {
         assert_eq!(fs.decision.k, 2, "100 % is the same in both modes");
         let back = m.evaluate(Some(full_hd_right()), WINDOWED).unwrap();
         assert_eq!(back.decision.k, 2);
-        m.set_preferred_percent(140);
+        m.set_preferred_percent(120);
         assert_eq!(k_of(&mut m, &macbook()), 5, "clamped to the monitor's cap");
         m.set_preferred_percent(60);
         assert_eq!(k_of(&mut m, &macbook()), 3);

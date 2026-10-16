@@ -4,59 +4,94 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//! Reference Extrude ActionPanel (M2.11): deterministic, UI-only mock state.
+//! The Extrude Action Box (M2.21): deterministic, UI-only state composed into the exact ASCII
+//! of `docs/ui_design/Action_Box_Extrude.txt`.
 //!
-//! [`ExtrudeUi`] is plain data. [`ExtrudeUi::compose`] rebuilds an [`ActionPanel`] from it
-//! with the M2.10 framework and the M2.7 primitives; [`ExtrudeUi::activate`] applies a
-//! pointer or keyboard activation, identified by [`WidgetId`], to the same state. Nothing here
-//! touches geometry, BrepKIT, the model, real selection or formula evaluation.
+//! [`ExtrudeUi`] is plain data. [`ExtrudeUi::compose`] rebuilds the [`ActionBox`] from it, row
+//! by row, following `README_UI.md` §2.4–§2.6, §7–§8 and §33: the complete base box is the
+//! authority, a variant replaces only its own line or branch, and no documented sibling
+//! control is ever deleted. [`ExtrudeUi::activate`] applies a pointer or keyboard activation,
+//! identified by [`WidgetId`], to the same state. Nothing here touches geometry, BrepKIT, the
+//! model, real selection or formula evaluation.
 //!
-//! # Progressive disclosure
+//! # Rows
 //!
-//! Rows that do not apply are absent from the composed list (README §5, §7.8). Order is fixed:
+//! Frame and header (`Solid | Surface`, `New | Add | Remove`, six border topologies), then
 //!
-//! 1. `Solid | Surface` and `New | Add | Remove` (segmented, always present);
-//! 2. termination (`◀ Blind ▶`, cyclic, always present);
-//! 3. `Depth` only for `Blind`; `Selection` only for `Up to`; nothing for `Through all`;
-//! 4. `Invert`;
-//! 5. `Starting Offset`; when checked it discloses a `Blind` / `Up to` cycle and then `Dist`
-//!    (`Blind`) or `Target` (`Up to`);
-//! 6. `Symmetric`;
-//! 7. `Second end position`, only while `Symmetric` is unchecked;
-//! 8. `Merge with all`, only when the result is `Add` or `Remove`; when unchecked it
-//!    discloses `Merge scope`;
-//! 9. separator and `OK` / `Cancel`.
+//! 1. `Profile` and `Extend ◀ … ▶`, always present;
+//! 2. the `Extend` branch: `Blind` = `Depth`, `Along`, `Starting Offset`, `End Offset`;
+//!    `Up to` = `Selection`, `Offset`; `Through all` = `Invert`, `Start Offset`;
+//! 3. `Symetric`, then `Second end position` / `2nd side` while `Symetric` is off;
+//! 4. `Merge with all` (and `Targets` while it is off) for `Add` and `Remove`;
+//! 5. the separator and `OK | Cancel`.
 //!
-//! Widget ids come from [`ActionPanel::widget_id`] with the stable `K_*` row keys, so they
-//! never depend on which rows are currently disclosed.
+//! Offsets that disclose children use the documented expanded forms; an expanded offset that is
+//! the last child of its branch uses the prefix transformation of §2.6. The open reference
+//! points of §2.6 (label drift, no `End Offset` under `Up to` / `Through all`, no expanded
+//! `Offset`) are reproduced as written.
+//!
+//! # Widget ids
+//!
+//! Every control has a fixed key (`K_*`); its id is `base + key * KEY_SLOTS + slot`, so ids never
+//! depend on which rows are currently shown.
 
-use crate::{
-    ActionPanel, PanelRow, PanelRowKind, ROW_ID_STRIDE, WidgetId, WidgetState, cycle_next,
-    cycle_prev,
+#[cfg(test)]
+use crate::action_box::KEY_SLOTS;
+use crate::action_box::{ActionBox, Row};
+use crate::create_box::{
+    ActionBoxUi, K_NESTED, K_NESTED_MODE, K_NESTED_TARGET, offset_children, offset_head,
+    push_footer, push_head, push_merge, push_nested_end,
 };
+use crate::{WidgetId, cycle_next, cycle_prev};
 
-const K_GEOMETRY: u32 = 0;
-const K_RESULT: u32 = 1;
-const K_TERMINATION: u32 = 2;
-const K_DEPTH: u32 = 3;
-const K_SELECTION: u32 = 4;
-const K_INVERT: u32 = 5;
-const K_START_OFFSET: u32 = 6;
-const K_START_MODE: u32 = 7;
-const K_START_DIST: u32 = 8;
-const K_START_TARGET: u32 = 9;
-const K_SYMMETRIC: u32 = 10;
-const K_SECOND_END: u32 = 11;
-const K_MERGE_ALL: u32 = 12;
-const K_MERGE_SCOPE: u32 = 13;
-const K_SEPARATOR: u32 = 14;
-const K_ACTIONS: u32 = 15;
+pub(crate) use crate::create_box::{K_ACTIONS, K_GEOMETRY, K_PROFILE, K_RESULT};
+use crate::create_box::{K_MERGE, K_MERGE_TARGETS, K_NESTED_DIST};
 
-/// Mock field text; numeric fields are UI-only and never edited or evaluated.
-const MOCK_DISTANCE: &str = "0.0 mm";
+pub(crate) const K_EXTEND: u32 = 3;
+const K_DEPTH: u32 = 4;
+const K_ALONG: u32 = 5;
+const K_SELECTION: u32 = 6;
+const K_OFFSET: u32 = 7;
+const K_INVERT: u32 = 8;
+const K_START: u32 = 9;
+const K_START_MODE: u32 = 10;
+const K_START_DIST: u32 = 11;
+const K_START_TARGET: u32 = 12;
+const K_END: u32 = 13;
+const K_END_MODE: u32 = 14;
+const K_END_DIST: u32 = 15;
+const K_END_TARGET: u32 = 16;
+const K_SYMMETRIC: u32 = 17;
+const K_SECOND: u32 = 18;
+const K_SECOND_MODE: u32 = 19;
+const K_SECOND_DEPTH: u32 = 20;
+const K_SECOND_TARGET: u32 = 21;
+
+/// Keys of the numeric rows (field slot 0, formula `☰` slot 1).
+const NUMERIC_KEYS: [u32; 5] = [
+    K_DEPTH,
+    K_START_DIST,
+    K_END_DIST,
+    K_SECOND_DEPTH,
+    K_NESTED_DIST,
+];
+/// Keys of the selection fields (slot 0 the field, slot 1 the `☰` of a populated one).
+const SELECT_KEYS: [u32; 8] = [
+    K_PROFILE,
+    K_ALONG,
+    K_SELECTION,
+    K_START_TARGET,
+    K_END_TARGET,
+    K_SECOND_TARGET,
+    K_NESTED_TARGET,
+    K_MERGE_TARGETS,
+];
+
+/// Mock field text of the numeric rows; numeric fields are UI-only (M2.23 edits them).
+const MOCK_DIST: &str = "+|0.0 mm";
+const MOCK_DIST_UNSIGNED: &str = "0.0 mm";
 /// Element count shown for [`MockSelection::Many`].
 const MOCK_MANY: u32 = 3;
-const INDENT: u32 = 2;
 
 /// `Solid | Surface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,12 +119,39 @@ pub enum ExtrudeTermination {
     ThroughAll,
 }
 
-/// End condition of the starting offset: `Blind | Up to` (cyclic).
+impl ExtrudeTermination {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Blind => "Blind",
+            Self::UpTo => "Up to",
+            Self::ThroughAll => "Through all",
+        }
+    }
+}
+
+/// End condition of an offset or of the second side: `Blind | Up to` (cyclic).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExtrudeOffsetMode {
     #[default]
     Blind,
     UpTo,
+}
+
+impl ExtrudeOffsetMode {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Blind => "Blind",
+            Self::UpTo => "Up to",
+        }
+    }
+
+    /// Two values: either arrow flips.
+    pub(crate) const fn flipped(self) -> Self {
+        match self {
+            Self::Blind => Self::UpTo,
+            Self::UpTo => Self::Blind,
+        }
+    }
 }
 
 /// Deterministic mock selection: a count only, never element names.
@@ -112,17 +174,17 @@ impl MockSelection {
         }
     }
 
-    /// Field text: `none`, `1 Element`, `3 Elements`.
+    /// Field text: `Select…`, `1 Element`, `3 Elements`.
     #[must_use]
     pub fn text(self) -> String {
         match self {
-            Self::None => "none".to_owned(),
+            Self::None => "Select…".to_owned(),
             Self::One => "1 Element".to_owned(),
             Self::Many => format!("{} Elements", self.count()),
         }
     }
 
-    /// Mock edit: `none` -> `1 Element` -> `N Elements` -> `none`.
+    /// Mock edit: none -> `1 Element` -> `N Elements` -> none.
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
@@ -148,16 +210,35 @@ pub enum ExtrudeStatus {
 pub struct ExtrudeValues {
     pub geometry: ExtrudeGeometryType,
     pub result: ExtrudeResultMode,
+    pub profile: MockSelection,
     pub termination: ExtrudeTermination,
+    /// `Along` (Blind).
+    pub along: MockSelection,
+    /// `Selection` (Up to).
     pub selection: MockSelection,
+    /// `Offset` (Up to).
+    pub offset: bool,
+    /// `Invert` (Through all).
     pub invert: bool,
+    /// `Starting Offset` (Blind) / `Start Offset` (Through all): one control, two labels.
     pub starting_offset: bool,
     pub start_mode: ExtrudeOffsetMode,
     pub start_target: MockSelection,
+    /// `End Offset` (Blind).
+    pub end_offset: bool,
+    pub end_mode: ExtrudeOffsetMode,
+    pub end_target: MockSelection,
     pub symmetric: bool,
-    pub second_end: bool,
+    /// `Second end position` while off, `2nd side` while on.
+    pub second_side: bool,
+    pub second_mode: ExtrudeOffsetMode,
+    pub second_target: MockSelection,
+    /// `End Offset` nested in `2nd side = Up to`.
+    pub nested_end: bool,
+    pub nested_mode: ExtrudeOffsetMode,
+    pub nested_target: MockSelection,
     pub merge_with_all: bool,
-    pub merge_scope: MockSelection,
+    pub merge_targets: MockSelection,
 }
 
 impl Default for ExtrudeValues {
@@ -166,21 +247,32 @@ impl Default for ExtrudeValues {
         Self {
             geometry: ExtrudeGeometryType::default(),
             result: ExtrudeResultMode::default(),
+            profile: MockSelection::default(),
             termination: ExtrudeTermination::default(),
+            along: MockSelection::default(),
             selection: MockSelection::default(),
+            offset: false,
             invert: false,
             starting_offset: false,
             start_mode: ExtrudeOffsetMode::default(),
             start_target: MockSelection::default(),
+            end_offset: false,
+            end_mode: ExtrudeOffsetMode::default(),
+            end_target: MockSelection::default(),
             symmetric: false,
-            second_end: false,
+            second_side: false,
+            second_mode: ExtrudeOffsetMode::default(),
+            second_target: MockSelection::default(),
+            nested_end: false,
+            nested_mode: ExtrudeOffsetMode::default(),
+            nested_target: MockSelection::default(),
             merge_with_all: true,
-            merge_scope: MockSelection::default(),
+            merge_targets: MockSelection::default(),
         }
     }
 }
 
-/// UI state of the Extrude ActionPanel.
+/// UI state of the Extrude Action Box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtrudeUi {
     base_id: u32,
@@ -190,7 +282,7 @@ pub struct ExtrudeUi {
 }
 
 impl ExtrudeUi {
-    /// Opens the panel with default values; `base_id` is the panel's first widget id.
+    /// Opens the box with default values; `base_id` is its first widget id.
     #[must_use]
     pub fn new(base_id: u32) -> Self {
         let values = ExtrudeValues::default();
@@ -202,7 +294,7 @@ impl ExtrudeUi {
         }
     }
 
-    /// Whether the panel is still shown (neither OK nor Cancel was activated).
+    /// Whether the box is still shown (neither OK nor Cancel was activated).
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.status == ExtrudeStatus::Editing
@@ -213,132 +305,226 @@ impl ExtrudeUi {
         *self = Self::new(self.base_id);
     }
 
-    /// Composes the panel for the current values, or `None` once OK / Cancel closed it.
-    #[must_use]
-    pub fn compose(&self) -> Option<ActionPanel> {
+    fn row(&self) -> Row {
+        Row::new(self.base_id)
+    }
+
+    /// Composes the box for the current values, or `None` once OK / Cancel closed it.
+    pub(crate) fn compose(&self) -> Option<ActionBox> {
         if !self.is_open() {
             return None;
         }
         let v = &self.values;
-        let mut p = ActionPanel::new("Extrude", self.base_id);
-        let s = |t: &str| t.to_owned();
-        let check = |on: bool| WidgetState {
-            checked: on,
-            ..WidgetState::default()
-        };
-        let checkbox = |key: u32, label: &str, on: bool| {
-            PanelRow::new(key, PanelRowKind::Checkbox { label: s(label) }).with_state(check(on))
-        };
-        let numeric = |key: u32, label: &str| {
-            PanelRow::new(
-                key,
-                PanelRowKind::Numeric {
-                    label: s(label),
-                    text: s(MOCK_DISTANCE),
-                },
-            )
-        };
-        let field = |key: u32, label: &str, sel: MockSelection| {
-            PanelRow::new(
-                key,
-                PanelRowKind::Text {
-                    label: s(label),
-                    text: sel.text(),
-                },
-            )
-        };
-
-        p.push(PanelRow::new(
-            K_GEOMETRY,
-            PanelRowKind::Segmented {
-                labels: vec![s("Solid"), s("Surface")],
-                active: v.geometry as usize,
-            },
-        ));
-        p.push(PanelRow::new(
-            K_RESULT,
-            PanelRowKind::Segmented {
-                labels: vec![s("New"), s("Add"), s("Remove")],
-                active: v.result as usize,
-            },
-        ));
-        p.push(PanelRow::new(
-            K_TERMINATION,
-            PanelRowKind::Cyclic {
-                values: vec![s("Blind"), s("Up to"), s("Through all")],
-                current: v.termination as usize,
-            },
-        ));
+        let mut b = ActionBox::default();
+        push_head(&mut b, self.base_id, "Extrude", v.geometry, v.result);
+        b.push(
+            self.row()
+                .text("│ Profile     ")
+                .select(K_PROFILE, v.profile.count())
+                .end(),
+        );
+        b.push(
+            self.row()
+                .text("│ Extend   ")
+                .cycle(K_EXTEND, v.termination.label(), 17)
+                .end(),
+        );
         match v.termination {
-            ExtrudeTermination::Blind => p.push(numeric(K_DEPTH, "Depth")),
-            ExtrudeTermination::UpTo => p.push(field(K_SELECTION, "Selection", v.selection)),
-            ExtrudeTermination::ThroughAll => {}
+            ExtrudeTermination::Blind => self.blind_branch(&mut b),
+            ExtrudeTermination::UpTo => self.up_to_branch(&mut b),
+            ExtrudeTermination::ThroughAll => self.through_all_branch(&mut b),
         }
-        p.push(checkbox(K_INVERT, "Invert", v.invert));
-        p.push(checkbox(
-            K_START_OFFSET,
-            "Starting Offset",
-            v.starting_offset,
-        ));
-        if v.starting_offset {
-            p.push(
-                PanelRow::new(
-                    K_START_MODE,
-                    PanelRowKind::Cyclic {
-                        values: vec![s("Blind"), s("Up to")],
-                        current: v.start_mode as usize,
-                    },
-                )
-                .indented(INDENT),
-            );
-            p.push(
-                match v.start_mode {
-                    ExtrudeOffsetMode::Blind => numeric(K_START_DIST, "Dist"),
-                    ExtrudeOffsetMode::UpTo => field(K_START_TARGET, "Target", v.start_target),
-                }
-                .indented(INDENT),
-            );
-        }
-        p.push(checkbox(K_SYMMETRIC, "Symmetric", v.symmetric));
+        b.push(
+            self.row()
+                .text("│ ")
+                .check_fill(K_SYMMETRIC, v.symmetric, "Symetric")
+                .end(),
+        );
         if !v.symmetric {
-            p.push(checkbox(K_SECOND_END, "Second end position", v.second_end));
+            self.second_side(&mut b);
         }
         if v.result != ExtrudeResultMode::New {
-            p.push(checkbox(K_MERGE_ALL, "Merge with all", v.merge_with_all));
-            if !v.merge_with_all {
-                p.push(field(K_MERGE_SCOPE, "Merge scope", v.merge_scope).indented(INDENT));
+            push_merge(&mut b, self.base_id, v.merge_with_all, v.merge_targets);
+        }
+        push_footer(&mut b, self.base_id);
+        Some(b)
+    }
+
+    fn blind_branch(&self, b: &mut ActionBox) {
+        let v = &self.values;
+        b.push(
+            self.row()
+                .text("│ │ Depth   ")
+                .numeric(K_DEPTH, MOCK_DIST)
+                .end(),
+        );
+        b.push(
+            self.row()
+                .text("│ │ Along     ")
+                .select(K_ALONG, v.along.count())
+                .end(),
+        );
+        if v.starting_offset {
+            offset_head(
+                b,
+                self.base_id,
+                "│ │ ",
+                (K_START, K_START_MODE),
+                ("Start Offset", 1),
+                v.start_mode,
+            );
+            offset_children(
+                b,
+                self.base_id,
+                "│ │ ╰╴",
+                (K_START_DIST, K_START_TARGET),
+                v.start_mode,
+                v.start_target,
+                ("Dist  ", MOCK_DIST),
+            );
+        } else {
+            b.push(
+                self.row()
+                    .text("│ │ ")
+                    .check_fill(K_START, false, "Starting Offset")
+                    .end(),
+            );
+        }
+        if v.end_offset {
+            offset_head(
+                b,
+                self.base_id,
+                "│ ╰╴",
+                (K_END, K_END_MODE),
+                ("End Offset", 3),
+                v.end_mode,
+            );
+            offset_children(
+                b,
+                self.base_id,
+                "│   ╰╴",
+                (K_END_DIST, K_END_TARGET),
+                v.end_mode,
+                v.end_target,
+                ("Dist  ", MOCK_DIST),
+            );
+        } else {
+            b.push(
+                self.row()
+                    .text("│ ╰╴")
+                    .check_fill(K_END, false, "End Offset")
+                    .end(),
+            );
+        }
+    }
+
+    fn up_to_branch(&self, b: &mut ActionBox) {
+        let v = &self.values;
+        b.push(
+            self.row()
+                .text("│ │ Selection ")
+                .select(K_SELECTION, v.selection.count())
+                .end(),
+        );
+        b.push(
+            self.row()
+                .text("│ ╰╴")
+                .check_fill(K_OFFSET, v.offset, "Offset")
+                .end(),
+        );
+    }
+
+    fn through_all_branch(&self, b: &mut ActionBox) {
+        let v = &self.values;
+        b.push(
+            self.row()
+                .text("│ │ ")
+                .check_fill(K_INVERT, v.invert, "Invert")
+                .end(),
+        );
+        if v.starting_offset {
+            offset_head(
+                b,
+                self.base_id,
+                "│ ╰╴",
+                (K_START, K_START_MODE),
+                ("Start Offset", 1),
+                v.start_mode,
+            );
+            offset_children(
+                b,
+                self.base_id,
+                "│   ╰╴",
+                (K_START_DIST, K_START_TARGET),
+                v.start_mode,
+                v.start_target,
+                ("Dist  ", MOCK_DIST),
+            );
+        } else {
+            b.push(
+                self.row()
+                    .text("│ ╰╴")
+                    .check_fill(K_START, false, "Start Offset")
+                    .end(),
+            );
+        }
+    }
+
+    /// `Second end position` while collapsed (base box), the `2nd side` branch while expanded.
+    fn second_side(&self, b: &mut ActionBox) {
+        let v = &self.values;
+        if !v.second_side {
+            b.push(
+                self.row()
+                    .text("│ ")
+                    .check_fill(K_SECOND, false, "Second end position")
+                    .end(),
+            );
+            return;
+        }
+        b.push(
+            self.row()
+                .text("│ ╰╴")
+                .check(K_SECOND, true, "2nd side", 10)
+                .text("     ")
+                .cycle(K_SECOND_MODE, v.second_mode.label(), 9)
+                .end(),
+        );
+        match v.second_mode {
+            ExtrudeOffsetMode::Blind => b.push(
+                self.row()
+                    .text("│   ╰╴Depth ")
+                    .numeric(K_SECOND_DEPTH, MOCK_DIST)
+                    .end(),
+            ),
+            ExtrudeOffsetMode::UpTo => {
+                b.push(
+                    self.row()
+                        .text("│   │ Target  ")
+                        .select(K_SECOND_TARGET, v.second_target.count())
+                        .end(),
+                );
+                push_nested_end(
+                    b,
+                    self.base_id,
+                    v.nested_end,
+                    v.nested_mode,
+                    v.nested_target,
+                    ("Dist  ", MOCK_DIST_UNSIGNED),
+                );
             }
         }
-        p.push(PanelRow::new(K_SEPARATOR, PanelRowKind::Separator));
-        p.push(PanelRow::new(
-            K_ACTIONS,
-            PanelRowKind::Buttons {
-                labels: vec![s("OK"), s("Cancel")],
-            },
-        ));
-        Some(p)
     }
 
     /// Applies activation of `id` to the mock state. Returns `true` if the state changed.
     ///
-    /// Ids outside this panel, controls that are not currently disclosed, the mock numeric
-    /// fields and their formula buttons (M2.12) change nothing. A closed panel ignores
-    /// everything.
+    /// Ids outside this box, controls that are not currently shown, the mock numeric fields
+    /// and their formula buttons (M2.23) change nothing. A closed box ignores everything.
     pub fn activate(&mut self, id: WidgetId) -> bool {
-        if !self.is_open() {
-            return false;
-        }
-        let Some(rel) = id.get().checked_sub(self.base_id) else {
+        // Only controls present in the composed box are activatable.
+        let Some((key, slot)) = self.live_control(id) else {
             return false;
         };
-        let (key, slot) = (rel / ROW_ID_STRIDE, rel % ROW_ID_STRIDE);
-        let Some(panel) = self.compose() else {
-            return false;
-        };
-        // Only controls present in the composed panel are activatable.
-        if !panel.rows.iter().any(|r| r.key == key) {
-            return false;
-        }
         let before = (self.values, self.status);
         let v = &mut self.values;
         match (key, slot) {
@@ -347,27 +533,28 @@ impl ExtrudeUi {
             (K_RESULT, 0) => v.result = ExtrudeResultMode::New,
             (K_RESULT, 1) => v.result = ExtrudeResultMode::Add,
             (K_RESULT, 2) => v.result = ExtrudeResultMode::Remove,
-            (K_TERMINATION, 0) => {
-                v.termination = termination_at(cycle_prev(v.termination as usize, 3));
-            }
-            (K_TERMINATION, 1) => {
-                v.termination = termination_at(cycle_next(v.termination as usize, 3));
-            }
-            (K_START_MODE, 0 | 1) => {
-                // Two values: either arrow flips.
-                v.start_mode = match v.start_mode {
-                    ExtrudeOffsetMode::Blind => ExtrudeOffsetMode::UpTo,
-                    ExtrudeOffsetMode::UpTo => ExtrudeOffsetMode::Blind,
-                };
-            }
+            (K_EXTEND, 0) => v.termination = termination_at(cycle_prev(v.termination as usize, 3)),
+            (K_EXTEND, 1) => v.termination = termination_at(cycle_next(v.termination as usize, 3)),
+            (K_START_MODE, 0 | 1) => v.start_mode = v.start_mode.flipped(),
+            (K_END_MODE, 0 | 1) => v.end_mode = v.end_mode.flipped(),
+            (K_SECOND_MODE, 0 | 1) => v.second_mode = v.second_mode.flipped(),
+            (K_NESTED_MODE, 0 | 1) => v.nested_mode = v.nested_mode.flipped(),
+            (K_PROFILE, 0) => v.profile = v.profile.next(),
+            (K_ALONG, 0) => v.along = v.along.next(),
             (K_SELECTION, 0) => v.selection = v.selection.next(),
             (K_START_TARGET, 0) => v.start_target = v.start_target.next(),
-            (K_MERGE_SCOPE, 0) => v.merge_scope = v.merge_scope.next(),
+            (K_END_TARGET, 0) => v.end_target = v.end_target.next(),
+            (K_SECOND_TARGET, 0) => v.second_target = v.second_target.next(),
+            (K_NESTED_TARGET, 0) => v.nested_target = v.nested_target.next(),
+            (K_MERGE_TARGETS, 0) => v.merge_targets = v.merge_targets.next(),
+            (K_OFFSET, 0) => v.offset = !v.offset,
             (K_INVERT, 0) => v.invert = !v.invert,
-            (K_START_OFFSET, 0) => v.starting_offset = !v.starting_offset,
+            (K_START, 0) => v.starting_offset = !v.starting_offset,
+            (K_END, 0) => v.end_offset = !v.end_offset,
             (K_SYMMETRIC, 0) => v.symmetric = !v.symmetric,
-            (K_SECOND_END, 0) => v.second_end = !v.second_end,
-            (K_MERGE_ALL, 0) => v.merge_with_all = !v.merge_with_all,
+            (K_SECOND, 0) => v.second_side = !v.second_side,
+            (K_NESTED, 0) => v.nested_end = !v.nested_end,
+            (K_MERGE, 0) => v.merge_with_all = !v.merge_with_all,
             (K_ACTIONS, 0) => {
                 self.opened = self.values;
                 self.status = ExtrudeStatus::Confirmed;
@@ -381,12 +568,40 @@ impl ExtrudeUi {
         before != (self.values, self.status)
     }
 
-    /// Id of control `slot` of the row `key`, as drawn by the composed panel.
+    /// Id of control `slot` of the control `key`, as drawn by the composed box.
     #[cfg(test)]
-    fn id(&self, key: u32, slot: u32) -> WidgetId {
-        ActionPanel::new("", self.base_id)
-            .widget_id(key, slot)
-            .unwrap()
+    pub(crate) fn id(&self, key: u32, slot: u32) -> WidgetId {
+        WidgetId::new(self.base_id + key * KEY_SLOTS + slot)
+    }
+}
+
+impl ActionBoxUi for ExtrudeUi {
+    fn base_id(&self) -> u32 {
+        self.base_id
+    }
+
+    fn compose_box(&self) -> Option<ActionBox> {
+        self.compose()
+    }
+
+    fn activate_id(&mut self, id: WidgetId) -> bool {
+        self.activate(id)
+    }
+
+    fn showing(&self) -> bool {
+        self.is_open()
+    }
+
+    fn restart(&mut self) {
+        self.reopen();
+    }
+
+    fn numeric_keys(&self) -> &'static [u32] {
+        &NUMERIC_KEYS
+    }
+
+    fn select_keys(&self) -> &'static [u32] {
+        &SELECT_KEYS
     }
 }
 
@@ -399,383 +614,5 @@ fn termination_at(index: usize) -> ExtrudeTermination {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{CellContent, CellGrid, GridRect, InteractionState, WidgetStyles};
-
-    const BASE: u32 = 1000;
-
-    fn ui() -> ExtrudeUi {
-        ExtrudeUi::new(BASE)
-    }
-
-    fn click(u: &mut ExtrudeUi, key: u32, slot: u32) -> bool {
-        let id = u.id(key, slot);
-        u.activate(id)
-    }
-
-    fn keys(u: &ExtrudeUi) -> Vec<u32> {
-        u.compose().unwrap().rows.iter().map(|r| r.key).collect()
-    }
-
-    fn render(u: &ExtrudeUi, cols: u32, rows: u32) -> Option<(CellGrid, usize)> {
-        let p = u.compose()?;
-        let styles = WidgetStyles::default();
-        let inter = InteractionState::default();
-        let ctx = crate::WidgetContext {
-            styles: &styles,
-            interaction: &inter,
-        };
-        let mut g = CellGrid::new(cols, rows).unwrap();
-        let n = p.draw(&mut g, &ctx, GridRect::new(0, 0, cols, rows));
-        Some((g, n))
-    }
-
-    fn text(g: &CellGrid) -> Vec<String> {
-        (0..g.rows())
-            .map(|r| {
-                (0..g.cols())
-                    .map(|c| match g.get(c, r).map(|x| x.content) {
-                        Some(CellContent::Glyph(ch)) => ch,
-                        _ => ' ',
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn has(g: &CellGrid, needle: &str) -> bool {
-        text(g).iter().any(|r| r.contains(needle))
-    }
-
-    #[test]
-    fn default_state_and_row_order() {
-        let u = ui();
-        assert_eq!(
-            keys(&u),
-            [
-                K_GEOMETRY,
-                K_RESULT,
-                K_TERMINATION,
-                K_DEPTH,
-                K_INVERT,
-                K_START_OFFSET,
-                K_SYMMETRIC,
-                K_SECOND_END,
-                K_SEPARATOR,
-                K_ACTIONS
-            ]
-        );
-        let (g, n) = render(&u, 32, 20).unwrap();
-        assert_eq!(n, 10);
-        let t = text(&g);
-        assert!(t[1].contains("Extrude"));
-        assert!(t[3].contains("Solid") && t[3].contains("Surface"));
-        assert!(t[4].contains("New") && t[4].contains("Add") && t[4].contains("Remove"));
-        assert!(t[5].contains('◀') && t[5].contains("Blind") && t[5].contains('▶'));
-        assert!(t[6].contains("Depth") && t[6].contains("0.0 mm") && t[6].contains('☰'));
-        assert!(t[7].contains("□ Invert"));
-        assert!(t[12].contains("OK") && t[12].contains("Cancel"));
-        assert_eq!(render(&u, 32, 20).unwrap().0, g);
-    }
-
-    #[test]
-    fn solid_surface_keeps_both_segments_and_same_rows() {
-        let mut u = ui();
-        let solid = keys(&u);
-        assert!(click(&mut u, K_GEOMETRY, 1));
-        assert_eq!(u.values.geometry, ExtrudeGeometryType::Surface);
-        assert_eq!(keys(&u), solid);
-        let (g, _) = render(&u, 32, 20).unwrap();
-        assert!(text(&g)[3].contains("Solid") && text(&g)[3].contains("Surface"));
-        assert!(!click(&mut u, K_GEOMETRY, 1));
-        assert!(click(&mut u, K_GEOMETRY, 0));
-        assert_eq!(u.values.geometry, ExtrudeGeometryType::Solid);
-    }
-
-    #[test]
-    fn result_modes_keep_all_segments_and_gate_merge_controls() {
-        let mut u = ui();
-        assert!(!keys(&u).contains(&K_MERGE_ALL));
-        for (slot, mode) in [(1, ExtrudeResultMode::Add), (2, ExtrudeResultMode::Remove)] {
-            assert!(click(&mut u, K_RESULT, slot));
-            assert_eq!(u.values.result, mode);
-            assert!(keys(&u).contains(&K_MERGE_ALL));
-            let (g, _) = render(&u, 32, 20).unwrap();
-            assert!(has(&g, "New") && has(&g, "Add") && has(&g, "Remove"));
-            assert!(has(&g, "■ Merge with all"));
-        }
-        assert!(click(&mut u, K_RESULT, 0));
-        assert!(!keys(&u).contains(&K_MERGE_ALL));
-        assert!(!keys(&u).contains(&K_MERGE_SCOPE));
-    }
-
-    #[test]
-    fn merge_scope_appears_only_when_merge_with_all_is_unchecked() {
-        let mut u = ui();
-        click(&mut u, K_RESULT, 1);
-        assert!(!keys(&u).contains(&K_MERGE_SCOPE));
-        assert!(click(&mut u, K_MERGE_ALL, 0));
-        let k = keys(&u);
-        let at = |key| k.iter().position(|&x| x == key).unwrap();
-        assert_eq!(at(K_MERGE_SCOPE), at(K_MERGE_ALL) + 1);
-        let (g, _) = render(&u, 32, 20).unwrap();
-        assert!(has(&g, "□ Merge with all") && has(&g, "Merge scope") && has(&g, "none"));
-        assert!(click(&mut u, K_MERGE_SCOPE, 0));
-        assert!(
-            render(&u, 32, 20)
-                .map(|(g, _)| has(&g, "1 Element"))
-                .unwrap()
-        );
-        // Hidden control is not activatable even by a stale id.
-        assert!(click(&mut u, K_MERGE_ALL, 0));
-        let before = u.values;
-        assert!(!click(&mut u, K_MERGE_SCOPE, 0));
-        assert_eq!(u.values, before);
-        // Merge scope disappears with the result mode too.
-        click(&mut u, K_MERGE_ALL, 0);
-        click(&mut u, K_RESULT, 0);
-        assert!(!keys(&u).contains(&K_MERGE_SCOPE));
-    }
-
-    #[test]
-    fn termination_is_cyclic_and_gates_depth_and_selection() {
-        let mut u = ui();
-        let has_key = |u: &ExtrudeUi, k| keys(u).contains(&k);
-        assert!(has_key(&u, K_DEPTH) && !has_key(&u, K_SELECTION));
-        // next: Blind -> Up to -> Through all -> Blind
-        assert!(click(&mut u, K_TERMINATION, 1));
-        assert_eq!(u.values.termination, ExtrudeTermination::UpTo);
-        assert!(!has_key(&u, K_DEPTH) && has_key(&u, K_SELECTION));
-        assert!(click(&mut u, K_TERMINATION, 1));
-        assert_eq!(u.values.termination, ExtrudeTermination::ThroughAll);
-        assert!(!has_key(&u, K_DEPTH) && !has_key(&u, K_SELECTION));
-        let (g, _) = render(&u, 32, 20).unwrap();
-        assert!(has(&g, "Through all") && !has(&g, "Depth") && !has(&g, "Selection"));
-        assert!(click(&mut u, K_TERMINATION, 1));
-        assert_eq!(u.values.termination, ExtrudeTermination::Blind);
-        // prev wraps backwards.
-        assert!(click(&mut u, K_TERMINATION, 0));
-        assert_eq!(u.values.termination, ExtrudeTermination::ThroughAll);
-        assert!(click(&mut u, K_TERMINATION, 0));
-        assert_eq!(u.values.termination, ExtrudeTermination::UpTo);
-    }
-
-    #[test]
-    fn hidden_rows_are_physically_absent() {
-        let mut u = ui();
-        let (blind, n_blind) = render(&u, 32, 20).unwrap();
-        click(&mut u, K_TERMINATION, 1);
-        click(&mut u, K_TERMINATION, 1);
-        let (through, n_through) = render(&u, 32, 20).unwrap();
-        // One row fewer; everything below Depth moved up, no blank placeholder.
-        assert_eq!(n_through + 1, n_blind);
-        assert_eq!(text(&through)[6].trim_matches(['│', ' ']), "□ Invert");
-        assert_ne!(blind, through);
-        // No cell of the absent row carries one of its ids.
-        let p = u.compose().unwrap();
-        let ids: Vec<u32> = (0..2)
-            .map(|s| p.widget_id(K_DEPTH, s).unwrap().get())
-            .collect();
-        for r in 0..through.rows() {
-            for c in 0..through.cols() {
-                let owner = through.get(c, r).and_then(|x| x.widget_id);
-                assert!(owner.is_none_or(|o| !ids.contains(&o.get())));
-            }
-        }
-    }
-
-    #[test]
-    fn selection_shows_mock_counts_only() {
-        let mut u = ui();
-        click(&mut u, K_TERMINATION, 1);
-        let (g, _) = render(&u, 32, 20).unwrap();
-        assert!(has(&g, "Selection") && has(&g, "none"));
-        for (want, count) in [("1 Element", 1), ("3 Elements", 3), ("none", 0)] {
-            assert!(click(&mut u, K_SELECTION, 0));
-            assert_eq!(u.values.selection.count(), count);
-            assert!(has(&render(&u, 32, 20).unwrap().0, want));
-        }
-        assert_eq!(MockSelection::One.text(), "1 Element");
-        assert_eq!(MockSelection::Many.text(), "3 Elements");
-        // Selection is not offered under Blind.
-        click(&mut u, K_TERMINATION, 0);
-        assert!(!click(&mut u, K_SELECTION, 0));
-    }
-
-    #[test]
-    fn starting_offset_discloses_mode_and_dist_or_target() {
-        let mut u = ui();
-        let closed = keys(&u);
-        assert!(click(&mut u, K_START_OFFSET, 0));
-        let k = keys(&u);
-        let at = |key| k.iter().position(|&x| x == key).unwrap();
-        assert_eq!(at(K_START_MODE), at(K_START_OFFSET) + 1);
-        assert_eq!(at(K_START_DIST), at(K_START_OFFSET) + 2);
-        assert!(!k.contains(&K_START_TARGET));
-        let (g, _) = render(&u, 32, 20).unwrap();
-        assert!(has(&g, "■ Starting Offset") && has(&g, "Dist"));
-        assert!(click(&mut u, K_START_MODE, 1));
-        let k = keys(&u);
-        assert!(k.contains(&K_START_TARGET) && !k.contains(&K_START_DIST));
-        assert!(has(&render(&u, 32, 20).unwrap().0, "Target"));
-        assert!(click(&mut u, K_START_TARGET, 0));
-        assert_eq!(u.values.start_target, MockSelection::One);
-        // Both arrows flip the two-value cycle.
-        assert!(click(&mut u, K_START_MODE, 0));
-        assert_eq!(u.values.start_mode, ExtrudeOffsetMode::Blind);
-        // Unchecking removes the disclosed rows again.
-        assert!(click(&mut u, K_START_OFFSET, 0));
-        assert_eq!(keys(&u), closed);
-        // Independent of the end condition.
-        click(&mut u, K_TERMINATION, 1);
-        click(&mut u, K_TERMINATION, 1);
-        assert!(keys(&u).contains(&K_START_OFFSET));
-    }
-
-    #[test]
-    fn invert_symmetric_and_second_end_toggle_with_glyphs() {
-        let mut u = ui();
-        assert!(click(&mut u, K_INVERT, 0));
-        assert!(has(&render(&u, 32, 20).unwrap().0, "■ Invert"));
-        assert!(click(&mut u, K_INVERT, 0));
-        assert!(has(&render(&u, 32, 20).unwrap().0, "□ Invert"));
-        assert!(click(&mut u, K_SECOND_END, 0));
-        assert!(has(&render(&u, 32, 20).unwrap().0, "■ Second end position"));
-        // Symmetric removes Second end position (and its click does nothing).
-        assert!(click(&mut u, K_SYMMETRIC, 0));
-        assert!(!keys(&u).contains(&K_SECOND_END));
-        assert!(!has(&render(&u, 32, 20).unwrap().0, "Second end"));
-        assert!(!click(&mut u, K_SECOND_END, 0));
-        assert!(u.values.second_end);
-        assert!(click(&mut u, K_SYMMETRIC, 0));
-        assert!(has(&render(&u, 32, 20).unwrap().0, "■ Second end position"));
-    }
-
-    #[test]
-    fn numeric_fields_and_foreign_ids_change_nothing() {
-        let mut u = ui();
-        let before = u;
-        assert!(!click(&mut u, K_DEPTH, 0));
-        assert!(!click(&mut u, K_DEPTH, 1));
-        assert!(!u.activate(WidgetId::new(0)));
-        assert!(!u.activate(WidgetId::new(BASE + 63)));
-        assert!(!u.activate(WidgetId::new(u32::MAX)));
-        assert_eq!(u, before);
-    }
-
-    #[test]
-    fn ok_confirms_and_cancel_restores_opening_values() {
-        let mut ok = ui();
-        click(&mut ok, K_RESULT, 2);
-        click(&mut ok, K_INVERT, 0);
-        assert!(click(&mut ok, K_ACTIONS, 0));
-        assert_eq!(ok.status, ExtrudeStatus::Confirmed);
-        assert!(!ok.is_open() && ok.compose().is_none());
-        assert_eq!(ok.values.result, ExtrudeResultMode::Remove);
-        assert!(!click(&mut ok, K_INVERT, 0));
-        assert!(render(&ok, 32, 20).is_none());
-
-        let mut cancel = ui();
-        click(&mut cancel, K_RESULT, 2);
-        click(&mut cancel, K_TERMINATION, 1);
-        assert!(click(&mut cancel, K_ACTIONS, 1));
-        assert_eq!(cancel.status, ExtrudeStatus::Cancelled);
-        assert_eq!(cancel.values, ExtrudeValues::default());
-        assert!(cancel.compose().is_none());
-
-        cancel.reopen();
-        assert!(cancel.is_open());
-        assert_eq!(cancel.values, ExtrudeValues::default());
-        assert!(cancel.compose().is_some());
-    }
-
-    #[test]
-    fn disclosed_rows_do_not_change_other_rows_ids() {
-        let mut u = ui();
-        let ids_of = |u: &ExtrudeUi, key| {
-            let (g, _) = render(u, 32, 22).unwrap();
-            let mut v = Vec::new();
-            for r in 0..g.rows() {
-                for c in 0..g.cols() {
-                    if let Some(id) = g.get(c, r).and_then(|x| x.widget_id) {
-                        let rel = id.get() - BASE;
-                        if rel / ROW_ID_STRIDE == key {
-                            v.push(id.get());
-                        }
-                    }
-                }
-            }
-            v.sort_unstable();
-            v.dedup();
-            v
-        };
-        let before = ids_of(&u, K_ACTIONS);
-        click(&mut u, K_RESULT, 1);
-        click(&mut u, K_MERGE_ALL, 0);
-        click(&mut u, K_START_OFFSET, 0);
-        click(&mut u, K_TERMINATION, 1);
-        assert_eq!(ids_of(&u, K_ACTIONS), before);
-        assert_eq!(before.len(), 2);
-    }
-
-    #[test]
-    fn full_disclosure_row_order_is_deterministic() {
-        let mut u = ui();
-        click(&mut u, K_RESULT, 1);
-        click(&mut u, K_MERGE_ALL, 0);
-        click(&mut u, K_START_OFFSET, 0);
-        click(&mut u, K_TERMINATION, 1);
-        assert_eq!(
-            keys(&u),
-            [
-                K_GEOMETRY,
-                K_RESULT,
-                K_TERMINATION,
-                K_SELECTION,
-                K_INVERT,
-                K_START_OFFSET,
-                K_START_MODE,
-                K_START_DIST,
-                K_SYMMETRIC,
-                K_SECOND_END,
-                K_MERGE_ALL,
-                K_MERGE_SCOPE,
-                K_SEPARATOR,
-                K_ACTIONS
-            ]
-        );
-        assert_eq!(u.compose(), u.compose());
-    }
-
-    #[test]
-    fn tiny_and_degenerate_grids_are_safe() {
-        let mut u = ui();
-        click(&mut u, K_RESULT, 1);
-        click(&mut u, K_MERGE_ALL, 0);
-        click(&mut u, K_START_OFFSET, 0);
-        for (w, h) in [(0, 0), (1, 1), (2, 2), (4, 4), (5, 3), (8, 6), (40, 3)] {
-            if let Some((g, n)) = render(&u, w, h) {
-                assert!(n <= h as usize, "{w}x{h}");
-                assert_eq!(g.cells().len(), (w * h) as usize);
-            }
-        }
-        // A short grid shows the first rows that fit, in order.
-        let (g, n) = render(&u, 32, 7).unwrap();
-        assert_eq!(n, 3);
-        assert!(has(&g, "Solid") && has(&g, "Remove") && has(&g, "Blind"));
-        assert!(!has(&g, "OK"));
-        // Off-grid placement draws nothing and does not panic.
-        let p = u.compose().unwrap();
-        let styles = WidgetStyles::default();
-        let inter = InteractionState::default();
-        let ctx = crate::WidgetContext {
-            styles: &styles,
-            interaction: &inter,
-        };
-        let mut g = CellGrid::new(6, 4).unwrap();
-        let blank = g.clone();
-        p.draw(&mut g, &ctx, GridRect::new(100, 100, 30, 30));
-        assert_eq!(g, blank);
-    }
-}
+#[path = "extrude_tests.rs"]
+mod tests;

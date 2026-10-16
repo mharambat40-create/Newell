@@ -98,6 +98,6 @@ Remplacer "│ Bridging Curve  │" par "╞ Bridging Curve  ╡"
 
 Remplacer "│ │ Along     [Select…       ]│" par "│ ╞ Along     [Select…       ]╡"
 
-Remplacer "│ ╰╴□ End Offset              ╡" par "│ ╘ □ End Offset              ╡"
+Remplacer "│ ╰╴□ End Offset              │" par "│ ╘ □ End Offset              ╡"
 
 Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    Cancel    │"

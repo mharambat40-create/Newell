@@ -34,11 +34,14 @@
 //!
 //! A separator cell between two interactive neighbours carries `shared_border` routing and
 //! no `widget_id`. A click on either half of it is routed to the adjacent control by the
-//! M2.5 sub-cell rule. See `docs/plans/M2-ui-framework.md` (M2.7 decisions).
+//! M2.5 sub-cell rule. See `docs/plans/M2-ui-framework.md` (M2.7 decisions). The Action Box
+//! (`action_box`) composes its own segment dividers this way.
 
 mod button;
+mod edit;
 mod field;
-mod panel;
+mod hover;
+mod numeric;
 mod selector;
 mod tree;
 
@@ -48,12 +51,14 @@ use crate::{Cell, CellContent, CellGrid, GridRect, InteractionState, StyleId, Wi
 use crate::{SharedBorder, WidgetState};
 
 pub use button::{draw_button, draw_checkbox, draw_label, draw_separator};
+pub use edit::EditKey;
+pub(crate) use edit::{TextEdit, caret_window};
+pub(crate) use field::draw_numeric_view;
 pub use field::{draw_numeric_field, draw_text_field};
-pub use panel::{ActionPanel, PanelRow, PanelRowKind, ROW_ID_STRIDE};
-pub use selector::{
-    Cyclic, Segment, Segmented, cycle_next, cycle_prev, draw_cyclic, draw_segmented,
-};
-pub use tree::{TreeNodeKind, TreeRow, draw_tree_row};
+pub(crate) use hover::hover_row;
+pub(crate) use numeric::NumericFields;
+pub use selector::{Cyclic, cycle_next, cycle_prev, draw_cyclic};
+pub use tree::{TreeNodeKind, TreeRow, TreeRowIds, draw_tree_row, ellipsize};
 
 /// Styles used by the primitives.
 ///
@@ -366,16 +371,6 @@ mod tests {
         let c = ctx(&styles, &inter);
         let rect = GridRect::new(0, 0, 12, 1);
         let state = WidgetState::default();
-        let segs = [
-            Segment {
-                id: id(2),
-                label: "A",
-            },
-            Segment {
-                id: id(3),
-                label: "B",
-            },
-        ];
         let values = ["Blind"];
         type Draw<'a> = Box<dyn Fn(&mut CellGrid) + 'a>;
         let draws: Vec<Draw<'_>> = vec![
@@ -383,14 +378,6 @@ mod tests {
             Box::new(|g| draw_checkbox(g, &c, rect, id(2), state, "Invert")),
             Box::new(|g| draw_text_field(g, &c, rect, id(2), state, "12.5")),
             Box::new(|g| draw_numeric_field(g, &c, rect, id(2), id(3), state, "1 mm")),
-            Box::new(|g| {
-                let sel = Segmented {
-                    segments: &segs,
-                    active: 0,
-                    state,
-                };
-                draw_segmented(g, &c, rect, &sel);
-            }),
             Box::new(|g| {
                 let sel = Cyclic {
                     prev: id(2),
@@ -403,11 +390,18 @@ mod tests {
             }),
             Box::new(|g| {
                 let row = TreeRow {
-                    id: id(2),
+                    ids: TreeRowIds {
+                        row: id(2),
+                        marker: id(3),
+                        check: id(4),
+                        name: id(5),
+                    },
                     kind: TreeNodeKind::Leaf,
                     depth: 1,
                     last: true,
                     trunk: &[],
+                    spaced: true,
+                    check: Some(false),
                     label: "Sketch",
                     state,
                 };
