@@ -861,14 +861,17 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
   animation. All decorative, hover, fade and shader animations
   remain prohibited.
 
-  **Click target**
-  - The entire 20-cell Progress segment is clickable.
-  - One stable WidgetId provides O(1) cell-based hit-testing.
-  - The separator preceding the segment is excluded.
-  - The percentage field occupies exactly 4 cells, left-aligned
-    with trailing padding: `0%  `, `5%  `, `10% `, `100%`.
-  - Padding cells belong to the clickable segment.
-  - Segment dimensions and borders remain unchanged.
+**Progress segment geometry**
+- The clickable Progress segment occupies exactly 21 cells.
+- Its width remains constant across all 21 progress states.
+- The percentage field is preceded by exactly one space after `]`.
+- The percentage field occupies 4 cells, left-aligned:
+  `0%  `, `5%  `, `10% `, `100%`.
+- Trailing padding belongs to the clickable segment.
+- The entire segment, including its padding, uses one stable WidgetId.
+- Separators outside the segment are not clickable.
+- Preserve the exact ASCII reference layout and border positions.
+- No variable-width layout or shifting of adjacent components.
 
   **Interaction**
   - Activate on left-button press, once per press.
