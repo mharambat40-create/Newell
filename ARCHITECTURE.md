@@ -903,6 +903,16 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
   - Preserve O(1) hit-testing, one GPU UI draw call,
     and the absence of hover or retained widget trees.
 
+  **Overlay input precedence**
+- Active window resizing has priority over Progress interactions.
+- Open menus and modal overlays intercept pointer presses
+  before the underlying StatusBar.
+- An outside press may dismiss an overlay according to its
+  existing dismissal rules, but MUST NOT activate Progress
+  during the same press.
+- A subsequent independent press is required to activate Progress.
+- No click-through or deferred activation is permitted.
+
 ### 3.6 Monochrome Palette & Themes
 
 The 2D UI is strictly monochrome. The only permitted colours are:
