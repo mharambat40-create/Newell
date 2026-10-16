@@ -8,7 +8,10 @@ The project follows a strict Model-View-Controller (MVC) architecture, segregate
 
 - **Model (`newell-kernel`, `newell-model`):** The single source of truth. Contains the parametric feature tree, parameters, and all BrepKIT topology/geometry operations. It has NO knowledge of the UI or the GPU.
 - **View (`newell-render`):** The `wgpu` rendering pipeline. It only reads states and draws them. It draws the ASCII grid, samples the texture atlas, and renders the 3D viewport.
-- **Controller (`newell-ui`, `newell-app`):** Handles OS events (`winit`), mouse/keyboard inputs, and translates them into O(1) grid hit-testing. It updates the UI state (e.g., focus, pressed, selection, expansion) and mutates the Model. Hover is NOT a tracked UI state (see §3.5).
+- **Controller (`newell-ui`, `newell-app`):** Handles OS events (`winit`), mouse/keyboard inputs, and translates them into O(1) grid hit-testing. It updates the UI state (e.g., focus, pressed, selection, expansion) and mutates the Model. Hover is tracked exclusively for M2.25 ASCII border
+highlighting through one Controller-owned
+hovered: Option<WidgetId>. No hover animation,
+colour change or shader effect is permitted.
 
 ## 2. Agent Roles & Workflow Rules
 We use a 4-agent system. Each agent MUST adhere to its boundaries:
@@ -835,7 +838,7 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 - **Sub-Cell Modulo Logic:** For shared ASCII separator characters, the Controller MUST compute the modulo of the pixel coordinate to determine which half of the cell was clicked, routing the interaction to the correct adjacent `widget_id`.
 - **Single GPU Draw Call:** `newell-render` MUST consume this flat array and render the entire ASCII UI overlay in a single `wgpu` draw call to maintain the lowest possible rendering overhead.
 
-### 3.5 Interaction Model (No Hover)
+### 3.5 Interaction Model (ASCII Hover Highlight)
 
 > **[APPROVED ARCHITECTURAL CHANGE — M2.16]** Hover-specific behaviour was
 > intentionally and permanently removed from Newell. The previous §3.5
