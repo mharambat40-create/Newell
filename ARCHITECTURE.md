@@ -855,38 +855,50 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 - **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The only approved addition is the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness or any third colour, intensity or alpha level. Inversion is not a state visual; the only foreground/background exchange in the UI is the global theme switch (§3.6). Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
 - **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It is drawn in the monochrome foreground colour as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
 - **Temporary accepted deviation (until M2.21).** The segmented-selector active-segment `║` separators built in M2.7 are not a documented structure. They may remain, unmodified and not extended to any new widget, until M2.21 replaces them with the exact canonical border topology of `docs/ui_design/`. M2.16 does not need to remove them. After M2.21 their presence is a violation of this section.
-- **No animation (M2.24 exception):**
-  The CPU MUST NOT compute fade animations, colour transitions,
-  hover animations or other decorative effects.
+- **Animation (M2.24 exception):**
 
-  The only approved exception is the M2.24 StatusBar progress animation,
-  as specified in `docs/ui_design/README_UI.md` §27.1.
+  The StatusBar progress indicator is the only authorized UI
+  animation. All decorative, hover, fade and shader animations
+  remain prohibited.
 
-  - The entire `Progress […] N%` segment is clickable through one
-    stable WidgetId, using existing click activation semantics.
-  - Initial value: 0%.
-  - First click: animate from 0% to 100% over exactly 5 seconds.
-  - Next click: animate from 100% to 0% over exactly 1 second.
-  - Subsequent clicks alternate between these two directions.
-  - Clicks during an animation are ignored without queuing or restarting.
-  - Progress uses 21 discrete states (0–100%, increments of 5%).
-  - Timing MUST use monotonic elapsed time, never frame counts.
-  - The Controller owns the animation state and updates ordinary
-    character cells in the flat CellGrid.
-  - Redraws are scheduled only when required, using
-    ControlFlow::WaitUntil for the next progress step.
-  - No progress-related redraws are scheduled while idle.
-  - The FPS field updates independently at 5 Hz.
+  **Click target**
+  - The entire 20-cell Progress segment is clickable.
+  - One stable WidgetId provides O(1) cell-based hit-testing.
+  - The separator preceding the segment is excluded.
+  - The percentage field occupies exactly 4 cells, left-aligned
+    with trailing padding: `0%  `, `5%  `, `10% `, `100%`.
+  - Padding cells belong to the clickable segment.
+  - Segment dimensions and borders remain unchanged.
 
-  This exception MUST preserve:
-  - O(1) cell-based hit-testing.
-  - Exactly one batched GPU UI draw call.
-  - No retained widget tree.
-  - No shader-based animation.
-  - No hover effects.
-  - No additional GPU rendering passes.
+  **Interaction**
+  - Activate on left-button press, once per press.
+  - Initial state: 0%.
+  - At 0%, clicking starts a 5-second animation to 100%.
+  - At 100%, clicking starts a 1-second animation to 0%.
+  - Ignore clicks during animation without queuing or restarting.
+  - Animation activity is determined by controller state,
+    not by the displayed percentage.
+  - Existing input precedence applies: active resizing and
+    modal overlays take priority.
 
-  No other animations are authorized.
+  **Timing**
+  - Use monotonic elapsed time, never frame counts.
+  - Display exactly 21 states in increments of 5%.
+  - Ascending values use floor quantization.
+  - Descending values use ceil quantization.
+  - Final values are reached at their exact deadlines.
+  - Update only ordinary text cells in the flat CellGrid.
+
+  **Rendering**
+  - FPS is measured from actual rendered frames and its
+    displayed value is refreshed independently at 5 Hz.
+  - Use ControlFlow::WaitUntil with the earliest deadline:
+    min(next FPS tick, next progress step).
+  - While progress is idle, schedule no progress-related redraws.
+  - The continuous 60 FPS M1.3 bootstrap redraw loop is retired
+    at M2.24; rendering remains event-driven.
+  - Preserve O(1) hit-testing, one GPU UI draw call,
+    and the absence of hover or retained widget trees.
 
 ### 3.6 Monochrome Palette & Themes
 
