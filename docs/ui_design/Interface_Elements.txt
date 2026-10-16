@@ -89,3 +89,15 @@ Angle   [-|0.0 deg      ☰]
 │─────────────────────────│
 │     OK     │   Cancel   │
 ╰─────────────────────────╯
+
+"Effet Hover dans liste"
+│ Projected Curve │
+╞ Bridging Curve  ╡
+│ Composit Curve  │
+Remplacer "│ Bridging Curve  │" par "╞ Bridging Curve  ╡"
+
+Remplacer "│ │ Along     [Select…       ]│" par "│ ╞ Along     [Select…       ]╡"
+
+Remplacer "│ ╰╴□ End Offset              ╡" par "│ ╘ □ End Offset              ╡"
+
+Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    Cancel    │"
