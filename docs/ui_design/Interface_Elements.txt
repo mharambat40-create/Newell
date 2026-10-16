@@ -90,7 +90,7 @@ Angle   [-|0.0 deg      ☰]
 │     OK     │   Cancel   │
 ╰─────────────────────────╯
 
-"Effet Hover dans liste"
+"Effet Hover"
 │ Projected Curve │
 ╞ Bridging Curve  ╡
 │ Composit Curve  │
