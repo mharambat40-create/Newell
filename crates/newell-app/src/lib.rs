@@ -25,6 +25,8 @@ pub enum AppError {
     Render(#[from] newell_render::RenderError),
     #[error(transparent)]
     Ui(#[from] newell_ui::UiError),
+    #[error(transparent)]
+    Kernel(#[from] newell_kernel::NewellKernelError),
 }
 
 /// Opens the window and runs the event loop until it is closed or a fatal error occurs.

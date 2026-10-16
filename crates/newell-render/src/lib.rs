@@ -9,10 +9,12 @@
 mod error;
 pub mod glyph_atlas;
 mod renderer;
+mod scene;
 pub mod surface;
 pub mod ui;
 
 pub use error::RenderError;
 pub use glyph_atlas::{CellLayout, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs, load_font};
 pub use renderer::{FrameOutcome, Renderer};
+pub use scene::{Camera, PickHit, SceneViewport};
 pub use ui::Theme;

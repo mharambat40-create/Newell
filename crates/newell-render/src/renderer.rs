@@ -13,14 +13,17 @@ use std::sync::mpsc::{self, Receiver};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
+use newell_kernel::NewellMesh;
 use newell_ui::{CellGrid, GridMetrics};
 
 use crate::RenderError;
 use ab_glyph::FontVec;
 
 use crate::glyph_atlas::{GlyphAtlas, load_font};
+use crate::scene::Scene;
 use crate::surface::{FrameAction, SurfaceState, classify};
 use crate::ui::{Theme, UiOverlay};
+use crate::{PickHit, SceneViewport};
 
 const FONT: &[u8] = include_bytes!("../../../assets/FiraCode-Regular.ttf");
 
@@ -55,6 +58,8 @@ pub struct Renderer {
     /// Atlases rasterised since start-up (cached sizes are reused, not rebuilt).
     atlas_builds: u32,
     theme: Theme,
+    /// The M3 scene is drawn before the transparent ASCII overlay.
+    scene: Scene,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
 }
@@ -118,6 +123,7 @@ impl Renderer {
         let font = load_font(FONT.to_vec())?;
         let atlas = GlyphAtlas::build(&font, metrics)?;
         let ui = UiOverlay::new(&device, &queue, format, atlas);
+        let scene = Scene::new(&device, format, (width, height));
         Ok(Self {
             surface,
             device,
@@ -128,6 +134,7 @@ impl Renderer {
             font,
             atlas_builds: 1,
             theme: Theme::default(),
+            scene,
             gpu_errors,
         })
     }
@@ -135,6 +142,23 @@ impl Renderer {
     /// Physical pixels. A zero dimension (minimised) deactivates the surface without error.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.state.resize(width, height);
+        self.scene.resize(&self.device, (width, height));
+    }
+
+    /// Uploads an owned Newell mesh to the 3D viewport. BrepKIT types cannot cross this API.
+    pub fn set_scene_mesh(&mut self, mesh: NewellMesh) {
+        self.scene.set_mesh(&self.device, mesh);
+    }
+
+    /// Sets the physical-pixel rectangle in which the 3D scene is drawn.
+    pub fn set_scene_viewport(&mut self, viewport: SceneViewport) {
+        self.scene.set_viewport(viewport);
+    }
+
+    /// Returns the nearest mesh face under a physical window coordinate.
+    #[must_use]
+    pub fn pick_scene(&self, x: f64, y: f64) -> Option<PickHit> {
+        self.scene.pick(x, y)
     }
 
     /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of the
@@ -245,6 +269,7 @@ impl Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         }));
+        self.scene.draw(&self.queue, &mut encoder, &view);
         // Separate overlay pass: the viewport pass above stays untouched.
         let mut overlay = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ascii ui"),

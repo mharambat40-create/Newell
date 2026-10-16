@@ -374,10 +374,9 @@ impl ActionBox {
                 let src = scratch.get(dx, dy).copied().unwrap_or_default();
                 if let (Some(c), Some(r)) =
                     (target.col().checked_add(dx), target.row().checked_add(dy))
+                    && let Some(slot) = grid.get_mut(c, r)
                 {
-                    if let Some(slot) = grid.get_mut(c, r) {
-                        *slot = src;
-                    }
+                    *slot = src;
                 }
             }
         }
@@ -433,10 +432,10 @@ fn draw_row(
         // Header segments may use a dashed divider. Substitute only the two exact
         // boundaries, never scan across an adjacent button.
         for (col, glyph) in [(span.start.saturating_sub(1), '╞'), (span.end, '╡')] {
-            if let Some(cell) = grid.get_mut(col, y) {
-                if matches!(cell.content, crate::CellContent::Glyph('│' | '┆')) {
-                    cell.content = crate::CellContent::Glyph(glyph);
-                }
+            if let Some(cell) = grid.get_mut(col, y)
+                && matches!(cell.content, crate::CellContent::Glyph('│' | '┆'))
+            {
+                cell.content = crate::CellContent::Glyph(glyph);
             }
         }
         true

@@ -343,6 +343,19 @@ impl ShellState {
         self.layout().action
     }
 
+    /// The empty part of the 3D viewport reserved for the scene renderer.
+    ///
+    /// The Action Box and NavCube retain their reference positions on the viewport's right;
+    /// this rect is the remaining interior, below the `3D Viewport` caption. It is expressed in
+    /// whole grid cells so renderers can map it exactly to physical pixels.
+    #[must_use]
+    pub fn scene_viewport(&self) -> GridRect {
+        let layout = self.layout();
+        let interior = layout.viewport.inset(1);
+        let left = interior.split_right(layout.action).1;
+        left.split_top(1).1
+    }
+
     /// Asks for a NavigationPanel `wanted` cells wide; the width is clamped to the grid
     /// (at least 8 cells, at most half the grid). Returns `true` if the laid-out width changed.
     pub fn set_nav_width(&mut self, wanted: u32) -> bool {
@@ -355,6 +368,12 @@ impl ShellState {
     /// window moved.
     fn input_free(&self) -> bool {
         !(self.modal_open() || self.menu_bar.is_active() || self.command_bar.is_active())
+    }
+
+    /// `true` when a viewport interaction is not covered by a menu or modal.
+    #[must_use]
+    pub fn scene_input_enabled(&self) -> bool {
+        self.input_free()
     }
 
     /// The layout separator under cell `(col, row)`, if one can be dragged now: not while a
@@ -773,10 +792,10 @@ impl ShellState {
         if self.rename.is_open() {
             return;
         }
-        if let Some((tree, index)) = self.rename_target.take() {
-            if self.rename.status() == crate::ModalStatus::Confirmed {
-                self.names[tree.slot()][index] = Some(self.rename.text().to_owned());
-            }
+        if let Some((tree, index)) = self.rename_target.take()
+            && self.rename.status() == crate::ModalStatus::Confirmed
+        {
+            self.names[tree.slot()][index] = Some(self.rename.text().to_owned());
         }
     }
 

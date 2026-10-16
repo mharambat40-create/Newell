@@ -1267,3 +1267,16 @@ fn m224_progress_matches_all_21_reference_states_at_a_fixed_width() {
         );
     }
 }
+
+#[test]
+fn scene_viewport_is_below_the_caption_and_left_of_the_action_box() {
+    let shell = ShellState::new(82, 30);
+    let scene = shell.scene_viewport();
+    let layout = shell.layout();
+    let viewport = layout.viewport.inset(1);
+
+    assert_eq!(scene.col(), viewport.col());
+    assert_eq!(scene.row(), viewport.row() + 1);
+    assert_eq!(scene.right(), viewport.right() - u64::from(layout.action));
+    assert_eq!(scene.bottom(), viewport.bottom());
+}

@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use newell_ui::{
-    CellGrid, GridMetrics, ResizeZone, Separator, ShellKey, ShellState, UiError, UiPoint, WidgetId,
-    WindowAction, composed_grid_size, hit_test, resize_zone,
+    CellGrid, GridMetrics, GridRect, ResizeZone, Separator, ShellKey, ShellState, UiError, UiPoint,
+    WidgetId, WindowAction, composed_grid_size, hit_test, resize_zone,
 };
 
 /// Two presses on the same tree-row name at most this far apart are a double-click
@@ -162,6 +162,18 @@ impl ShellController {
         &self.shell
     }
 
+    /// Whole-cell area where the 3D scene is drawn.
+    #[must_use]
+    pub fn scene_viewport(&self) -> GridRect {
+        self.shell.scene_viewport()
+    }
+
+    /// `true` when a scene click cannot be intercepted by a menu or modal.
+    #[must_use]
+    pub fn scene_input_enabled(&self) -> bool {
+        self.shell.scene_input_enabled()
+    }
+
     /// The pointer moved to `position` (`None`: it left the window). The position is remembered
     /// for the next press and used to continue a drag. Motion changes the grid only through the
     /// ASCII hover target (M2.25): it is resolved from the cell under the pointer and recomposed
@@ -274,11 +286,12 @@ impl ShellController {
             self.last_press = None;
             return Press::Window(action);
         }
-        if id.is_none() && resizable {
-            if let Some(zone) = resize_zone(point, surface, self.metrics) {
-                self.last_press = None;
-                return Press::Resize(zone);
-            }
+        if id.is_none()
+            && resizable
+            && let Some(zone) = resize_zone(point, surface, self.metrics)
+        {
+            self.last_press = None;
+            return Press::Resize(zone);
         }
         if hit.is_some_and(|h| self.shell.window_drag_at(h.col, h.row, &self.grid)) {
             self.last_press = None;

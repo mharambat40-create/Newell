@@ -519,10 +519,10 @@ fn collect_ids(grid: &CellGrid, rect: GridRect, out: &mut Vec<WidgetId>) {
     let visible = rect.intersection(&GridRect::from_grid(grid));
     for row in visible.row()..visible.row().saturating_add(visible.height()) {
         for col in visible.col()..visible.col().saturating_add(visible.width()) {
-            if let Some(id) = grid.get(col, row).and_then(|c| c.widget_id) {
-                if !out.contains(&id) {
-                    out.push(id);
-                }
+            if let Some(id) = grid.get(col, row).and_then(|c| c.widget_id)
+                && !out.contains(&id)
+            {
+                out.push(id);
             }
         }
     }

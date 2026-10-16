@@ -11,7 +11,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use newell_render::{FrameOutcome, Renderer, Theme};
+use newell_kernel::NewellSolid;
+use newell_render::{FrameOutcome, Renderer, SceneViewport, Theme};
 use newell_ui::{
     DEFAULT_SCALE_PERCENT, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
     WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
@@ -44,6 +45,18 @@ const PRESENT_GATE: Duration = Duration::from_millis(250);
 /// Reports a condition on stderr (the application has no logging framework yet).
 fn log(message: &str) {
     eprintln!("newell: {message}");
+}
+
+/// Converts the shell-owned scene cells to the renderer's physical-pixel viewport.
+fn scene_viewport(shell: &ShellController) -> SceneViewport {
+    let rect = shell.scene_viewport();
+    let metrics = shell.metrics();
+    SceneViewport::new(
+        rect.col().saturating_mul(metrics.cell_width_px()),
+        rect.row().saturating_mul(metrics.cell_height_px()),
+        rect.width().saturating_mul(metrics.cell_width_px()),
+        rect.height().saturating_mul(metrics.cell_height_px()),
+    )
 }
 
 const fn direction(zone: ResizeZone) -> ResizeDirection {
@@ -237,10 +250,11 @@ impl App {
         if !update.any() {
             return;
         }
-        if let (Some(renderer), Some(shell)) = (&mut self.renderer, &self.shell) {
-            if update.grid {
-                renderer.set_ui_grid(shell.grid());
-            }
+        if let (Some(renderer), Some(shell)) = (&mut self.renderer, &self.shell)
+            && update.grid
+        {
+            renderer.set_ui_grid(shell.grid());
+            renderer.set_scene_viewport(scene_viewport(shell));
         }
         if let Some(window) = &self.window {
             window.request_redraw();
@@ -453,11 +467,12 @@ impl App {
         // Phase B: commit. Nothing below can fail.
         self.cancel_resize(CancelReason::StateChanged);
         self.control.cancel();
-        if let Some(prepared) = prepared {
-            if let (Some(renderer), Some(shell)) = (self.renderer.as_mut(), self.shell.as_mut()) {
-                renderer.set_metrics(prepared.metrics(), prepared.grid())?;
-                let _ = shell.commit_metrics(prepared);
-            }
+        if let Some(prepared) = prepared
+            && let (Some(renderer), Some(shell)) = (self.renderer.as_mut(), self.shell.as_mut())
+        {
+            renderer.set_metrics(prepared.metrics(), prepared.grid())?;
+            let _ = shell.commit_metrics(prepared);
+            renderer.set_scene_viewport(scene_viewport(shell));
         }
         let min = min_window_size(plan.metrics);
         log(&format!(
@@ -589,10 +604,30 @@ impl App {
             return;
         };
         let size = window.inner_size();
-        let Some(shell) = &mut self.shell else { return };
-        shell.set_time(self.epoch.elapsed());
-        match shell.press((size.width, size.height), resizable) {
-            Press::Shell(update) => self.apply(update),
+        let (press, cursor, scene_input) = {
+            let Some(shell) = &mut self.shell else { return };
+            shell.set_time(self.epoch.elapsed());
+            let cursor = shell.cursor();
+            let scene_input = shell.scene_input_enabled();
+            (
+                shell.press((size.width, size.height), resizable),
+                cursor,
+                scene_input,
+            )
+        };
+        match press {
+            Press::Shell(update) => {
+                self.apply(update);
+                if scene_input
+                    && let (Some(renderer), Some(cursor)) = (&self.renderer, cursor)
+                    && let Some(hit) = renderer.pick_scene(f64::from(cursor.x), f64::from(cursor.y))
+                {
+                    log(&format!(
+                        "picked viewport face {} at {:.3}",
+                        hit.face_index, hit.distance
+                    ));
+                }
+            }
             Press::Window(action) => self.control.arm(action),
             Press::Drag => self.start_drag(&window),
             Press::Resize(zone) => self.start_resize(&window, zone),
@@ -621,10 +656,10 @@ impl App {
     }
 
     fn start_drag(&mut self, window: &Window) {
-        if let Err(error) = window.drag_window() {
-            if !std::mem::replace(&mut self.drag_failure_logged, true) {
-                log(&format!("window dragging failed: {error}"));
-            }
+        if let Err(error) = window.drag_window()
+            && !std::mem::replace(&mut self.drag_failure_logged, true)
+        {
+            log(&format!("window dragging failed: {error}"));
         }
     }
 
@@ -757,6 +792,16 @@ impl ApplicationHandler for App {
         };
         if let Some(renderer) = &mut self.renderer {
             renderer.set_ui_grid(shell.grid());
+            renderer.set_scene_viewport(scene_viewport(&shell));
+            let solid = match NewellSolid::box_solid(1.0, 1.0, 1.0) {
+                Ok(solid) => solid,
+                Err(error) => return self.fail(event_loop, error),
+            };
+            let mesh = match solid.tessellate(0.05) {
+                Ok(mesh) => mesh,
+                Err(error) => return self.fail(event_loop, error),
+            };
+            renderer.set_scene_mesh(mesh);
         }
         self.shell = Some(shell);
         self.window = Some(window.clone());
@@ -918,10 +963,10 @@ impl ApplicationHandler for App {
                         .shell
                         .as_ref()
                         .and_then(ShellController::window_control_at_cursor);
-                    if let Some(action) = self.control.release(under) {
-                        if let Some(window) = self.window.clone() {
-                            self.window_action(event_loop, &window, action);
-                        }
+                    if let Some(action) = self.control.release(under)
+                        && let Some(window) = self.window.clone()
+                    {
+                        self.window_action(event_loop, &window, action);
                     }
                     if let Some(shell) = &mut self.shell {
                         shell.pointer_released();

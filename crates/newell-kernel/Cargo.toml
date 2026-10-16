@@ -10,6 +10,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+brepkit-math = "=4.2.2"
+brepkit-operations = "=4.2.2"
+brepkit-topology = "=4.2.2"
+thiserror.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true

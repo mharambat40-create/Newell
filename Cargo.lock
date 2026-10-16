@@ -193,6 +193,131 @@ dependencies = [
 ]
 
 [[package]]
+name = "brepkit-algo"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f5c8cf4cbbb3c0529f0f7289d57eb9f52067e26776c7e045aa7c40e4adaefa"
+dependencies = [
+ "brepkit-math",
+ "brepkit-topology",
+ "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-blend"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2233109ccc2ced6c23c12a27b3e64e0127f9b6b48cdcfa03fcb057b17af1a2c"
+dependencies = [
+ "brepkit-math",
+ "brepkit-topology",
+ "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-check"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fe9fa10a9ac4fe377f1261e46c4701f5ee6e42530236439acf6daec15af37e9"
+dependencies = [
+ "brepkit-geometry",
+ "brepkit-math",
+ "brepkit-topology",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-geometry"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44e7e1400ee396b34cb519ad82a5be10db67d18bc8211ecdb72d63e8d227e261"
+dependencies = [
+ "brepkit-math",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-heal"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f78f35904ca6d01be4932dd6d44ea94c4ed9baa8c7004bebb82f1adb328668"
+dependencies = [
+ "bitflags 2.13.2",
+ "brepkit-geometry",
+ "brepkit-math",
+ "brepkit-topology",
+ "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-math"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2072d50deceac9091574042d75d113a273c6d567eeea7ef9a59466bd3f32de43"
+dependencies = [
+ "log",
+ "robust",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-offset"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6701b959f869f4869be7daf9df8d68c836fc1a371d04625348fe195cc365fd"
+dependencies = [
+ "brepkit-geometry",
+ "brepkit-math",
+ "brepkit-topology",
+ "log",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-operations"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e974e01f2aaa1d98d185e76b185aeced3fda1a7e3a17c6dbaac11fcae373cac8"
+dependencies = [
+ "brepkit-algo",
+ "brepkit-blend",
+ "brepkit-check",
+ "brepkit-geometry",
+ "brepkit-heal",
+ "brepkit-math",
+ "brepkit-offset",
+ "brepkit-sketch",
+ "brepkit-topology",
+ "log",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-sketch"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42d6cebfb941285dd3722865c3c75fb2ae9db69e9dc9f8610d12c32c7a76aa41"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "brepkit-topology"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ffd4e8b1218e75896610bb52df4eed7a9de9f63bc39e6175fde138c7fed45db"
+dependencies = [
+ "brepkit-math",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -403,6 +528,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -455,6 +599,12 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "either"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "encode_unicode"
@@ -994,6 +1144,7 @@ name = "newell-app"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "newell-kernel",
  "newell-render",
  "newell-ui",
  "proptest",
@@ -1005,8 +1156,12 @@ dependencies = [
 name = "newell-kernel"
 version = "0.1.0"
 dependencies = [
+ "brepkit-math",
+ "brepkit-operations",
+ "brepkit-topology",
  "insta",
  "proptest",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1023,6 +1178,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "insta",
+ "newell-kernel",
  "newell-ui",
  "proptest",
  "thiserror 2.0.21",
@@ -1542,6 +1698,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "rayon"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1579,6 +1755,12 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "robust"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
 name = "rustc-hash"

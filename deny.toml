@@ -1,6 +1,7 @@
 [licenses]
 allow = [
     "AGPL-3.0-or-later",
+    "AGPL-3.0-only",
     "MIT",
     "Apache-2.0",
     "BSD-2-Clause",
@@ -22,7 +23,9 @@ wildcards = "deny"
 deny = [
     { crate = "opencascade" },
     { crate = "opencascade-sys" },
-    { crate = "brepkit", wrappers = ["newell-kernel"] },
+    # BREPkit enters the dependency graph through this façade only. Its
+    # constituent crates are necessarily transitive dependencies of operations.
+    { crate = "brepkit-operations", wrappers = ["newell-kernel"] },
 ]
 
 [sources]
