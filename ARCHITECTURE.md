@@ -956,8 +956,10 @@ No other hover visual effects are authorized.
   - While progress is idle, schedule no progress-related redraws.
   - The continuous 60 FPS M1.3 bootstrap redraw loop is retired
     at M2.24; rendering remains event-driven.
-  - Preserve O(1) hit-testing, one GPU UI draw call,
-    and the absence of hover or retained widget trees.
+- Preserve O(1) hit-testing, exactly one GPU UI draw call,
+  and the absence of retained widget trees, colour-based hover,
+  hover animations or shader-based hover effects.
+  M2.25 ASCII border substitutions remain explicitly authorized.
 
   **Overlay input precedence**
 - Active window resizing has priority over Progress interactions.
