@@ -316,9 +316,20 @@ impl ShellState {
         draw_label(
             grid,
             layout.status.inset(1),
-            &status_text(self.workbench),
+            &status_text(self.workbench, self.fps, self.progress),
             style,
         );
+        // Stamp only the fixed progress segment, never adjacent separators or the frame.
+        let status = status_text(self.workbench, self.fps, self.progress);
+        if let Some(byte) = status.find("Progress [") {
+            let offset = status[..byte].chars().count() as u32;
+            let inner = layout.status.inset(1);
+            for dx in offset..offset.saturating_add(21).min(inner.width()) {
+                if let Some(cell) = grid.get_mut(inner.col() + dx, inner.row()) {
+                    cell.widget_id = Some(WidgetId::new(super::PROGRESS_ID));
+                }
+            }
+        }
     }
 
     /// The lines of `tree` currently shown (before clipping to the pane): the visible nodes
@@ -483,6 +494,17 @@ fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect) 
     let cube = strip.split_top(CUBE_HEIGHT).0;
     if cube.width() == CUBE_WIDTH && cube.height() == CUBE_HEIGHT {
         draw_border(grid, cube, BorderLine::Single, style);
+        // Exact rounded corners of Interface_Exemple.txt; the placeholder is inert.
+        for (dx, dy, glyph) in [
+            (0, 0, '╭'),
+            (CUBE_WIDTH - 1, 0, '╮'),
+            (0, CUBE_HEIGHT - 1, '╰'),
+            (CUBE_WIDTH - 1, CUBE_HEIGHT - 1, '╯'),
+        ] {
+            if let Some(cell) = grid.get_mut(cube.col() + dx, cube.row() + dy) {
+                cell.content = crate::CellContent::Glyph(glyph);
+            }
+        }
         draw_label(
             grid,
             GridRect::new(cube.col().saturating_add(1), cube.row(), CUBE_WIDTH - 2, 1),

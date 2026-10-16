@@ -30,7 +30,9 @@ const COLS: u32 = 82;
 const ROWS: u32 = 30;
 
 fn shell() -> ShellState {
-    ShellState::new(COLS, ROWS)
+    let mut shell = ShellState::new(COLS, ROWS);
+    shell.set_status(98.0, 65);
+    shell
 }
 
 fn render(grid: &CellGrid) -> String {
@@ -56,6 +58,8 @@ fn render(grid: &CellGrid) -> String {
 }
 
 fn snapshot(s: &ShellState) -> String {
+    let mut s = s.clone();
+    s.set_status(98.0, 65);
     render(&s.compose().unwrap())
 }
 

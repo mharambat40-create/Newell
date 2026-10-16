@@ -56,28 +56,26 @@
 - [x] M2.21: exact Action Box grammar and Extrude.
 - [x] M2.22: Revolve, Loft, Sweep and Boolean Action Boxes.
 - [x] M2.23: numeric fields and FormulaEditor.
-- [ ] M2.24: live FPS, progress bar and final UI fidelity.
-  Blocked: FPS and progress are fixed reference values; the interactive
-  progress animation and event-driven scheduling are not implemented.
-- [ ] M2.25 — ASCII Hover Highlight
-  Hover implementation and sampled visual checks pass; final acceptance retains
-  the M2.24 scheduling prerequisite required by the plan.
+- [x] M2.24: live FPS, interactive progress and event-driven rendering; exact
+  shell fidelity and runtime timing validated automatically and visually.
+- [x] M2.25 — ASCII Hover Highlight. Its M2.24 scheduling prerequisite is now
+  implemented; hover regression tests and prior sampled visual checks pass.
 
 ### Validation checkpoint — 2026-10-16
 
-All 665 standard tests and 8 GPU tests pass. These passing tests do not prove
-that every M2 requirement is implemented. Visual checks of the current ASCII
-application confirmed monochrome typography, both themes, parameter/header
-hover, scale preference cycling, maximise/restore and fullscreen round-trip
-on Full HD. M2.16 and M2.19–M2.23 are checked above.
+679 standard tests and all 8 GPU tests pass. M2.16 and M2.19–M2.25 are validated
+locally. M2.24 now measures presented frames, refreshes FPS at 5 Hz, animates
+progress in 5 seconds up / 1 second down, and uses event-driven deadlines.
+Both-theme application inspection confirmed the animation, endpoints, ignored
+mid-animation clicks and approximately 5 FPS at idle. The exact shell matches
+its references at 82 × 28 and 82 × 30 (with the documented CommandBar/row-19
+exceptions); NavCube corners and StatusBar workbench casing are corrected.
 
-M2.17–M2.18 still require confirmed cross-monitor and native edge-resize
-checks. M2.24 is incomplete: FPS is fixed at 98, progress at 65%, and the
-60 FPS bootstrap pacer remains active. M2.25's sampled hover visuals pass,
-but the plan's M2.24 scheduling prerequisite remains open. See
-[the automated report](validation/M1-M2-2026-10-16.md) and
-[the visual report](validation/M2-visual-2026-10-16.md).
-M3 and later milestones are not implemented and remain unchecked.
+M2.17–M2.18 retain the previously recorded native edge-resize and actual
+cross-monitor checks. M3 and later remain unimplemented. Evidence:
+[automated checkpoint](validation/M1-M2-2026-10-16.md),
+[earlier visual checkpoint](validation/M2-visual-2026-10-16.md), and
+[M2.24 implementation and validation](validation/M2.24-2026-10-16.md).
 
 ## Milestone 3: Viewport & Kernel Boundary
 - [ ] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.

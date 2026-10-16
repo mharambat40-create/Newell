@@ -20,7 +20,7 @@ expression: "snapshot(&ShellState::new(40, 20))"
 ║ │ ╰╴□ Hub_Body   ║│ ╰╴□ End Offset   ║
 ║ ├ Surfaces(0)    ║│ □ Symetric       ║
 ╠══════════════════╩═══════════════════╣
-║ Roue V1* │ Part design │ Fully Constr║
+║ Roue V1* │ Part Design │ Fully Constr║
 ╚══════════════════════════════════════╝
 
 -- styles --

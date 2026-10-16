@@ -11,5 +11,6 @@ mod hover;
 mod input;
 mod pacing;
 mod rescale;
+mod status;
 mod tree;
 mod window;

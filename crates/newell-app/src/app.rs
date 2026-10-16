@@ -6,14 +6,12 @@
 // (at your option) any later version.
 //! `App`: winit `ApplicationHandler` mapping window events to `Renderer` calls.
 //!
-//! Continuous 60 FPS redraw is a bootstrap mechanism to validate the loop, not the final
-//! redraw architecture (ARCHITECTURE.md §4.1 remains the target).
+//! Rendering is event-driven: inputs, a 5 Hz measured-FPS sample and timed progress steps.
 
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use newell_render::{Renderer, Theme};
+use newell_render::{FrameOutcome, Renderer, Theme};
 use newell_ui::{
     DEFAULT_SCALE_PERCENT, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
     WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
@@ -30,11 +28,9 @@ use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 use crate::AppError;
 use crate::controller::{Press, ShellController, Update};
 use crate::input::{translate_key, ui_point};
-use crate::pacing::FramePacer;
 use crate::scale::{MonitorInfo, Rescale, ScaleManager, plan_rescale, rect_in_window_space};
 use crate::window::{CancelReason, ControlArm, ResizeManager, check_fit, screen_pointer};
 
-const TARGET_FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(59);
 const TITLE: &str = "Newell";
 /// A monitor change seen while the window is still being moved is applied once the window has
 /// been still this long. The OS drag loop streams `Moved` events and resizing the window under
@@ -117,7 +113,6 @@ pub(crate) struct App {
     window: Option<Arc<Window>>,
     shell: Option<ShellController>,
     modifiers: ModifiersState,
-    pacer: FramePacer,
     error: Option<AppError>,
     resize: ResizeManager,
     /// Last non-zero physical inner size reported by the OS.
@@ -157,7 +152,6 @@ impl App {
             window: None,
             shell: None,
             modifiers: ModifiersState::empty(),
-            pacer: FramePacer::new(TARGET_FPS, Instant::now()),
             error: None,
             resize: ResizeManager::default(),
             last_size: PhysicalSize::new(0, 0),
@@ -965,7 +959,6 @@ impl ApplicationHandler for App {
                 if let Some(gate) = self.gate {
                     if Instant::now() < gate.deadline {
                         // The OS has not reported the new size yet: keep the last frame.
-                        self.pacer.on_frame(Instant::now());
                         return;
                     }
                     self.gate = None;
@@ -978,11 +971,16 @@ impl ApplicationHandler for App {
                     }
                 }
                 if let Some(renderer) = &mut self.renderer {
-                    if let Err(error) = renderer.render() {
-                        return self.fail(event_loop, error);
+                    match renderer.render() {
+                        Ok(FrameOutcome::Presented) => {
+                            if let Some(shell) = &mut self.shell {
+                                shell.presented();
+                            }
+                        }
+                        Ok(FrameOutcome::Skipped) => {}
+                        Err(error) => self.fail(event_loop, error),
                     }
                 }
-                self.pacer.on_frame(Instant::now());
             }
             _ => {}
         }
@@ -993,9 +991,7 @@ impl ApplicationHandler for App {
             return event_loop.set_control_flow(ControlFlow::Wait);
         };
         // macOS may not deliver Resized(0, 0) on minimise, so also ask the window.
-        // A hidden window gets no `RedrawRequested`, so the pacer deadline would stay in the
-        // past and `WaitUntil` would spin the loop: wait for the next event (`Occluded(false)`,
-        // `Resized`) instead.
+        // Hidden windows wait for an OS event instead of refreshing unseen status cells.
         let hidden = self.occluded || window.is_minimized().unwrap_or(false);
         let now = Instant::now();
         let mut wake = None;
@@ -1015,14 +1011,32 @@ impl ApplicationHandler for App {
                 self.log_monitors(&window);
             }
         }
-        let plan = self.pacer.schedule(Instant::now(), hidden);
-        if plan.redraw {
-            window.request_redraw();
+        // No continuous redraw loop. Hidden windows wait for input instead of spinning
+        // on expired status deadlines; the monotonic animation catches up when restored.
+        if !hidden {
+            let elapsed = self.epoch.elapsed();
+            if let Some(shell) = &mut self.shell {
+                let update = shell.tick(elapsed);
+                self.apply(update);
+            }
+            if let Some(shell) = &self.shell {
+                let deadline = self.epoch + shell.status_deadline();
+                wake = Some(wake.map_or(deadline, |other| other.min(deadline)));
+            }
+            // Keep monitor reconciliation independent from render/FPS sampling.
+            let poll = self.last_poll + MONITOR_POLL;
+            if poll > now {
+                wake = Some(wake.map_or(poll, |other| other.min(poll)));
+            }
+            if let Some(gate) = self.gate {
+                if gate.deadline > now {
+                    wake = Some(wake.map_or(gate.deadline, |other| other.min(gate.deadline)));
+                } else {
+                    window.request_redraw();
+                }
+            }
         }
-        let wake = match (plan.wake, wake) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+
         event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 }

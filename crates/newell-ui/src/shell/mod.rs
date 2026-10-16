@@ -95,6 +95,7 @@ const FORMULA_BASE: u32 = SELECTION_BASE + 16;
 const RENAME_BASE: u32 = FORMULA_BASE + 16;
 /// The three window controls `[-] [□] [X]`, in that order.
 const WINDOW_BASE: u32 = RENAME_BASE + 16;
+const PROGRESS_ID: u32 = WINDOW_BASE + 3;
 const WINDOW_ACTIONS: [WindowAction; 3] = [
     WindowAction::Minimize,
     WindowAction::ToggleMaximize,
@@ -233,6 +234,8 @@ pub struct ShellState {
     /// The Fullscreen item was activated and the application has not taken the request yet.
     fullscreen_request: bool,
     workbench: usize,
+    fps: u32,
+    progress: u32,
     features_open: [bool; MAX_NODES],
     elements_open: [bool; MAX_NODES],
     /// Visibility checkboxes, per tree and node (meaningful for rows that have one).
@@ -279,6 +282,8 @@ impl ShellState {
             view: ViewMock::default(),
             fullscreen_request: false,
             workbench: 0,
+            fps: 0,
+            progress: 0,
             features_open: initial_open(&FEATURES),
             elements_open: initial_open(&ELEMENTS),
             checks: [initial_checks(&FEATURES), initial_checks(&ELEMENTS)],
@@ -480,6 +485,7 @@ impl ShellState {
         });
         !(tree_decode(id).is_some()
             || id.get() == PLAYHEAD_ID
+            || id.get() == PROGRESS_ID
             || Self::window_action(id).is_some()
             || bar_chrome)
     }
@@ -645,6 +651,26 @@ impl ShellState {
     /// and decides (toggle, refusal).
     pub fn take_fullscreen_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_request)
+    }
+
+    /// Inject runtime status (or deterministic snapshot values) without changing layout.
+    pub fn set_status(&mut self, fps: f64, progress: u32) -> bool {
+        let fps = if fps.is_finite() && fps >= 0.0 {
+            fps.round().min(999.0) as u32
+        } else {
+            0
+        };
+        let progress = progress.min(100);
+        let changed = self.fps != fps || self.progress != progress;
+        self.fps = fps;
+        self.progress = progress;
+        changed
+    }
+
+    /// A progress press is eligible only without any menu/modal above the shell.
+    #[must_use]
+    pub fn progress_press(&self, id: WidgetId) -> bool {
+        id.get() == PROGRESS_ID && self.input_free()
     }
 
     /// Index of the active mock workbench, shown in the StatusBar.

@@ -17,7 +17,9 @@ fn metrics() -> GridMetrics {
 }
 
 fn shell() -> ShellState {
-    ShellState::new(COLS, ROWS)
+    let mut shell = ShellState::new(COLS, ROWS);
+    shell.set_status(98.0, 65);
+    shell
 }
 
 fn text(g: &CellGrid, row: u32) -> String {
@@ -151,7 +153,7 @@ fn base_shell_has_every_region() {
     assert!(text(&g, 5).contains("3D Viewport"));
     assert!(
         text(&g, 23)
-            .contains("Roue V1* │ Part design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%")
+            .contains("Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%")
     );
     // The Extrude panel is open at the reference position, under the NavCube.
     assert!(has(&g, "Solid") && has(&g, "Depth") && has(&g, "Symetric"));
@@ -177,10 +179,10 @@ fn nav_cube_is_a_static_unowned_frame() {
     click_text(&mut s, "Cancel");
     let g = s.compose().unwrap();
     assert_eq!(find(&g, "NavCube"), Some((73, 5)));
-    assert_eq!(glyph(&g, 72, 5), '┌');
-    assert_eq!(glyph(&g, 80, 5), '┐');
-    assert_eq!(glyph(&g, 72, 8), '└');
-    assert_eq!(glyph(&g, 80, 8), '┘');
+    assert_eq!(glyph(&g, 72, 5), '╭');
+    assert_eq!(glyph(&g, 80, 5), '╮');
+    assert_eq!(glyph(&g, 72, 8), '╰');
+    assert_eq!(glyph(&g, 80, 8), '╯');
     for row in 5..9 {
         for col in 72..81 {
             assert_eq!(g.get(col, row).unwrap().widget_id, None, "({col}, {row})");
@@ -995,6 +997,7 @@ fn every_cell_owner_belongs_to_exactly_one_id_range() {
                 (FORMULA_BASE..FORMULA_BASE + 4).contains(&id.get()),
                 (RENAME_BASE..RENAME_BASE + 4).contains(&id.get()),
                 id.get() == PLAYHEAD_ID,
+                id.get() == PROGRESS_ID,
                 ShellState::window_action(id).is_some(),
             ];
             assert_eq!(owners.iter().filter(|&&o| o).count(), 1, "{id:?}");
@@ -1206,4 +1209,61 @@ fn window_drag_region_is_inert_menu_bar_space_only() {
 fn window_controls_are_omitted_when_they_would_cover_a_title() {
     let g = ShellState::new(20, 10).compose().unwrap();
     assert!(!has(&g, "[X]"));
+}
+
+#[test]
+fn m224_fps_field_handles_invalid_and_boundary_values_without_shifting_cells() {
+    for (value, expected) in [
+        (0.0, "  0fps "),
+        (5.0, "  5fps "),
+        (98.0, " 98fps "),
+        (99.0, " 99fps "),
+        (100.0, "100fps "),
+        (144.0, "144fps "),
+        (998.5, "999fps "),
+        (999.0, "999fps "),
+        (1000.0, "999fps "),
+        (123456.0, "999fps "),
+        (-3.0, "  0fps "),
+        (-0.4, "  0fps "),
+        (f64::NAN, "  0fps "),
+        (f64::INFINITY, "  0fps "),
+        (f64::NEG_INFINITY, "  0fps "),
+    ] {
+        assert_eq!(data::fps_field(value), expected);
+        assert_eq!(expected.chars().count(), 7);
+        let mut s = shell();
+        let before = s.compose().unwrap();
+        s.set_status(value, 65);
+        let after = s.compose().unwrap();
+        let line = text(&before, ROWS - 2);
+        let byte = line.find("fps").unwrap();
+        let field = line[..byte].chars().count() as u32 - 3;
+        for row in 0..after.rows() {
+            for col in 0..after.cols() {
+                let a = before.get(col, row).unwrap();
+                let b = after.get(col, row).unwrap();
+                assert_eq!(
+                    (a.widget_id, a.style, a.shared_border),
+                    (b.widget_id, b.style, b.shared_border)
+                );
+                if row != ROWS - 2 || !(field..field + 7).contains(&col) {
+                    assert_eq!(a, b);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn m224_progress_matches_all_21_reference_states_at_a_fixed_width() {
+    let refs = include_str!("../../../../docs/ui_design/Interface_Elements.txt");
+    for percent in (0..=100).step_by(5) {
+        let segment = data::progress_segment(percent);
+        assert_eq!(segment.chars().count(), 21);
+        assert!(
+            refs.lines().any(|line| line == segment.trim_end()),
+            "{segment:?}"
+        );
+    }
 }

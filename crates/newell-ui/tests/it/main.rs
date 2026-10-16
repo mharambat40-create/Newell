@@ -11,3 +11,4 @@ mod harness;
 mod hover;
 mod menu_bar;
 mod snapshots;
+mod status;

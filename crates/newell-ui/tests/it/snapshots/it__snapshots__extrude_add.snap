@@ -7,10 +7,10 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ┌NavCube┐║
+║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
 ║ ├ □ Sketch_Profile_Ma…║                                               │       │║
 ║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║                                               └───────┘║
+║ │ ├ Extrude_Base      ║                                               ╰───────╯║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Extrude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║                         │    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║                         ├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤║
@@ -30,7 +30,7 @@ expression: snapshot(&s)
 ║                       ║                         ╰─────────────────────────────╯║
 ║                       ║                                                        ║
 ╠═══════════════════════╩════════════════════════════════════════════════════════╣
-║ Roue V1* │ Part design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%      ║
+║ Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%      ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
 -- styles --

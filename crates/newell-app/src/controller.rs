@@ -94,6 +94,7 @@ pub struct ShellController {
     /// The ASCII hover target (M2.25): the widget under the pointer when it is eligible, else
     /// `None`. Transient; the grid is composed with it and nothing else stores it.
     hovered: Option<WidgetId>,
+    status: crate::status::StatusClock,
 }
 
 impl ShellController {
@@ -113,13 +114,34 @@ impl ShellController {
             clock: Duration::ZERO,
             last_press: None,
             hovered: None,
+            status: crate::status::StatusClock::default(),
         })
     }
 
     /// Tells the controller the monotonic time of the input events that follow (time since any
-    /// fixed start). It is only used to recognise a double-click, so tests drive it directly.
+    /// fixed start). Double-click and progress timing share this injectable clock.
     pub fn set_time(&mut self, now: Duration) {
-        self.clock = now;
+        self.clock = self.clock.max(now);
+    }
+
+    /// Counts one actually presented frame, never skipped renders or wakeups.
+    pub fn presented(&mut self) {
+        self.status.presented();
+    }
+
+    /// Advance runtime status independently of input, using a monotonic injected clock.
+    pub fn tick(&mut self, now: Duration) -> Update {
+        self.set_time(now);
+        let due = self.status.advance(self.clock);
+        self.shell
+            .set_status(self.status.fps, self.status.progress.percent());
+        self.refresh(due)
+    }
+
+    /// Earliest FPS/progress refresh, in time since the application's epoch.
+    #[must_use]
+    pub fn status_deadline(&self) -> Duration {
+        self.status.deadline(self.clock)
     }
 
     /// The last composed grid.
@@ -298,6 +320,14 @@ impl ShellController {
             return Update::default();
         }
         let id = hit.and_then(|h| h.widget_id);
+        if id.is_some_and(|id| self.shell.progress_press(id)) {
+            self.last_press = None;
+            self.status.progress.press(self.clock);
+            let changed = self
+                .shell
+                .set_status(self.status.fps, self.status.progress.percent());
+            return self.refresh(changed);
+        }
         let double = self.register_press(id);
         let mut acted = self.shell.click(hit);
         if let (true, Some(id)) = (double, id) {

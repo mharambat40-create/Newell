@@ -549,8 +549,6 @@ pub(super) fn visible_lines(nodes: &[Node], open: &[bool], playhead: Option<usiz
 /// Mock StatusBar values (deterministic: no live frame rate).
 pub(super) const DOCUMENT: &str = "Roue V1*";
 pub(super) const CONSTRAINT: &str = "Fully Constrained";
-pub(super) const FPS: u32 = 98;
-pub(super) const PROGRESS: u32 = 65;
 
 /// Progress bar of five cells, as in `Interface_Exemple.txt`: each cell is 20 %, in steps
 /// of 5 % shown as ` ░▒▓█`. `percent` is clamped to 100.
@@ -570,14 +568,36 @@ pub(super) fn progress_bar(percent: u32) -> String {
         .collect()
 }
 
-/// The StatusBar text for the given workbench.
-pub(super) fn status_text(workbench: usize) -> String {
+/// A fixed seven-cell FPS field. Invalid values map to zero; finite values saturate.
+pub(super) fn fps_field(value: f64) -> String {
+    let fps = if value.is_finite() && value >= 0.0 {
+        value.round().min(999.0) as u32
+    } else {
+        0
+    };
+    format!("{fps:>3}fps ")
+}
+
+/// Fixed 21-cell interactive progress segment, including trailing percentage padding.
+pub(super) fn progress_segment(percent: u32) -> String {
+    let percent = percent.min(100);
     format!(
-        " {DOCUMENT} │ {} │ {CONSTRAINT} │ {FPS}fps │ Progress [{}] {PROGRESS}%",
-        WORKBENCHES
-            .get(workbench)
-            .copied()
-            .unwrap_or(WORKBENCHES[0]),
-        progress_bar(PROGRESS),
+        "Progress [{}] {:<4}",
+        progress_bar(percent),
+        format!("{percent}%")
+    )
+}
+
+/// The StatusBar text with externally supplied runtime values.
+pub(super) fn status_text(workbench: usize, fps: u32, progress: u32) -> String {
+    format!(
+        " {DOCUMENT} │ {} │ {CONSTRAINT} │{}│ {}",
+        if workbench == 0 {
+            "Part Design"
+        } else {
+            WORKBENCHES.get(workbench).copied().unwrap_or("Part Design")
+        },
+        fps_field(f64::from(fps)),
+        progress_segment(progress),
     )
 }

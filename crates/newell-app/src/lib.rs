@@ -11,6 +11,7 @@ pub mod controller;
 pub mod input;
 pub mod pacing;
 pub mod scale;
+pub mod status;
 pub mod window;
 
 /// Fatal application errors. Crate-local by design (no global error type).

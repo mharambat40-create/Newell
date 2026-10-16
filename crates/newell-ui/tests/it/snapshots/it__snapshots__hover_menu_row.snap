@@ -7,10 +7,10 @@ expression: "hovered(&s, id)"
 ╠╭─File──────╮═══════════════════════════════════════════════════════════════════╣
 ║╞ New       ╡Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠│ Open      │══════════╦════════════════════════════════════════════════════════╣
-║│ Recent    │          ║ 3D Viewport                                   ┌NavCube┐║
+║│ Recent    │          ║ 3D Viewport                                   ╭NavCube╮║
 ║│ Save      │rofile_Ma…║                                               │       │║
 ║│ Save As   │tures     ║                                               │       │║
-║│ Import    │Base      ║                                               └───────┘║
+║│ Import    │Base      ║                                               ╰───────╯║
 ║│ Export    │_Hole     ║                         ╭─Extrude─────┬───────────────╮║
 ║│ Option    │Cut_Center║                         │    Solid    │    Surface    │║
 ║╰───────────╯er        ║                         ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
@@ -30,7 +30,7 @@ expression: "hovered(&s, id)"
 ║                       ║                                                        ║
 ║                       ║                                                        ║
 ╠═══════════════════════╩════════════════════════════════════════════════════════╣
-║ Roue V1* │ Part design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%      ║
+║ Roue V1* │ Part Design │ Fully Constrained │ 98fps │ Progress [███░ ] 65%      ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
 -- styles --
