@@ -65,21 +65,9 @@
 - [x] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
 - [x] M3.2: 3D camera setup and display of a BrepKIT-generated solid through `newell-kernel`.
 - [x] M3.3: Map BrepKIT topology to the `wgpu` mesh buffers and implement 3D picking.
-
-### Validation checkpoint — 2026-10-16
-
-M3 uses the exact BrepKIT 4.2.2 package set behind `newell-kernel`, with the
-workspace baseline raised to Rust 1.88. `NewellSolid` owns all upstream
-topology; the public boundary contains only Newell-owned solid, mesh and error
-types. The application constructs and tessellates a unit box, renders it in the
-unoccupied viewport area through a depth-tested GPU pipeline, and performs
-nearest-triangle ray picking on that same CPU mesh. Kernel construction,
-tessellation, viewport placement, projection and picking have automated tests;
-the scene GPU test is included with the hardware-dependent renderer tests.
-
-The app starts successfully locally. Visual capture of the fresh validation
-bundle could not be reattached after its restart, so a post-M3 screenshot is
-not recorded as acceptance evidence. See [ADR 0004](adr/0004-brepkit-4.2.2-and-rust-1.88.md).
+- [ ] M3.4: Implement dynamic pivot point determination for camera rotation (raycasting for geometric hit, or visible bounding box center for miss).
+- [ ] M3.5: Implement Screen-Space Free Orbit kinematics (Yaw/Pitch applied to camera relative axes with strict zero-roll constraint).
+- [ ] M3.6: Implement focal-distance proportional Panning and Cursor-targeted Zoom mechanics.
 
 ## Milestone 4: CAD Command & Parametric Interaction
 - [ ] M4.1: Define the generic command-state/controller interface used by
