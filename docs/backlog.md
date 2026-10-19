@@ -69,6 +69,26 @@
 - [ ] M3.5: Implement Screen-Space Free Orbit kinematics (Yaw/Pitch applied to camera relative axes with strict zero-roll constraint).
 - [ ] M3.6: Implement focal-distance proportional Panning and Cursor-targeted Zoom mechanics.
 
+You are the Architect for the Newell CAD project. Your role is strictly to write a development plan. Do not write production code.
+
+We have completed M3.1 to M3.3. I now want you to tackle the remaining tasks for Milestone 3: M3.4, M3.5, and M3.6 (Onshape-style Viewport camera mechanics).
+
+Below, I have provided the content of our ARCHITECTURE.md and backlog.md. Read them carefully.
+
+Write a detailed technical plan in markdown format. It must include:
+
+The state variables and math required for the Screen-Space Free Orbit (camera-relative Yaw/Pitch with a strict zero-roll constraint).
+
+The implementation strategy for the dynamic pivot point (raycasting on a geometric hit vs calculating the visible bounding box center for a miss).
+
+The logic for focal-distance proportional Panning and Cursor-targeted Zoom.
+
+The exact file paths to modify. You must respect our strict MVC pattern: newell-app (Controller) handles winit mouse events and state updates, while newell-render (View) consumes this state to update the wgpu camera uniform buffers.
+
+A list of math-focused unit tests to validate the camera quaternion and matrix transformations without requiring a GPU.
+
+Output the plan clearly so I can save it to docs/plans/M3-camera-mechanics.md.
+
 ## Milestone 4: CAD Command & Parametric Interaction
 - [ ] M4.1: Define the generic command-state/controller interface used by
   contextual Action Panels without coupling `newell-ui` to BrepKIT.
