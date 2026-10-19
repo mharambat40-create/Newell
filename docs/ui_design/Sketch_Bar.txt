@@ -1,0 +1,71 @@
+"Sketch Bar"
+
+ Workbench │ Construct │ Create │ Shape │ Modify │ Pattern │ Construct │ Utils 
+
+╭─Draw───────────────╮
+│ [L]ine             │
+│ [P]oint            │
+│ Polygon            │
+│ Slot               │
+│ Text               │
+│────────────────────│
+│ [R]ectangle        │
+│ Center Rectangle   │
+│ 3-Points Rectangle │
+│────────────────────│
+│ [C]ircle           │
+│ 3-Pts Circle       │ 
+│ Ellipse            │
+╰────────────────────╯
+╭─Curve──────────────╮
+│ 3 Points Arc       │
+│ Tangent Arc        │
+│ Center Point Arc   │
+│ Elliptical Arc     │
+│ Tangent Arc        │
+│ Conic              │
+│────────────────────│
+│ Spline             │
+│ Beziez             │
+│ Add Control Points │
+╰────────────────────╯
+╭─Modify─────────────╮
+│ Fillet             │
+│ Chamfer            │
+│────────────────────│
+│ Trim               │
+│ Extend             │
+│ Split              │
+│ Offset             │
+╰────────────────────╯
+╭─Pattern────────────╮
+│ Mirror             │
+│ Linear Pattern     │
+│ Circular Pattern   │
+│────────────────────│
+│ Transform          │
+╰────────────────────╯
+╭─Reference──────────╮
+│ Projected          │
+│ Intersect          │
+│ Insert             │
+╰────────────────────╯
+╭─Constraints────────╮
+│ [D]imension        │
+│────────────────────│
+│ [H]orizontal       │
+│ [V]ertical         │
+│ Parallel           │
+│ Perpendicu         │
+│ Normal             │
+│────────────────────│
+│ Coincident         │
+│ Concentric         │
+│ [M]idpoint         │
+│ [T]angent          │
+│ Curvature          │
+│────────────────────│
+│ [E]qual            │
+│ [S]ymmetric        │
+│ [F]ix              │
+╰────────────────────╯
