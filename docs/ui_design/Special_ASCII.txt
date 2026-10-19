@@ -7,21 +7,10 @@
 
 ╞ ╡ ╤ ╧ ╪ ╓ ╒ ╖ ╕ ╙ ╘ ╜ ╛ ╟ ╢ ╥ ╧
 
-╴ ╵ ╶ ╷ ┈ ┊ ┄ ┆
+╴ ╵ ╶ ╷ ┈ ┊ ┄ ┆ ╸ ╹ ╺ ╻
 
 ░ ▒ ▓ █
 
 □ ■
 ◀ ▶
-▲
-┃
-▼
 ☰
-▏
-
-"Hover substitutions"
-Menu:      "│ Bridging Curve  │"  ->  "╞ Bridging Curve  ╡"
-Parameter: "│ │ Along     [Select…       ]│"  ->  "│ ╞ Along     [Select…       ]╡"
-Checkbox:  "│ ╰╴□ End Offset              │"  ->  "│ ╘ □ End Offset              ╡"
-Button:    "│      OK      │    Cancel    │"  ->  "╞      OK      ╡    Cancel    │"
-Left slot "│" -> "╞"    Left slot "╰╴" -> "╘ "    Right slot "│" -> "╡"
