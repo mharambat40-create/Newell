@@ -28,9 +28,9 @@ Progress [█████] 100%
 "Selection box"
 ╭─Selection───────────────────╮
 │┌───────────────────────────┐│
-││ □ Rim_Body               ▲││
-││ ■ Hub_Body               ┃││
-││ □ Inner_Surface          ▼││
+││ □ Rim_Body                ││
+││ ■ Hub_Body                ││
+││ □ Inner_Surface           ││
 │└───────────────────────────┘│
 │─────────────────────────────│
 │      OK      │    Cancel    │
@@ -55,11 +55,42 @@ Angle   [+|0.0 deg      ☰]
 Angle   [-|0.0 deg      ☰]
 
 "Scroll bar alternatives"
+Si 10 éléments :
+▲ ▲ ▲ ▲ ▲ ▲
+╹ ╻        
+    ╹ ╻    
+        ╹ ╻
+▼ ▼ ▼ ▼ ▼ ▼
+
+Si 9 éléments :
 ▲ ▲ ▲ ▲ ▲
 ┃ ╻      
   ╹ ┃ ╻  
       ╹ ┃
 ▼ ▼ ▼ ▼ ▼
+
+Si 8 éléments :
+▲ ▲ ▲ ▲
+┃ ╻    
+╹ ┃ ┃ ╻
+    ╹ ┃
+▼ ▼ ▼ ▼
+
+Si 7 éléments :
+▲ ▲ ▲
+┃ ╻  
+┃ ┃ ┃
+  ╹ ┃
+▼ ▼ ▼
+
+Si 6 éléments :
+▲ ▲
+┃ ╻
+┃ ┃
+╹ ┃
+▼ ▼
+
+Si <= 5 élément, pas de scroll bar
 
 "Head Action Box variants"
 ╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮
@@ -90,7 +121,7 @@ Angle   [-|0.0 deg      ☰]
 │     OK     │   Cancel   │
 ╰─────────────────────────╯
 
-"Effet Hover"
+"Effet Hover dans liste"
 │ Projected Curve │
 ╞ Bridging Curve  ╡
 │ Composit Curve  │
@@ -98,6 +129,6 @@ Remplacer "│ Bridging Curve  │" par "╞ Bridging Curve  ╡"
 
 Remplacer "│ │ Along     [Select…       ]│" par "│ ╞ Along     [Select…       ]╡"
 
-Remplacer "│ ╰╴□ End Offset              │" par "│ ╘ □ End Offset              ╡"
+Remplacer "│ ╰╴□ End Offset              ╡" par "│ ╘ □ End Offset              ╡"
 
 Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    Cancel    │"
