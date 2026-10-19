@@ -28,9 +28,9 @@ Progress [█████] 100%
 "Selection box"
 ╭─Selection───────────────────╮
 │┌───────────────────────────┐│
-││ □ Rim_Body                ││
-││ ■ Hub_Body                ││
-││ □ Inner_Surface           ││
+││ □ Rim_Body               ▲││
+││ ■ Hub_Body               ┃││
+││ □ Inner_Surface          ▼││
 │└───────────────────────────┘│
 │─────────────────────────────│
 │      OK      │    Cancel    │
@@ -55,42 +55,11 @@ Angle   [+|0.0 deg      ☰]
 Angle   [-|0.0 deg      ☰]
 
 "Scroll bar alternatives"
-Si 10 éléments :
-▲ ▲ ▲ ▲ ▲ ▲
-╹ ╻        
-    ╹ ╻    
-        ╹ ╻
-▼ ▼ ▼ ▼ ▼ ▼
-
-Si 9 éléments :
 ▲ ▲ ▲ ▲ ▲
 ┃ ╻      
   ╹ ┃ ╻  
       ╹ ┃
 ▼ ▼ ▼ ▼ ▼
-
-Si 8 éléments :
-▲ ▲ ▲ ▲
-┃ ╻    
-╹ ┃ ┃ ╻
-    ╹ ┃
-▼ ▼ ▼ ▼
-
-Si 7 éléments :
-▲ ▲ ▲
-┃ ╻  
-┃ ┃ ┃
-  ╹ ┃
-▼ ▼ ▼
-
-Si 6 éléments :
-▲ ▲
-┃ ╻
-┃ ┃
-╹ ┃
-▼ ▼
-
-Si <= 5 élément, pas de scroll bar
 
 "Head Action Box variants"
 ╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮
@@ -121,7 +90,7 @@ Si <= 5 élément, pas de scroll bar
 │     OK     │   Cancel   │
 ╰─────────────────────────╯
 
-"Effet Hover dans liste"
+"Effet Hover"
 │ Projected Curve │
 ╞ Bridging Curve  ╡
 │ Composit Curve  │
@@ -129,6 +98,68 @@ Remplacer "│ Bridging Curve  │" par "╞ Bridging Curve  ╡"
 
 Remplacer "│ │ Along     [Select…       ]│" par "│ ╞ Along     [Select…       ]╡"
 
-Remplacer "│ ╰╴□ End Offset              ╡" par "│ ╘ □ End Offset              ╡"
+Remplacer "│ ╰╴□ End Offset              │" par "│ ╘ □ End Offset              ╡"
 
 Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    Cancel    │"
+
+"Tree View bar ───"
+"Size 1"
+║ [-]Features           ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ├ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ │ ╰╴Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ │ ─────────────────── ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+
+"Size 2"
+║ [-]Features           ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ├ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ │ │ ───────────────── ║
+║ │ ╰╴Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+
+"Dans dossier (taille 3 min)"
+║ [-]Features           ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[+] Hub_Features ─── ║
+║ ├ Fillet_Inner        ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+
+"Dans dossier (taille 3 min) donc couper nom dossier par …"
+║ [-]Features         ║
+║ ├ □ Sketch_Profile_…║
+║ ├[+] Hub_Featu… ─── ║
+║ ├ Fillet_Inner      ║
+║ ├ Chamfer_Edges     ║
+║ ╰╴Pattern_Circular  ║
+
+"Dans dossier, taille de la ligne la plus longue max, ici ├ □ Sketch_Profile_Main"
+║ [-]Features                 ║
+║ ├ □ Sketch_Profile_Main     ║
+║ ├[+] Hub_Features ─────     ║
+║ ├ Fillet_Inner              ║
+║ ├ Chamfer_Edges             ║
+║ ╰╴Pattern_Circular          ║
+
+
+"Taille de la ligne la plus longue max, ici ├ □ Sketch_Profile_Main"
+║ [-]Features                 ║
+║ ├ □ Sketch_Profile_Main     ║
+║ ├[-] Hub_Features           ║
+║ │ ├ Extrude_Base            ║
+║ │ ├ ■ Sketch_Hole           ║
+║ │ │ ───────────────────     ║
+║ │ ╰╴Extrude_Cut_Center      ║
+║ ├ Fillet_Inner              ║
+║ ├ Chamfer_Edges             ║
+║ ╰╴Pattern_Circular          ║
