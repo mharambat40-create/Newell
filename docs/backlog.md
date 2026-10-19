@@ -61,22 +61,6 @@
 - [x] M2.25 — ASCII Hover Highlight. Its M2.24 scheduling prerequisite is now
   implemented; hover regression tests and prior sampled visual checks pass.
 
-### Validation checkpoint — 2026-10-16
-
-679 standard tests and all 8 GPU tests pass. M2.16 and M2.19–M2.25 are validated
-locally. M2.24 now measures presented frames, refreshes FPS at 5 Hz, animates
-progress in 5 seconds up / 1 second down, and uses event-driven deadlines.
-Both-theme application inspection confirmed the animation, endpoints, ignored
-mid-animation clicks and approximately 5 FPS at idle. The exact shell matches
-its references at 82 × 28 and 82 × 30 (with the documented CommandBar/row-19
-exceptions); NavCube corners and StatusBar workbench casing are corrected.
-
-M2.17–M2.18 retain the previously recorded native edge-resize and actual
-cross-monitor checks. M3 and later remain unimplemented. Evidence:
-[automated checkpoint](validation/M1-M2-2026-10-16.md),
-[earlier visual checkpoint](validation/M2-visual-2026-10-16.md), and
-[M2.24 implementation and validation](validation/M2.24-2026-10-16.md).
-
 ## Milestone 3: Viewport & Kernel Boundary
 - [x] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
 - [x] M3.2: 3D camera setup and display of a BrepKIT-generated solid through `newell-kernel`.
