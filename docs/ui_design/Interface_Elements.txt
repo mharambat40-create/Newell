@@ -104,6 +104,7 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 
 "Tree View bar ───"
 "Size 1"
+╠═══════════════════════╦
 ║ [-]Features           ║
 ║ ├ □ Sketch_Profile_Ma…║
 ║ ├[-] Hub_Features     ║
@@ -114,8 +115,10 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ │ ─────────────────── ║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
 
 "Size 2"
+╠═══════════════════════╦
 ║ [-]Features           ║
 ║ ├ □ Sketch_Profile_Ma…║
 ║ ├[-] Hub_Features     ║
@@ -126,40 +129,76 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ ├ Fillet_Inner        ║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
 
 "Dans dossier (taille 3 min)"
+╠═══════════════════════╦
 ║ [-]Features           ║
 ║ ├ □ Sketch_Profile_Ma…║
 ║ ├[+] Hub_Features ─── ║
 ║ ├ Fillet_Inner        ║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
 
 "Dans dossier (taille 3 min) donc couper nom dossier par …"
+╠═════════════════════╦
 ║ [-]Features         ║
 ║ ├ □ Sketch_Profile_…║
 ║ ├[+] Hub_Featu… ─── ║
 ║ ├ Fillet_Inner      ║
 ║ ├ Chamfer_Edges     ║
 ║ ╰╴Pattern_Circular  ║
+╠═════════════════════╣
 
 "Dans dossier, taille de la ligne la plus longue max, ici ├ □ Sketch_Profile_Main"
+╠═════════════════════════════╦
 ║ [-]Features                 ║
 ║ ├ □ Sketch_Profile_Main     ║
 ║ ├[+] Hub_Features ─────     ║
 ║ ├ Fillet_Inner              ║
 ║ ├ Chamfer_Edges             ║
 ║ ╰╴Pattern_Circular          ║
+╠═════════════════════════════╣
 
+"Largeur de la treview max = ligne la plus longue, verrouille la taille à la largeur de "Sketch_Profile_Main" dans cet exemple"
+╠═════════════════════════╦
+║ [-]Features             ║
+║ ├ □ Sketch_Profile_Main ║
+║ ├[-] Hub_Features       ║
+║ │ ├ Extrude_Base        ║
+║ │ ├ ■ Sketch_Hole       ║
+║ │ │ ─────────────────── ║
+║ │ ╰╴Extrude_Cut_Center  ║
+║ ├ Fillet_Inner          ║
+║ ├ Chamfer_Edges         ║
+║ ╰╴Pattern_Circular      ║
+╠═════════════════════════╣
 
-"Taille de la ligne la plus longue max, ici ├ □ Sketch_Profile_Main"
-║ [-]Features                 ║
-║ ├ □ Sketch_Profile_Main     ║
-║ ├[-] Hub_Features           ║
-║ │ ├ Extrude_Base            ║
-║ │ ├ ■ Sketch_Hole           ║
-║ │ │ ───────────────────     ║
-║ │ ╰╴Extrude_Cut_Center      ║
-║ ├ Fillet_Inner              ║
-║ ├ Chamfer_Edges             ║
-║ ╰╴Pattern_Circular          ║
+"Lignes 4-6 hover exemple"
+╠═══════════════════════╦
+║ [-]Features           ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ╞ Extrude_Base      ╣
+║ │ ├ ■ Sketch_Hole     ║
+║ │ ╘╸Extrude_Cut_Center╣
+║ ├ Fillet_Inner        ║
+║ │ ─────────────────── ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣ 
+
+"Lignes 4-6 selected exemple"
+╠═══════════════════════╦
+║ [-]Features           ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ ┃ ┣ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ ┃ ┗╸Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ │ ─────────────────── ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
