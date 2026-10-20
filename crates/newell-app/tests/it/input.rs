@@ -131,3 +131,47 @@ fn alt_chords_use_the_logical_key_then_the_physical_key() {
     assert!(translate_key(&ch("ƒ"), unknown(), Some("ƒ"), alt).is_empty());
     assert!(translate_key(&ch("ƒ"), PhysicalKey::Code(KeyCode::Space), None, alt).is_empty());
 }
+
+#[test]
+fn navigation_deltas_preserve_fractional_motion_and_display_scale() {
+    use newell_app::input::{pinch_steps, zoom_steps};
+    use winit::{dpi::PhysicalPosition, event::MouseScrollDelta};
+    let pixel = |y| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
+    assert_eq!(zoom_steps(MouseScrollDelta::LineDelta(0.0, 1.0), 2.0), 1.0);
+    assert_eq!(zoom_steps(pixel(100.0), 1.0), 1.0);
+    assert_eq!(zoom_steps(pixel(200.0), 2.0), 1.0);
+    assert!((zoom_steps(pixel(0.5), 1.0) * 200.0 - 1.0).abs() < 1e-6);
+    assert_eq!(zoom_steps(pixel(f64::NAN), 1.0), 0.0);
+    assert_eq!(zoom_steps(MouseScrollDelta::LineDelta(4.0, 0.0), 1.0), 0.0);
+    assert!((pinch_steps(0.12) - 1.0).abs() < 1e-6);
+    assert_eq!(pinch_steps(f64::INFINITY), 0.0);
+}
+
+#[test]
+fn trackpad_gesture_started_under_ui_cannot_enter_scene_mid_stream() {
+    use newell_app::input::NavigationGesture;
+    use winit::event::TouchPhase::*;
+    let mut gesture = NavigationGesture::default();
+    assert!(!gesture.update(Started, false));
+    assert!(!gesture.update(Moved, true));
+    assert!(!gesture.update(Ended, true));
+    assert!(gesture.update(Started, true));
+    assert!(gesture.update(Moved, true));
+    assert!(!gesture.update(Moved, false));
+    assert!(!gesture.update(Moved, true));
+    assert!(!gesture.update(Cancelled, true));
+    assert!(gesture.update(Moved, true));
+}
+
+#[test]
+fn cancelling_active_trackpad_blocks_tail_but_idle_cancel_allows_moved_only_platforms() {
+    use newell_app::input::NavigationGesture;
+    use winit::event::TouchPhase;
+    let mut gesture = NavigationGesture::default();
+    gesture.cancel();
+    assert!(gesture.update(TouchPhase::Moved, true));
+    gesture.cancel();
+    assert!(!gesture.update(TouchPhase::Moved, true));
+    assert!(!gesture.update(TouchPhase::Ended, true));
+    assert!(gesture.update(TouchPhase::Started, true));
+}

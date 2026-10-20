@@ -233,6 +233,8 @@ pub struct ShellState {
     view: ViewMock,
     /// The Fullscreen item was activated and the application has not taken the request yet.
     fullscreen_request: bool,
+    camera_reset_request: bool,
+    normal_view_request: bool,
     workbench: usize,
     fps: u32,
     progress: u32,
@@ -281,6 +283,8 @@ impl ShellState {
             typed: String::new(),
             view: ViewMock::default(),
             fullscreen_request: false,
+            camera_reset_request: false,
+            normal_view_request: false,
             workbench: 0,
             fps: 0,
             progress: 0,
@@ -343,17 +347,30 @@ impl ShellState {
         self.layout().action
     }
 
-    /// The empty part of the 3D viewport reserved for the scene renderer.
+    /// The full viewport interior reserved for the scene renderer.
     ///
     /// The Action Box and NavCube retain their reference positions on the viewport's right;
-    /// this rect is the remaining interior, below the `3D Viewport` caption. It is expressed in
-    /// whole grid cells so renderers can map it exactly to physical pixels.
+    /// this rect is expressed in whole grid cells so renderers can map it exactly to physical
+    /// pixels.
     #[must_use]
     pub fn scene_viewport(&self) -> GridRect {
         let layout = self.layout();
-        let interior = layout.viewport.inset(1);
-        let left = interior.split_right(layout.action).1;
-        left.split_top(1).1
+        layout.viewport.inset(1)
+    }
+
+    /// Opaque footprints which must hide the 3D scene below them.
+    #[must_use]
+    pub fn scene_occlusions(&self) -> Vec<GridRect> {
+        let scene = self.scene_viewport();
+        let mut rects = Vec::with_capacity(2);
+        if let Some(rect) = self.action_panel_rect() {
+            rects.push(rect.intersection(&scene));
+        }
+        if let Some(overlay) = self.overlays.top() {
+            rects.push(overlay.rect.intersection(&scene));
+        }
+        rects.retain(|rect| rect.width() > 0 && rect.height() > 0);
+        rects
     }
 
     /// Asks for a NavigationPanel `wanted` cells wide; the width is clamped to the grid
@@ -424,10 +441,7 @@ impl ShellState {
         self.layout().features.height() != before
     }
 
-    /// Moves the playhead separator to directly after the top-level feature (with its
-    /// subtree) under the pointer's `row`, clamped to between two top-level features, so the
-    /// nesting of the tree is never touched. A row above the tree counts as the first feature,
-    /// one below as the last. Returns `true` if the position changed.
+    /// Moves the playhead between top-level features without splitting their subtrees.
     fn drag_playhead(&mut self, row: u32) -> bool {
         let nodes = Tree::Features.nodes();
         let top = top_level_count(nodes);
@@ -535,6 +549,36 @@ impl ShellState {
     #[must_use]
     pub const fn extrude(&self) -> &ExtrudeUi {
         &self.extrude
+    }
+
+    /// Projects model-owned Feature and Element names into the fixed reference tree grammar.
+    /// Only named rows are replaced; category rows, branch topology and widget ids remain
+    /// stable, so the renderer and hit map keep their M2 invariants.
+    pub fn set_model_tree_labels(&mut self, features: &[String], elements: &[String]) -> bool {
+        let mut changed = false;
+        for (tree, labels) in [(Tree::Features, features), (Tree::Elements, elements)] {
+            let mut labels = labels.iter();
+            for (index, node) in tree.nodes().iter().enumerate() {
+                if node.kind != NodeKind::Named {
+                    continue;
+                }
+                let next = labels.next().cloned();
+                if self.names[tree.slot()][index] != next {
+                    self.names[tree.slot()][index] = next;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// The current M4 source for the Extrude Depth field: a literal engineering value or a
+    /// confirmed Formula Editor expression. The UI remains the editor, while parsing belongs
+    /// to `newell-model`.
+    #[must_use]
+    pub fn extrude_depth_source(&self) -> String {
+        let id = self.extrude.depth_field_id();
+        self.numeric[self.operation.slot()].source(id, "+|0.0 mm")
     }
 
     /// The Revolve panel's mock state.
@@ -659,7 +703,35 @@ impl ShellState {
         self.view.theme
     }
 
-    /// The stored UI Scale preference (60/80/100/120), as the View menu shows it. It is
+    /// Selected View > Shading variant, in the documented menu order.
+    #[must_use]
+    pub const fn shading(&self) -> usize {
+        self.view.shading
+    }
+
+    /// `true` for Perspective and `false` for Orthographic projection.
+    #[must_use]
+    pub const fn perspective(&self) -> bool {
+        self.view.projection == 0
+    }
+
+    /// Whether one of the View visibility toggles is enabled.
+    #[must_use]
+    pub fn view_panel_visible(&self, index: usize) -> bool {
+        self.view.checks.get(index).copied().unwrap_or(false)
+    }
+
+    /// Consumes a requested camera reset from the View menu.
+    pub fn take_camera_reset(&mut self) -> bool {
+        std::mem::take(&mut self.camera_reset_request)
+    }
+
+    /// Consumes a requested closest principal "Normal to" view from the View menu.
+    pub fn take_normal_view(&mut self) -> bool {
+        std::mem::take(&mut self.normal_view_request)
+    }
+
+    /// The stored UI Scale preference (60/80/100/120/140), as the View menu shows it. It is
     /// never a derived value: the shell holds no `k`, monitor or window-fit logic.
     #[must_use]
     pub fn preferred_scale_percent(&self) -> u32 {
@@ -704,16 +776,12 @@ impl ShellState {
         self.selection.is_open() || self.formula.is_open() || self.rename.is_open()
     }
 
-    fn bounds(&self) -> GridRect {
-        GridRect::new(0, 0, self.cols, self.rows)
-    }
-
     /// Applies a pointer activation at `hit`, the hit-test result of the composed grid.
     /// Returns `true` if the click was acted on (recompose the grid); a click on nothing, or
     /// outside an open modal, returns `false`.
     pub fn click(&mut self, hit: Option<HitTestResult>) -> bool {
+        let bounds = GridRect::new(0, 0, self.cols, self.rows);
         let id = hit.and_then(|h| h.widget_id);
-        let bounds = self.bounds();
         if self.editing_field().is_some_and(|f| Some(f) != id) {
             self.numeric[self.operation.slot()].commit();
         }
@@ -726,7 +794,10 @@ impl ShellState {
         } else if let Some(handled) = self.click_menu(id, hit) {
             handled
         } else {
-            id.is_some_and(|id| self.activate_widget(id))
+            id.is_some_and(|id| {
+                self.toggle_numeric_sign(id, hit)
+                    .unwrap_or_else(|| self.activate_widget(id))
+            })
         };
         self.sync();
         changed
@@ -746,6 +817,19 @@ impl ShellState {
             self.menu_or_base_key(key)
         };
         self.sync();
+        changed
+    }
+
+    /// Routes wheel or trackpad scroll steps to the modal selection list. Positive steps
+    /// move the list upwards, matching native wheel conventions.
+    pub fn scroll(&mut self, steps: i32) -> bool {
+        let changed = self.selection.is_open()
+            && self
+                .selection
+                .scroll_by(-steps, GridRect::new(0, 0, self.cols, self.rows));
+        if changed {
+            self.sync();
+        }
         changed
     }
 
@@ -820,6 +904,27 @@ impl ShellState {
     fn numeric_mock(&self, id: WidgetId) -> Option<String> {
         let panel = self.panel().compose_box()?;
         panel.numeric_text(id).map(str::to_owned)
+    }
+
+    /// Source Action Box footprint; centered modals have separate overlay rectangles.
+    fn action_panel_rect(&self) -> Option<GridRect> {
+        let panel = self.panel().compose_box()?;
+        Some(self.layout().action_panel(panel.height()))
+    }
+
+    /// Returns `Some` only when this click is on the `+` / `-` marker of a directional
+    /// numeric field.  The rest of the field retains normal edit behaviour.
+    fn toggle_numeric_sign(&mut self, id: WidgetId, hit: Option<HitTestResult>) -> Option<bool> {
+        let hit = hit?;
+        let frame = self.action_panel_rect()?;
+        let col = hit.col.checked_sub(frame.col())?;
+        let row = hit.row.checked_sub(frame.row())?;
+        let panel = self.panel().compose_box()?;
+        if !panel.numeric_sign_at(id, col, row) {
+            return None;
+        }
+        let mock = self.numeric_mock(id)?;
+        Some(self.numeric[self.operation.slot()].toggle_sign(id, &mock))
     }
 
     /// Routes a key to the numeric field being edited. `None` if no field is edited, or for
@@ -1006,6 +1111,10 @@ impl ShellState {
             self.view.theme = self.view.theme.toggled();
         } else if action == ACT_VIEW_FULLSCREEN {
             self.fullscreen_request = true;
+        } else if action == 220 {
+            self.normal_view_request = true;
+        } else if action == 221 {
+            self.camera_reset_request = true;
         } else if let Some(operation) = ActionOperation::from_action(action) {
             self.show_operation(operation);
         } else if let Some(i) = action
@@ -1060,7 +1169,8 @@ impl ShellState {
             ShellKey::MenuBar | ShellKey::CommandBar | ShellKey::Alt(_) => return false,
         };
         if self.selection.is_open() {
-            self.selection.key(modal, self.bounds())
+            self.selection
+                .key(modal, GridRect::new(0, 0, self.cols, self.rows))
         } else if self.rename.is_open() {
             self.rename.key(modal)
         } else {

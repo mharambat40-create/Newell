@@ -4,7 +4,7 @@
 It aims for extreme performance and a minimal memory footprint. Its interface follows a "TUI / Hacker" aesthetic and takes advantage of modern hardware acceleration.
 Development follows a structured agentic (AI) workflow, under the strict supervision of a human designer.
 
-> **For AI agents reading this file:** this document is the project's vision and reference. Binding rules live in `ARCHITECTURE.md`; the entry point for Claude Code is `CLAUDE.md`. When this file and `ARCHITECTURE.md` disagree, `ARCHITECTURE.md` wins and the conflict must be reported to the human.
+> **For AI agents reading this file:** this document is the project's vision and reference. Binding rules live in `ARCHITECTURE.md`; the entry points are `CLAUDE.md` for Claude and `AGENTS.md` for Codex. When this file and `ARCHITECTURE.md` disagree, `ARCHITECTURE.md` wins and the conflict must be reported to the human.
 
 ---
 
@@ -207,19 +207,26 @@ To maximize performance and UX (Fitts's Law compliance), the UI completely drops
 
 ## 6. Agentic development workflow
 
-Newell's code is generated, tested, and optimized by a "team" of 4 AI agents, plus an optional read-only Explorer helper (Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5). Each agent runs in an ephemeral conversational session: no hidden/session state is trusted across sessions. Persistent project context is carried only through reviewed repository files such as `CLAUDE.md`, `ARCHITECTURE.md`, ADRs, plans and the deliberately short `MEMORY.md`.
+Newell's code is generated, tested, and optimized through four primary agent roles,
+plus an optional read-only Explorer helper. Every role can be assigned to Claude
+or ChatGPT through Codex. Model choice does not determine role authority. Each
+role runs in an ephemeral conversation: no hidden/session state is trusted across
+sessions. Persistent context is carried through reviewed repository files:
+`CLAUDE.md`/`AGENTS.md`, shared `docs/agents/` instructions, `ARCHITECTURE.md`,
+ADRs, plans and the deliberately short `MEMORY.md`. Parallel work follows
+`ARCHITECTURE.md` §2.4 and `docs/agents/README.md`.
 
 **Human role:** define the constraints, own the vision, approve plans, and merge pull requests. **Only the human merges into `main`.**
 
 ### 6.1 The 4 agents
 
-| Agent | Model | Input | Output | Must not |
+| Agent | Provider | Input | Output | Must not |
 |---|---|---|---|---|
-| **Architect** | Opus 5.5 | Issue + `ARCHITECTURE.md` + relevant code | Plan in `docs/plans/<issue>-<slug>.md`: traits, types, files to touch, test list | Write production code |
-| **Challenger** | Sonnet 5.5 | The plan only (one-shot) | Written review: logical flaws, borrow checker conflicts, bottlenecks, missing tests | Rewrite the plan itself |
-| **Executor** | Sonnet 5.5 | Approved plan + targeted files + docs (e.g. BrepKIT) | Code + tests on a branch, PR opened | Modify tests to make them pass, touch files outside the plan, edit `ARCHITECTURE.md` |
-| **Auditor** | Sonnet 5.5 | Diff of the Executor's PR | Cleanup commits: duplication, idioms, Clippy, docs | Change behaviour (tests must stay identical and green) |
-**Explorer** (optional helper, Haiku 5.5): see `ARCHITECTURE.md` §2. It is not a pipeline stage.
+| **Architect** | Claude or Codex | Issue + `ARCHITECTURE.md` + relevant code | Plan in `docs/plans/<issue>-<slug>.md`: traits, types, files to touch, test list | Write production code |
+| **Challenger** | Claude or Codex | The plan only (one-shot) | Written review: logical flaws, borrow checker conflicts, bottlenecks, missing tests | Rewrite the plan itself |
+| **Executor** | Claude or Codex | Approved plan + targeted files + docs (e.g. BrepKIT) | Code + tests on a branch, PR opened | Modify tests to make them pass, touch files outside the plan, edit `ARCHITECTURE.md` |
+| **Auditor** | Claude or Codex | Diff of the Executor's PR | Cleanup commits: duplication, idioms, Clippy, docs | Change behaviour (tests must stay identical and green) |
+**Explorer** (optional helper, Claude or Codex): see `ARCHITECTURE.md` §2. It is not a pipeline stage.
 
 The Explorer is a read-only helper, not a pipeline stage. It can be used at any point (for example, to locate code before planning, or to discuss options with the human), and it never appears in the approval chain of §6.2.
 
@@ -250,7 +257,8 @@ Issue (human)
 
 | File | Purpose | Who edits it |
 |---|---|---|
-| `CLAUDE.md` | Short entry point: build/test commands, where the rules are, what is forbidden | Human |
+| `CLAUDE.md` / `AGENTS.md` | Provider entry points to shared role instructions | Human |
+| `docs/agents/` | Shared workflow, role boundaries and task prompt template for both providers | Human |
 | `ARCHITECTURE.md` | Binding rules: crate boundaries, lints, budgets, tolerances, iteration limits | Human only (protected by CODEOWNERS) |
 | `docs/adr/NNNN-title.md` | One decision per file: context, options, decision, consequences | Architect drafts, human approves |
 | `docs/plans/` | One plan per feature, kept after merge for history | Architect |

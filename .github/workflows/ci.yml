@@ -111,14 +111,14 @@ jobs:
           command: check
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@69084b241933c14c2fa24234c4596f11a2655339 # 1.85.0
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable action, explicit MSRV below
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
       - name: Check on minimum toolchain
         run: cargo check --workspace --locked
 

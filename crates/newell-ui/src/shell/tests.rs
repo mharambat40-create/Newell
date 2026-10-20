@@ -7,6 +7,7 @@
 use super::compose::Layout;
 use super::data::{self, progress_bar, visible_rows};
 use super::*;
+use crate::OverlayKind;
 use crate::{CellContent, CellGrid, GridMetrics, UiPoint, WidgetState, hit_test};
 
 const COLS: u32 = 82;
@@ -275,6 +276,34 @@ fn view_menu_rows_cycle_and_toggle_without_closing() {
     let next = (col..COLS).find(|&c| glyph(&g, c, row) == '▶').unwrap();
     click_at(&mut s, next, row);
     assert!(has(&s.compose().unwrap(), "Orthographic"));
+}
+
+#[test]
+fn ui_scale_keeps_both_triangles_at_wrapping_endpoints() {
+    let mut s = shell();
+    click_text(&mut s, "View");
+    for endpoint in [0, SCALE_PERCENTS.len() - 1] {
+        s.view.scale = endpoint;
+        let g = s.compose().unwrap();
+        let (_, row) = find(&g, "UI Scale").unwrap();
+        let line = text(&g, row);
+        assert!(line.contains('◀') && line.contains('▶'));
+    }
+}
+
+#[test]
+fn view_visibility_toggles_expand_the_viewport_without_moving_its_scene_anchor() {
+    let mut s = shell();
+    let initial = s.scene_viewport();
+    s.view.checks[0] = false; // Tree panel
+    let no_tree = s.scene_viewport();
+    assert_eq!(no_tree.col(), 1);
+    assert!(no_tree.width() > initial.width());
+    s.view.checks[2] = false; // Status bar
+    let no_status = s.scene_viewport();
+    assert!(no_status.height() > no_tree.height());
+    s.view.checks[3] = false; // Navigation cube
+    assert!(!has(&s.compose().unwrap(), "NavCube"));
 }
 
 #[test]
@@ -654,6 +683,29 @@ fn selection_field_opens_the_selection_panel() {
 }
 
 #[test]
+fn profiles_artwork_uses_a_framed_selected_items_footer() {
+    let mut s = shell();
+    s.selection.open_titled(&mut s.interaction, "Profiles");
+    s.sync();
+    let mut g = s.compose().unwrap();
+    let inter = InteractionState::default();
+    let styles = Default::default();
+    let ctx = crate::WidgetContext {
+        styles: &styles,
+        interaction: &inter,
+    };
+    s.selection
+        .draw_in_action_box(&mut g, &ctx, GridRect::new(30, 5, 31, 11));
+    assert!(has(&g, "╭─Profiles"));
+    assert!(has(&g, "│┌"));
+    assert!(has(&g, "☰ Spline_1"));
+    assert!(has(&g, "☰ Compound_line_1"));
+    assert!(has(&g, "×"));
+    assert!(has(&g, "│────────────────"));
+    assert!(has(&g, "OK") && has(&g, "Cancel"));
+}
+
+#[test]
 fn formula_button_opens_the_formula_editor() {
     let mut s = shell();
     let g = s.compose().unwrap();
@@ -668,6 +720,19 @@ fn formula_button_opens_the_formula_editor() {
     assert!(!has(&g, "Fx"));
     assert_eq!(s.formula().draft(), "");
     assert_eq!(s.interaction().focused, s.formula().focus());
+}
+
+#[test]
+fn formula_modal_footer_uses_the_documented_hover_frame() {
+    let mut s = shell();
+    click_text(&mut s, "☰");
+    let cancel = id_of(&s, "Cancel");
+    let g = s.compose().unwrap();
+    let (_, row) = find(&g, "Cancel").unwrap();
+    let (hovered, lit) = s.compose_hovered(Some(cancel)).unwrap();
+    assert!(lit);
+    assert!(text(&hovered, row).contains('╞'));
+    assert!(text(&hovered, row).contains('╡'));
 }
 
 #[test]
@@ -805,6 +870,19 @@ fn numeric_field_edits_with_caret_limits_sign_and_commit() {
 }
 
 #[test]
+fn clicking_a_numeric_direction_marker_reverses_it_without_editing() {
+    let mut s = shell();
+    let g = s.compose().unwrap();
+    let (bracket, row) = find(&g, "[+|0.0 mm").expect("directional depth field");
+    // The marker is immediately after the opening `[`.
+    assert!(click_at(&mut s, bracket + 1, row));
+    assert!(has(&s.compose().unwrap(), "[-|0.0 mm       ☰]"));
+    assert!(s.editing_field().is_none());
+    assert!(click_at(&mut s, bracket + 1, row));
+    assert!(has(&s.compose().unwrap(), "[+|0.0 mm       ☰]"));
+}
+
+#[test]
 fn numeric_field_escape_reverts_and_other_clicks_commit() {
     let mut s = shell();
     let (col, row) = depth_field(&s);
@@ -892,6 +970,50 @@ fn selection_cancel_and_ok_restore_focus_and_state() {
     click_at(&mut s, col, row);
     assert!(s.selection().applied()[0]);
     assert_eq!(s.interaction().focused, restored);
+}
+
+#[test]
+fn selection_is_centered_and_preserves_the_source_action_box() {
+    let mut s = shell();
+    open_selection(&mut s);
+    let overlay = s.overlays.top().expect("selection modal");
+    assert_eq!(overlay.kind, OverlayKind::Modal);
+    let bounds = GridRect::new(0, 0, COLS, ROWS);
+    assert_eq!(overlay.rect, crate::center_modal((30, 12), bounds));
+    let g = s.compose().unwrap();
+    assert!(has(&g, "Selection") && has(&g, "Flange_Body"));
+    assert!(s.extrude().is_open(), "the source operation stays open");
+}
+
+#[test]
+fn centered_selection_scrolls_without_resizing_the_source_panel() {
+    let mut s = shell();
+    open_selection(&mut s);
+    let source = s.action_panel_rect();
+    let overlay = s.overlays.top().unwrap().rect;
+    assert!(s.scroll(-1), "nine entries exceed the visible modal list");
+    assert_eq!(s.overlays.top().unwrap().rect, overlay);
+    assert_eq!(s.action_panel_rect(), source);
+}
+
+#[test]
+fn centered_modals_occlude_the_scene_without_reframing_it() {
+    for formula in [false, true] {
+        let mut s = tall();
+        let scene = s.scene_viewport();
+        if formula {
+            click_text(&mut s, "☰");
+        } else {
+            open_selection(&mut s);
+        }
+        let source = s.action_panel_rect().unwrap();
+        let modal = s.overlays.top().expect("centered modal");
+        assert_eq!(modal.kind, OverlayKind::Modal);
+        assert_eq!(s.scene_viewport(), scene);
+        let covered = s.scene_occlusions();
+        assert!(covered.contains(&source.intersection(&scene)));
+        assert!(covered.contains(&modal.rect.intersection(&scene)));
+    }
 }
 
 #[test]
@@ -1075,7 +1197,7 @@ fn tiny_and_degenerate_grids_are_safe() {
 fn huge_grids_do_not_overflow() {
     let s = ShellState::new(u32::MAX, u32::MAX);
     assert!(s.compose().is_err());
-    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default());
+    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default(), true, true);
     assert!(layout.viewport.width() > 0);
     let _ = layout.action_panel(usize::MAX);
 }
@@ -1269,14 +1391,14 @@ fn m224_progress_matches_all_21_reference_states_at_a_fixed_width() {
 }
 
 #[test]
-fn scene_viewport_is_below_the_caption_and_left_of_the_action_box() {
+fn scene_viewport_uses_the_full_interior_and_stays_stable_under_the_action_box() {
     let shell = ShellState::new(82, 30);
     let scene = shell.scene_viewport();
     let layout = shell.layout();
     let viewport = layout.viewport.inset(1);
 
     assert_eq!(scene.col(), viewport.col());
-    assert_eq!(scene.row(), viewport.row() + 1);
-    assert_eq!(scene.right(), viewport.right() - u64::from(layout.action));
+    assert_eq!(scene.row(), viewport.row());
+    assert_eq!(scene.right(), viewport.right());
     assert_eq!(scene.bottom(), viewport.bottom());
 }

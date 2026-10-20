@@ -190,7 +190,7 @@ pub(super) const SHADING: [&str; 6] = [
     "Flat line",
 ];
 /// The UI Scale values as the menu shows them: right-aligned to four cells (` 60%`, `100%`).
-pub(super) const SCALE_LABELS: [&str; 4] = [" 60%", " 80%", "100%", "120%"];
+pub(super) const SCALE_LABELS: [&str; 5] = [" 60%", " 80%", "100%", "120%", "140%"];
 const _: () = assert!(SCALE_PERCENTS.len() == SCALE_LABELS.len());
 
 /// Index of `percent` in [`SCALE_PERCENTS`]; the default for an unknown value.
@@ -400,8 +400,7 @@ pub(super) const ELEMENTS: [Node; 7] = [
     named("Plane_XY", 2, Some(false), false),
 ];
 
-/// Features before the playhead separator in the reference (`Interface_Exemple.txt`: after
-/// `Fillet_Inner`, the third top-level feature).
+/// Top-level features before the reference playhead (after Fillet_Inner).
 pub(super) const DEFAULT_PLAYHEAD: usize = 3;
 
 /// Initial expansion flags of a tree.

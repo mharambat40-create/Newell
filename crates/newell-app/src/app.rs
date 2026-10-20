@@ -12,15 +12,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use newell_kernel::NewellSolid;
+use newell_model::{
+    CommandController, CommandState, Document, EntityId, ExtrudeGeometry, ExtrudeResult,
+    ExtrudeSpec, ExtrudeTermination, Feature, ParameterValue, Selection,
+};
 use newell_render::{FrameOutcome, Renderer, SceneViewport, Theme};
 use newell_ui::{
-    DEFAULT_SCALE_PERCENT, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
-    WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
+    DEFAULT_SCALE_PERCENT, ExtrudeGeometryType, ExtrudeResultMode, ExtrudeStatus,
+    ExtrudeTermination as UiExtrudeTermination, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode,
+    ThemeChoice, WindowAction, composed_grid_size, effective_scale, fit_window, k_fit,
+    min_window_size,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::error::ExternalError;
-use winit::event::{ElementState, InnerSizeWriter, MouseButton, WindowEvent};
+use winit::event::{ElementState, InnerSizeWriter, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::monitor::MonitorHandle;
@@ -28,7 +34,8 @@ use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::AppError;
 use crate::controller::{Press, ShellController, Update};
-use crate::input::{translate_key, ui_point};
+use crate::input::{pinch_steps, translate_key, ui_point, zoom_steps};
+use crate::navigation::{DragKind, Navigation, ZoomSource};
 use crate::scale::{MonitorInfo, Rescale, ScaleManager, plan_rescale, rect_in_window_space};
 use crate::window::{CancelReason, ControlArm, ResizeManager, check_fit, screen_pointer};
 
@@ -57,6 +64,22 @@ fn scene_viewport(shell: &ShellController) -> SceneViewport {
         rect.width().saturating_mul(metrics.cell_width_px()),
         rect.height().saturating_mul(metrics.cell_height_px()),
     )
+}
+
+fn scene_occlusions(shell: &ShellController) -> Vec<SceneViewport> {
+    let metrics = shell.metrics();
+    shell
+        .scene_occlusions()
+        .into_iter()
+        .map(|rect| {
+            SceneViewport::new(
+                rect.col().saturating_mul(metrics.cell_width_px()),
+                rect.row().saturating_mul(metrics.cell_height_px()),
+                rect.width().saturating_mul(metrics.cell_width_px()),
+                rect.height().saturating_mul(metrics.cell_height_px()),
+            )
+        })
+        .collect()
 }
 
 const fn direction(zone: ResizeZone) -> ResizeDirection {
@@ -125,7 +148,15 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     shell: Option<ShellController>,
+    /// Persistent CAD state. The UI projects commands from this model; it never owns geometry.
+    document: Document,
+    selection: Selection,
+    commands: CommandController,
+    /// Entity represented by the initial viewport solid.
+    scene_entity: Option<EntityId>,
     modifiers: ModifiersState,
+    navigation: Navigation,
+    scene_pointer: Option<PhysicalPosition<f64>>,
     error: Option<AppError>,
     resize: ResizeManager,
     /// Last non-zero physical inner size reported by the OS.
@@ -154,6 +185,7 @@ pub(crate) struct App {
     occluded: bool,
     /// Monitor size for which a refused fullscreen request was already logged.
     fullscreen_refusal_logged: Option<(u32, u32)>,
+    view_fullscreen: bool,
     /// Start of the monotonic clock handed to the controller for double-click timing.
     epoch: Instant,
 }
@@ -164,7 +196,13 @@ impl App {
             renderer: None,
             window: None,
             shell: None,
+            document: Document::default(),
+            selection: Selection::default(),
+            commands: CommandController::default(),
+            scene_entity: None,
             modifiers: ModifiersState::empty(),
+            navigation: Navigation::default(),
+            scene_pointer: None,
             error: None,
             resize: ResizeManager::default(),
             last_size: PhysicalSize::new(0, 0),
@@ -180,6 +218,7 @@ impl App {
             maximized: false,
             occluded: false,
             fullscreen_refusal_logged: None,
+            view_fullscreen: false,
             epoch: Instant::now(),
         }
     }
@@ -193,6 +232,98 @@ impl App {
         event_loop.exit();
     }
 
+    /// Projects the UI-only Extrude editor into the M4 command controller. The application is
+    /// the sole adapter between ASCII widget values and the model; neither side depends on the
+    /// other. A valid draft immediately replaces the viewport mesh as a preview.
+    fn sync_extrude_command(&mut self) {
+        let Some(shell) = &self.shell else { return };
+        let ui = shell.shell().extrude();
+        let depth = shell.shell().extrude_depth_source();
+        let geometry = match ui.values.geometry {
+            ExtrudeGeometryType::Solid => ExtrudeGeometry::Solid,
+            ExtrudeGeometryType::Surface => ExtrudeGeometry::Surface,
+        };
+        let result = match ui.values.result {
+            ExtrudeResultMode::New => ExtrudeResult::New,
+            ExtrudeResultMode::Add => ExtrudeResult::Add,
+            ExtrudeResultMode::Remove => ExtrudeResult::Remove,
+        };
+        let termination = match ui.values.termination {
+            UiExtrudeTermination::Blind => ExtrudeTermination::Blind,
+            UiExtrudeTermination::UpTo => ExtrudeTermination::UpTo,
+            UiExtrudeTermination::ThroughAll => ExtrudeTermination::ThroughAll,
+        };
+        let spec = ExtrudeSpec {
+            profile: self.selection.entities().first().copied(),
+            geometry,
+            result,
+            termination,
+            depth: ParameterValue::Literal(depth),
+            starting_offset: ui
+                .values
+                .starting_offset
+                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
+            end_offset: ui
+                .values
+                .end_offset
+                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
+            symmetric: ui.values.symmetric,
+            second_end: ui
+                .values
+                .second_side
+                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
+            invert: ui.values.invert,
+            merge_with_all: ui.values.merge_with_all,
+            merge_scope: if ui.values.merge_with_all {
+                Vec::new()
+            } else {
+                self.selection.entities().to_vec()
+            },
+        };
+        match ui.status {
+            ExtrudeStatus::Editing => {
+                if matches!(self.commands.state(), CommandState::Idle) {
+                    self.commands.begin_extrude(&self.selection);
+                }
+                if self.commands.edit_extrude(spec, &self.document).is_ok()
+                    && let Some(preview) = self.commands.preview()
+                    && let Ok(depth) = preview.depth.evaluate(self.document.parameters())
+                {
+                    self.set_preview_depth(depth.as_millimetres());
+                }
+            }
+            ExtrudeStatus::Confirmed => {
+                if self.commands.edit_extrude(spec, &self.document).is_ok() {
+                    let _ = self.commands.confirm(&mut self.document);
+                }
+            }
+            ExtrudeStatus::Cancelled => {
+                self.commands.cancel();
+                self.set_preview_depth(10.0);
+            }
+        }
+    }
+
+    fn set_preview_depth(&mut self, depth_mm: f64) {
+        let scaled = (depth_mm / 10.0).clamp(0.01, 100.0);
+        let Ok(solid) = NewellSolid::box_solid(1.0, 1.0, scaled) else {
+            return;
+        };
+        let Ok(mesh) = solid.tessellate(0.05) else {
+            return;
+        };
+        if let Some(renderer) = &mut self.renderer {
+            self.navigation.set_mesh(&mesh);
+            renderer.set_scene_mesh(mesh);
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     /// Carries the View menu's choices out of the shell: the theme goes to the renderer's
     /// uniform, a changed UI Scale preference to the scale manager (one transition if
     /// `effective_k` changes), and a Fullscreen request to the window.
@@ -202,10 +333,25 @@ impl App {
             ThemeChoice::Light => Theme::Light,
             ThemeChoice::Dark => Theme::Dark,
         };
+        let shading = shell.shell().shading();
+        let perspective = shell.shell().perspective();
         let percent = shell.shell().preferred_scale_percent();
         let fullscreen = shell.take_fullscreen_request();
+        let reset_camera = shell.take_camera_reset();
+        let normal_view = shell.take_normal_view();
         if let Some(renderer) = &mut self.renderer {
             renderer.set_theme(theme);
+            renderer.set_scene_shading(shading);
+            self.navigation.set_perspective(perspective);
+            if reset_camera {
+                self.navigation.fit();
+            }
+            if normal_view {
+                self.navigation.normal_to_axis();
+            }
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
         }
         if percent != self.scale.preferred_percent() {
             self.scale.set_preferred_percent(percent);
@@ -227,6 +373,7 @@ impl App {
         self.cancel_resize(CancelReason::StateChanged);
         if window.fullscreen().is_some() {
             window.set_fullscreen(None);
+            self.view_fullscreen = false;
         } else {
             let monitor = host_monitor(&window);
             let size = monitor.as_ref().map(|m| (m.size().width, m.size().height));
@@ -240,6 +387,7 @@ impl App {
                 return;
             }
             window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
+            self.view_fullscreen = true;
         }
         self.reconcile("fullscreen", None);
     }
@@ -255,6 +403,12 @@ impl App {
         {
             renderer.set_ui_grid(shell.grid());
             renderer.set_scene_viewport(scene_viewport(shell));
+            renderer.set_scene_occlusions(scene_occlusions(shell));
+            self.navigation
+                .set_layout(scene_viewport(shell), scene_occlusions(shell));
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
         }
         if let Some(window) = &self.window {
             window.request_redraw();
@@ -473,6 +627,12 @@ impl App {
             renderer.set_metrics(prepared.metrics(), prepared.grid())?;
             let _ = shell.commit_metrics(prepared);
             renderer.set_scene_viewport(scene_viewport(shell));
+            renderer.set_scene_occlusions(scene_occlusions(shell));
+            self.navigation
+                .set_layout(scene_viewport(shell), scene_occlusions(shell));
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
         }
         let min = min_window_size(plan.metrics);
         log(&format!(
@@ -596,6 +756,7 @@ impl App {
 
     /// A left press: window control, resize zone, MenuBar drag or normal shell routing.
     fn left_pressed(&mut self) {
+        self.navigation.cancel();
         // A press while a resize or control press is pending means its release was missed.
         self.cancel_resize(CancelReason::StateChanged);
         self.control.cancel();
@@ -618,13 +779,21 @@ impl App {
         match press {
             Press::Shell(update) => {
                 self.apply(update);
+                self.sync_extrude_command();
                 if scene_input
-                    && let (Some(renderer), Some(cursor)) = (&self.renderer, cursor)
-                    && let Some(hit) = renderer.pick_scene(f64::from(cursor.x), f64::from(cursor.y))
+                    && let Some(cursor) = cursor
+                    && let Some(hit) = self
+                        .navigation
+                        .pick((f64::from(cursor.x), f64::from(cursor.y)))
                 {
+                    if let Some(entity) = self.scene_entity {
+                        self.selection.replace([entity]);
+                    }
                     log(&format!(
-                        "picked viewport face {} at {:.3}",
-                        hit.face_index, hit.distance
+                        "picked viewport face {} at {:.3}; {} entity selected",
+                        hit.face_index,
+                        hit.distance,
+                        self.selection.entities().len()
                     ));
                 }
             }
@@ -786,13 +955,16 @@ impl ApplicationHandler for App {
             Err(error) => return self.fail(event_loop, error),
         }
         let (cols, rows) = composed_grid_size(metrics, size.width, size.height);
-        let shell = match ShellController::new(cols, rows, metrics) {
+        let mut shell = match ShellController::new(cols, rows, metrics) {
             Ok(shell) => shell,
             Err(error) => return self.fail(event_loop, error),
         };
         if let Some(renderer) = &mut self.renderer {
             renderer.set_ui_grid(shell.grid());
             renderer.set_scene_viewport(scene_viewport(&shell));
+            renderer.set_scene_occlusions(scene_occlusions(&shell));
+            self.navigation
+                .set_layout(scene_viewport(&shell), scene_occlusions(&shell));
             let solid = match NewellSolid::box_solid(1.0, 1.0, 1.0) {
                 Ok(solid) => solid,
                 Err(error) => return self.fail(event_loop, error),
@@ -801,8 +973,25 @@ impl ApplicationHandler for App {
                 Ok(mesh) => mesh,
                 Err(error) => return self.fail(event_loop, error),
             };
+            self.navigation.set_mesh(&mesh);
             renderer.set_scene_mesh(mesh);
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
         }
+        let base = self.document.add_base_solid("Base Solid");
+        self.scene_entity = self.document.feature(base).map(Feature::entity);
+        let feature_labels = self
+            .document
+            .features()
+            .iter()
+            .map(|(_, feature)| feature.name().to_owned())
+            .collect::<Vec<_>>();
+        let element_labels = self
+            .scene_entity
+            .map(|entity| vec![format!("Solid {}", entity.get())])
+            .unwrap_or_default();
+        let _ = shell.set_model_tree_labels(&feature_labels, &element_labels);
         self.shell = Some(shell);
         self.window = Some(window.clone());
         self.log_monitors(&window);
@@ -842,6 +1031,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(false) => {
+                self.scene_pointer = None;
+                self.navigation.cancel();
                 self.native_resizing = false;
                 self.cancel_resize(CancelReason::FocusLost);
                 self.control.cancel();
@@ -928,7 +1119,22 @@ impl ApplicationHandler for App {
                 self.resize_pointer(position);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.scene_pointer = Some(position);
                 let point = ui_point(position.x, position.y);
+                if self.navigation.is_dragging() {
+                    if self.navigation.navigate((position.x, position.y)) {
+                        window.request_redraw();
+                        if let (Some(renderer), Some(camera)) =
+                            (&mut self.renderer, self.navigation.snapshot())
+                        {
+                            renderer.set_scene_camera(camera);
+                        }
+                    }
+                    if let Some(shell) = &mut self.shell {
+                        shell.pointer_moved_during_resize(point);
+                    }
+                    return;
+                }
                 // An OS-managed resize owns the pointer: no hover until its first move after it.
                 let native = self.native_resizing;
                 if let Some(shell) = &mut self.shell {
@@ -941,6 +1147,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                self.scene_pointer = None;
+                self.navigation.cancel();
                 if let Some(shell) = &mut self.shell {
                     let update = shell.pointer_moved(None);
                     self.apply(update);
@@ -973,7 +1181,109 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: button @ (MouseButton::Right | MouseButton::Middle),
+                ..
+            } => {
+                if let Some(cursor) = self.scene_pointer {
+                    let eligible = !self.resize.is_active()
+                        && !self.native_resizing
+                        && self
+                            .shell
+                            .as_ref()
+                            .is_some_and(ShellController::scene_input_enabled);
+                    let kind = if button == MouseButton::Right {
+                        DragKind::Orbit
+                    } else {
+                        DragKind::Pan
+                    };
+                    self.navigation.begin(
+                        kind,
+                        (cursor.x, cursor.y),
+                        window.scale_factor(),
+                        eligible,
+                    );
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: button @ (MouseButton::Right | MouseButton::Middle),
+                ..
+            } => {
+                self.navigation.release(if button == MouseButton::Right {
+                    DragKind::Orbit
+                } else {
+                    DragKind::Pan
+                });
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let steps = zoom_steps(delta, window.scale_factor());
+                // Panel scrolling keeps its existing convention, independently of camera sensitivity.
+                let panel_steps = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(delta) => (delta.y / 40.0) as f32,
+                };
+                if let Some(shell) = &mut self.shell
+                    && shell.scroll(panel_steps.round() as i32).any()
+                {
+                    self.navigation.cancel();
+                    window.request_redraw();
+                    return;
+                }
+                let eligible = !self.resize.is_active()
+                    && !self.native_resizing
+                    && self
+                        .shell
+                        .as_ref()
+                        .is_some_and(ShellController::scene_input_enabled);
+                let stream = match delta {
+                    MouseScrollDelta::LineDelta(..) => None,
+                    MouseScrollDelta::PixelDelta(_) => Some((ZoomSource::Scroll, phase)),
+                };
+                let point = self
+                    .scene_pointer
+                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
+                if self
+                    .navigation
+                    .zoom(point, f64::from(steps), stream, eligible)
+                {
+                    if let (Some(renderer), Some(camera)) =
+                        (&mut self.renderer, self.navigation.snapshot())
+                    {
+                        renderer.set_scene_camera(camera);
+                    }
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                let eligible = !self.resize.is_active()
+                    && !self.native_resizing
+                    && self
+                        .shell
+                        .as_ref()
+                        .is_some_and(ShellController::scene_input_enabled);
+                let point = self
+                    .scene_pointer
+                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
+                if self.navigation.zoom(
+                    point,
+                    f64::from(pinch_steps(delta)),
+                    Some((ZoomSource::Pinch, phase)),
+                    eligible,
+                ) {
+                    if let (Some(renderer), Some(camera)) =
+                        (&mut self.renderer, self.navigation.snapshot())
+                    {
+                        renderer.set_scene_camera(camera);
+                    }
+                    window.request_redraw();
+                }
+            }
             WindowEvent::Occluded(occluded) => {
+                if occluded {
+                    self.navigation.cancel();
+                }
                 self.occluded = occluded;
                 if !occluded {
                     window.request_redraw();
@@ -981,6 +1291,33 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                self.navigation.cancel();
+                if event.logical_key == Key::Named(NamedKey::Escape) && self.view_fullscreen {
+                    if let Some(window) = &self.window {
+                        window.set_fullscreen(None);
+                    }
+                    self.view_fullscreen = false;
+                    self.reconcile("fullscreen", None);
+                    return;
+                }
+                // Home fits only when the pointer is on unobstructed scene pixels.
+                if event.logical_key == Key::Named(NamedKey::Home)
+                    && self.scene_pointer.is_some()
+                    && !self.resize.is_active()
+                    && !self.native_resizing
+                    && self.shell.as_ref().is_some_and(|shell| {
+                        shell.scene_input_enabled() && shell.shell().editing_field().is_none()
+                    })
+                {
+                    self.navigation.fit();
+                    if let (Some(renderer), Some(camera)) =
+                        (&mut self.renderer, self.navigation.snapshot())
+                    {
+                        renderer.set_scene_camera(camera);
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 // Escape cancels a managed resize and is not seen by the shell.
                 if event.logical_key == Key::Named(NamedKey::Escape)
                     && self.resize.cancel(CancelReason::Escape)
@@ -999,6 +1336,7 @@ impl ApplicationHandler for App {
                         .fold(Update::default(), |acc, key| acc.merge(shell.key(key)));
                     self.apply(update);
                 }
+                self.sync_extrude_command();
             }
             WindowEvent::RedrawRequested => {
                 if let Some(gate) = self.gate {

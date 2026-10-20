@@ -64,6 +64,7 @@ fn complete_shell_matches_reference_in_both_themes_and_both_heights() {
                     GridMetrics::new(8, 18).unwrap(),
                     &g,
                 ));
+                s.key(ShellKey::Escape);
             }
             let mut actual = rows(&s.compose().unwrap());
             if height == 30 {

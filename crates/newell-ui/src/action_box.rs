@@ -349,6 +349,26 @@ impl ActionBox {
             })
     }
 
+    /// `true` when `(col, row)`, relative to this box, is the visible direction marker of
+    /// numeric field `id`.  The marker is one cell after the opening `[`.
+    pub(crate) fn numeric_sign_at(&self, id: WidgetId, col: u32, row: u32) -> bool {
+        self.rows.get(row as usize).is_some_and(|line| {
+            line.items.iter().any(|item| match item {
+                Item::Numeric {
+                    col: start,
+                    field,
+                    text,
+                    ..
+                } => {
+                    *field == id
+                        && matches!(text.as_bytes().get(0..2), Some(b"+|" | b"-|"))
+                        && col == start.saturating_add(1)
+                }
+                _ => false,
+            })
+        })
+    }
+
     /// As [`ActionBox::draw_with`], showing the edited values of `fields` in its numeric fields.
     /// Returns the number of rows that fit and whether the hovered target was highlighted.
     pub(crate) fn draw_with(

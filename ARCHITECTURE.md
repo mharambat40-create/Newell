@@ -14,7 +14,10 @@ hovered: Option<WidgetId>. No hover animation,
 colour change or shader effect is permitted.
 
 ## 2. Agent Roles & Workflow Rules
-We use a 4-agent system. Each agent MUST adhere to its boundaries:
+We use four primary roles, each available to both Claude and ChatGPT through
+Codex. Provider/model choice does not change a role's authority. Each agent
+MUST adhere to its boundaries. Shared instructions are in `docs/agents/`;
+`CLAUDE.md` and `AGENTS.md` are the respective provider entry points.
 
 - **Architect:** You draft plans in `docs/plans/`. You define interfaces, module structures, and list the tests to be written. You DO NOT write production code.
 - **Challenger:** You critique the Architect's plan. Look for borrow-checker issues, architectural bottlenecks, and missing edge cases. Be ruthless.
@@ -115,6 +118,26 @@ Prefer a small, established, maintained dependency over a bespoke
 implementation of standard infrastructure when the dependency satisfies those
 constraints. Custom implementations require a concrete project-specific
 justification.
+
+### 2.4 Parallel Provider Sessions
+
+The human may assign any role to Claude or Codex, including independent work
+on the same task. Role ordering and human approval requirements remain in force
+for each implementation; parallel execution does not authorize automatic dispatch.
+Explorer remains an optional read-only helper for either provider.
+
+Each writing task MUST use a separate branch and checkout/worktree, with an
+identified baseline and plan revision. Two writers MUST NOT share a checkout
+or overwrite each other's work or Git index. Worktrees created from HEAD do not
+include staged, unstaged or untracked changes; required uncommitted inputs need
+an explicitly authorized snapshot or a human-provided commit before dispatch.
+Independent plans use distinct paths. Reviews identify their exact input
+revision; input changes require reviewing the affected content again. Auditor
+takes over a green implementation only after its writer has stopped.
+
+Only the human selects between parallel alternatives and authorizes integration.
+Agents MUST NOT automatically merge or cherry-pick alternatives. The operational
+task/handoff contract is defined in `docs/agents/README.md`.
 
 ## 3. UI & Rendering Rules (wgpu)
 The interface is a 2D grid of characters.
@@ -1010,6 +1033,40 @@ To support unlimited, synchronized windows, the application architecture must st
 ### 4.2 Local Window State (The View/Controller)
 - **Isolated UI Context:** The Controller (`newell-ui`, `newell-app`) handles OS events via `winit` per window. There is no global UI singleton. Each window instance exclusively owns its active Workbench, selection state, Feature Tree expansion state, UI Scale (`preferred_scale_percent`, `monitor_reference_scale` and `effective_k`, §3.1.1) and theme (§3.6). Only `preferred_scale_percent` is a user setting; the other two are derived from the window's current monitor and are recomputed, never inherited, when it changes.
 - **Render Context:** The View (`newell-render`) reads states and draws them independently for each window. Each window owns its independent swapchain and command encoder to render the 3D viewport and the ASCII grid overlay.
+
+### 4.4 3D viewport navigation
+
+Viewport navigation is mutable per-window Controller state in `newell-app`.
+`newell-render` consumes immutable camera matrices and uploads them to WGPU;
+it owns no gesture, pivot selection, CPU ray queries or camera mutation.
+The approved implementation contract is [M3 camera mechanics](docs/plans/M3-camera-mechanics.md).
+
+Right-drag performs camera-relative yaw/pitch with strict zero roll against
+world Z-up. Level the yaw result before applying pitch; clamp signed elevation
+before constructing the pitch rotation, to 0.5 degrees short of either pole.
+Exact principal-axis views retain a deterministic heading for departure.
+Quaternions and an orthonormal camera basis avoid accumulated Euler state.
+Select a contextual pivot once on press: nearest displayed mesh hit, otherwise
+the world AABB centre of geometry clipped to the frustum and exposed viewport
+regions. Rotate both eye offset and orientation by the same final quaternion,
+preserving the pivot's projected pixel without recentering at gesture start.
+
+Middle-drag pans in the camera-facing plane at contextual focal depth. Wheel,
+DPI-normalized fractional scrolling and native pinch zoom toward a geometric
+hit or focal-plane anchor. Phased gestures retain their anchor and input owner.
+The absolute minimum navigation distance is 0.001 model units; maximum distance
+is four times the aspect-aware sphere-fit distance with a 10% margin. Mesh
+replacement updates cached bounds without reframing. Home over exposed scene
+pixels fits the whole object in an unobstructed region, unless text is edited.
+
+Only exposed scene pixels may admit gestures after O(1) UI hit testing and
+menu/modal routing. Geometric queries are CPU mesh queries, separately O(T)
+for T triangles; they require no GPU readback. Action Boxes only occlude the
+scene. Resizing preserves physical-pixel scale and projection position using
+lens shift. Captured drags accept positions outside the viewport while inside
+the window, and only their initiating button ends them. Focus loss, pointer
+exit, layout/occlusion, mesh and projection changes cancel capture without
+moving the camera. Rendering stays event-driven with no inertia loop.
 
 ### 4.3 Window Manager (Lifecycle)
 - The `newell-app` binary crate is responsible for spawning, tracking, and destroying window instances and wiring the event loop.

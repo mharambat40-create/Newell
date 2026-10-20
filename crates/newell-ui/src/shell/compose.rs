@@ -132,11 +132,27 @@ pub(super) struct Layout {
 }
 
 impl Layout {
-    pub(super) fn new(cols: u32, rows: u32, widths: PanelWidths) -> Self {
-        let nav = nav_width(cols, widths.nav);
-        let status_top = rows.saturating_sub(STATUS_ROWS);
-        // Body frames run from row `TOP_ROWS` to the status frame's top row, inclusive.
-        let body = status_top.saturating_sub(TOP_ROWS - 1);
+    pub(super) fn new(
+        cols: u32,
+        rows: u32,
+        widths: PanelWidths,
+        show_tree: bool,
+        show_status: bool,
+    ) -> Self {
+        let nav = if show_tree {
+            nav_width(cols, widths.nav)
+        } else {
+            0
+        };
+        let status_height = if show_status { STATUS_ROWS } else { 0 };
+        let status_top = rows.saturating_sub(status_height);
+        // Body frames run from row `TOP_ROWS` to the status frame's top row, inclusive,
+        // or to the grid's last row when the status bar is hidden.
+        let body = if show_status {
+            status_top.saturating_sub(TOP_ROWS - 1)
+        } else {
+            rows.saturating_sub(TOP_ROWS)
+        };
         let features_h = features_rows(body, widths.split);
         let (elements_top, elements_h) = if features_h == 0 {
             (TOP_ROWS, body)
@@ -159,7 +175,7 @@ impl Layout {
             features: GridRect::new(0, TOP_ROWS, nav, features_h),
             elements: GridRect::new(0, elements_top, nav, elements_h),
             viewport,
-            status: GridRect::new(0, status_top, cols, STATUS_ROWS),
+            status: GridRect::new(0, status_top, cols, status_height),
             nav,
             action: action_width(viewport.inset(1).width()),
         }
@@ -215,7 +231,13 @@ impl Layout {
 
 impl ShellState {
     pub(super) fn layout(&self) -> Layout {
-        Layout::new(self.cols, self.rows, self.widths)
+        Layout::new(
+            self.cols,
+            self.rows,
+            self.widths,
+            self.view_panel_visible(0),
+            self.view_panel_visible(2),
+        )
     }
 
     /// Composes the whole shell: frames, bars, trees, viewport, NavCube, the Extrude
@@ -312,16 +334,20 @@ impl ShellState {
 
         self.draw_tree(grid, ctx, layout.features, Tree::Features);
         self.draw_tree(grid, ctx, layout.elements, Tree::Elements);
-        draw_viewport(grid, ctx, layout.viewport);
-        draw_label(
-            grid,
-            layout.status.inset(1),
-            &status_text(self.workbench, self.fps, self.progress),
-            style,
-        );
+        draw_viewport(grid, ctx, layout.viewport, self.view_panel_visible(3));
+        if layout.status.height() > 0 {
+            draw_label(
+                grid,
+                layout.status.inset(1),
+                &status_text(self.workbench, self.fps, self.progress),
+                style,
+            );
+        }
         // Stamp only the fixed progress segment, never adjacent separators or the frame.
         let status = status_text(self.workbench, self.fps, self.progress);
-        if let Some(byte) = status.find("Progress [") {
+        if layout.status.height() > 0
+            && let Some(byte) = status.find("Progress [")
+        {
             let offset = status[..byte].chars().count() as u32;
             let inner = layout.status.inset(1);
             for dx in offset..offset.saturating_add(21).min(inner.width()) {
@@ -485,14 +511,14 @@ fn draw_playhead(grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect) {
     canvas.text(3, 0, &"─".repeat(dashes as usize), style, Some(id));
 }
 
-fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect) {
+fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, show_cube: bool) {
     let style = ctx.styles.normal;
     let inner = frame.inset(1);
     let (strip, rest) = inner.split_right(CUBE_WIDTH);
     draw_label(grid, rest, " 3D Viewport", style);
     // Static NavCube placeholder: no camera control, no interaction ids.
     let cube = strip.split_top(CUBE_HEIGHT).0;
-    if cube.width() == CUBE_WIDTH && cube.height() == CUBE_HEIGHT {
+    if show_cube && cube.width() == CUBE_WIDTH && cube.height() == CUBE_HEIGHT {
         draw_border(grid, cube, BorderLine::Single, style);
         // Exact rounded corners of Interface_Exemple.txt; the placeholder is inert.
         for (dx, dy, glyph) in [

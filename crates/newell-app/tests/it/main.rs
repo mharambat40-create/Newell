@@ -5,10 +5,12 @@
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
+mod camera;
 mod controller;
 mod harness;
 mod hover;
 mod input;
+mod navigation;
 mod pacing;
 mod rescale;
 mod status;

@@ -110,18 +110,18 @@ fn states(prefix: &str) -> Vec<String> {
 }
 
 #[test]
-fn ui_scale_visits_the_four_reference_states_and_wraps() {
+fn ui_scale_visits_the_five_reference_states_and_wraps() {
     let want = states("◀  60%");
-    assert_eq!(want.len(), 4);
+    assert_eq!(want.len(), 5);
     let mut s = shell();
     open_view(&mut s);
     keys(&mut s, &[ShellKey::Down, ShellKey::Down]); // UI Scale row
-    // 100 % is the default; Right visits 120, then wraps to 60, 80, 100.
-    for percent in [120, 60, 80, 100] {
+    // 100 % is the default; every value remains selectable, including 140 %.
+    for percent in [120, 140, 60, 80, 100] {
         s.key(ShellKey::Right);
         assert_eq!(s.preferred_scale_percent(), percent);
         let g = s.compose().unwrap();
-        let idx = [60, 80, 100, 120]
+        let idx = [60, 80, 100, 120, 140]
             .iter()
             .position(|&p| p == percent)
             .unwrap();

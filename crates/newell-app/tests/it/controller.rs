@@ -534,3 +534,63 @@ fn the_pointer_stays_known_while_it_is_outside_the_window() {
     c.pointer_moved(at(COLS - 1 - 12 + 9, 1));
     assert_eq!(c.window_control_at_cursor(), Some(WindowAction::Close));
 }
+
+#[test]
+fn scene_navigation_respects_visible_pixels_menus_modals_and_action_box() {
+    let mut c = window_controller();
+    let viewport = c.scene_viewport();
+    let point = at(viewport.col() + 2, viewport.row() + 4);
+    c.pointer_moved(point);
+    assert!(c.scene_input_enabled());
+    let before = c.scene_viewport();
+    for rect in c.scene_occlusions() {
+        c.pointer_moved(at(rect.col() + 1, rect.row() + 1));
+        assert!(!c.scene_input_enabled(), "opaque Action Box interior");
+    }
+    c.pointer_moved(at(0, 0));
+    assert!(!c.scene_input_enabled());
+    c.pointer_moved(None);
+    assert!(!c.scene_input_enabled());
+    c.pointer_moved(point);
+    c.key(ShellKey::MenuBar);
+    assert!(!c.scene_input_enabled());
+    c.key(ShellKey::Escape);
+    assert!(c.scene_input_enabled());
+    let (col, row) = find_glyph(c.grid(), '☰');
+    press_at(&mut c, col, row);
+    c.pointer_moved(point);
+    assert!(!c.scene_input_enabled(), "modal blocks the entire scene");
+    c.key(ShellKey::Escape);
+    assert_eq!(before, c.scene_viewport());
+}
+
+#[test]
+fn opening_and_closing_action_box_does_not_reframe_scene() {
+    fn click_text(c: &mut ShellController, text: &str) {
+        let chars: Vec<_> = text.chars().collect();
+        let (col, row) = (0..c.grid().rows())
+            .find_map(|row| {
+                (0..c.grid().cols()).find_map(|col| {
+                    chars
+                        .iter()
+                        .enumerate()
+                        .all(|(i, ch)| glyph(c.grid(), col + i as u32, row) == Some(*ch))
+                        .then_some((col, row))
+                })
+            })
+            .unwrap();
+        press_at(c, col, row);
+        c.pointer_released();
+    }
+    let mut c = window_controller();
+    let viewport = c.scene_viewport();
+    let occlusions = c.scene_occlusions();
+    assert!(!occlusions.is_empty());
+    click_text(&mut c, "Cancel");
+    assert_eq!(c.scene_viewport(), viewport);
+    assert!(c.scene_occlusions().is_empty());
+    click_text(&mut c, "Create");
+    click_text(&mut c, "[E]xtrude");
+    assert_eq!(c.scene_viewport(), viewport);
+    assert_eq!(c.scene_occlusions(), occlusions);
+}

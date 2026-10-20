@@ -138,3 +138,64 @@ fn physical_char(key: PhysicalKey) -> Option<char> {
     ];
     letters.iter().find(|(k, _)| *k == code).map(|&(_, c)| c)
 }
+
+/// Wheel steps for exponential zoom. Pixel deltas are physical pixels; normalize
+/// to logical pixels so Retina and standard displays have identical sensitivity.
+#[must_use]
+pub fn zoom_steps(delta: winit::event::MouseScrollDelta, scale_factor: f64) -> f32 {
+    let steps = match delta {
+        winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+        winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor.max(1.0) / 100.0,
+    };
+    if steps.is_finite() {
+        steps.clamp(-100.0, 100.0) as f32
+    } else {
+        0.0
+    }
+}
+
+/// Native pinch deltas are fractional magnification, independent of display DPI.
+#[must_use]
+pub fn pinch_steps(delta: f64) -> f32 {
+    if delta.is_finite() {
+        (delta.clamp(-1.0, 1.0) / 0.12) as f32
+    } else {
+        0.0
+    }
+}
+
+/// Tracks ownership of a phased trackpad gesture, including momentum events.
+/// A gesture rejected at its start cannot leak into the scene when the pointer moves.
+#[derive(Debug, Default)]
+pub struct NavigationGesture {
+    admitted: Option<bool>,
+}
+
+impl NavigationGesture {
+    /// Rejects the remainder of the current stream until a new start or an end.
+    pub fn cancel(&mut self) {
+        if self.admitted.is_some() {
+            self.admitted = Some(false);
+        }
+    }
+
+    /// Claims a new gesture only over visible scene pixels. Crossing UI cancels it
+    /// until a new start (or end), while platforms without Started can begin on Moved.
+    pub fn update(&mut self, phase: winit::event::TouchPhase, visible: bool) -> bool {
+        use winit::event::TouchPhase;
+        if phase == TouchPhase::Cancelled {
+            self.admitted = None;
+            return false;
+        }
+        if phase == TouchPhase::Started {
+            self.admitted = Some(visible);
+        }
+        let allowed = self.admitted.get_or_insert(visible);
+        *allowed &= visible;
+        let result = *allowed;
+        if phase == TouchPhase::Ended {
+            self.admitted = None;
+        }
+        result
+    }
+}

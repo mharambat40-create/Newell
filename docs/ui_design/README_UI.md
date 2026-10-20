@@ -2792,14 +2792,15 @@ UI Scale states (`Application_Menu_Bar.txt`):
 │ UI Scale ◀  80% ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ UI Scale ◀ 120% ▶ │
+│ UI Scale ◀ 140% ▶ │
 ```
 
-`UI Scale` is a cyclic selector (§5.2) over exactly four **preference** values
-(60%, 80%, 100%, 120%). A percentage is not a fixed physical size: the
+`UI Scale` is a cyclic selector (§5.2) over exactly five **preference** values
+(60%, 80%, 100%, 120%, 140%). A percentage is not a fixed physical size: the
 application derives the integer cell size factor `k` automatically for the
 monitor showing the window (`ARCHITECTURE.md` §3.1.1). On the reference display
 the values are 60% = 12×27 px, 80% = 16×36, 100% = 20×45 (default),
-120% = 24×54. On another monitor the same percentage can give a
+120% = 24×54 and 140% = 28×63. On another monitor the same percentage can give a
 smaller cell: 100% is 20×45 on the MacBook Air Retina display and 8×18 (`k = 2`,
 one step smaller) on a Full HD 1920×1080 monitor.
 
@@ -2807,7 +2808,7 @@ one step smaller) on a Full HD 1920×1080 monitor.
   `100%` on both monitors, and moving the window between monitors never changes
   the text of the row or the stored preference. The adaptation shows no dialog
   and no notice.
-- `◀` selects the previous and `▶` the next of the four values, wrapping like
+- `◀` selects the previous and `▶` the next of the five values, wrapping like
   every other cyclic selector, and stores it as the new preference. **No value is
   skipped or hidden**, even when the current monitor clamps several of them to
   the same cell size: on a 1920×1080 monitor 60/80/100/120% all give 8×18 px, so

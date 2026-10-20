@@ -23,7 +23,7 @@ use crate::glyph_atlas::{GlyphAtlas, load_font};
 use crate::scene::Scene;
 use crate::surface::{FrameAction, SurfaceState, classify};
 use crate::ui::{Theme, UiOverlay};
-use crate::{PickHit, SceneViewport};
+use crate::{CameraSnapshot, SceneViewport};
 
 const FONT: &[u8] = include_bytes!("../../../assets/FiraCode-Regular.ttf");
 
@@ -155,10 +155,19 @@ impl Renderer {
         self.scene.set_viewport(viewport);
     }
 
-    /// Returns the nearest mesh face under a physical window coordinate.
-    #[must_use]
-    pub fn pick_scene(&self, x: f64, y: f64) -> Option<PickHit> {
-        self.scene.pick(x, y)
+    /// Masks one popup-sized rectangle from the scene while preserving the rest of its viewport.
+    pub fn set_scene_occlusions(&mut self, occlusions: Vec<SceneViewport>) {
+        self.scene.set_occlusions(occlusions);
+    }
+
+    /// Applies the View menu's shading index to the 3D scene.
+    pub fn set_scene_shading(&mut self, shading: usize) {
+        self.scene.set_shading(shading);
+    }
+
+    /// Consumes immutable camera matrices prepared by the window Controller.
+    pub fn set_scene_camera(&mut self, camera: CameraSnapshot) {
+        self.scene.set_camera(camera);
     }
 
     /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of the

@@ -73,9 +73,9 @@ fn progress_starts_at_zero_and_only_its_21_cells_activate_it() {
         }
         click(&mut c, col + offset, row);
         assert_eq!(c.hovered(), None);
-        c.tick(ms(4999));
+        c.tick(ms(1999));
         assert!(percentage(&c).ends_with("95% "));
-        c.tick(ms(5000));
+        c.tick(ms(2000));
         assert!(percentage(&c).ends_with("100%"));
         assert_eq!(
             hit_test(point(col, row).unwrap(), c.metrics(), c.grid())
@@ -88,7 +88,7 @@ fn progress_starts_at_zero_and_only_its_21_cells_activate_it() {
         let mut c = controller();
         let (col, row) = progress(&c);
         click(&mut c, col.saturating_add_signed(offset), row);
-        c.tick(ms(5000));
+        c.tick(ms(2000));
         assert_eq!(percentage(&c), "Progress [     ] 0%  ");
     }
 }
@@ -99,20 +99,20 @@ fn held_pointer_and_mid_animation_presses_do_not_restart_or_queue() {
     let (col, row) = progress(&c);
     c.pointer_moved(point(col, row));
     c.pointer_pressed();
-    for t in [500, 1000, 2000, 4999] {
+    for t in [500, 1000, 1500, 1999] {
         c.set_time(ms(t));
         c.pointer_moved(point(col + 1, row));
         c.pointer_pressed();
     }
-    c.tick(ms(5000));
+    c.tick(ms(2000));
     assert!(percentage(&c).ends_with("100%"));
     c.pointer_released();
-    c.tick(ms(8000));
+    c.tick(ms(5000));
     assert!(percentage(&c).ends_with("100%"));
     click(&mut c, col, row);
-    c.tick(ms(8999));
+    c.tick(ms(6999));
     assert!(percentage(&c).ends_with("5%  "));
-    c.tick(ms(9000));
+    c.tick(ms(7000));
     assert!(percentage(&c).ends_with("0%  "));
 }
 

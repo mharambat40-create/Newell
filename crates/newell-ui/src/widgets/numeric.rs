@@ -159,6 +159,22 @@ impl NumericFields {
         });
     }
 
+    /// Reverses the direction marker of a prefixed field (`+|` / `-|`) without changing its
+    /// magnitude or starting a text edit.
+    pub(crate) fn toggle_sign(&mut self, id: WidgetId, mock: &str) -> bool {
+        let spec = Spec::parse(mock);
+        if !spec.prefixed {
+            return false;
+        }
+        if let Some(active) = self.active.as_mut().filter(|active| active.id == id.get()) {
+            active.negative = !active.negative;
+            return true;
+        }
+        let entry = self.entry_mut(id.get(), &spec);
+        entry.negative = !entry.negative;
+        true
+    }
+
     /// Keeps the edit: the text is normalised (`5` → `5.0`); text with no digit restores the
     /// previous value.
     pub(crate) fn commit(&mut self) {
@@ -235,6 +251,24 @@ impl NumericFields {
     /// The formula draft kept for field `id` (empty if none).
     pub(crate) fn formula(&self, id: WidgetId) -> &str {
         self.entry(id.get()).map_or("", |e| e.formula.as_str())
+    }
+
+    /// The engineering expression represented by a field, without the visual `+|` / `-|`
+    /// direction marker. A confirmed formula wins over the literal editor value.
+    pub(crate) fn source(&self, id: WidgetId, mock: &str) -> String {
+        let spec = Spec::parse(mock);
+        let Some(entry) = self.entry(id.get()) else {
+            return format!("{}{}", spec.magnitude, spec.suffix);
+        };
+        if !entry.formula.is_empty() {
+            return entry.formula.clone();
+        }
+        let sign = if spec.prefixed && entry.negative {
+            "-"
+        } else {
+            ""
+        };
+        format!("{sign}{}{}", entry.magnitude, spec.suffix)
     }
 
     pub(crate) fn set_formula(&mut self, id: WidgetId, mock: &str, text: &str) {

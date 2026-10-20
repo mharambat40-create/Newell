@@ -1,5 +1,15 @@
 # Newell - Project Backlog
 
+## Current checkpoint — 2026-10-20
+
+Claude and Codex can each perform every role using the shared `docs/agents/`
+instructions. The 38 previously inherited test failures are resolved:
+**737 standard tests and 9 explicitly run GPU tests pass**. Strict Clippy,
+formatting, documentation and Rust 1.88 compilation pass. Earlier checkpoints
+below are historical. M2.17–M2.18 native resize/cross-monitor checks and M3.10
+physical-device/visual acceptance remain open. See the
+[workflow and UI correction report](validation/dual-provider-workflow-2026-10-20.md).
+
 ## Milestone 1: Skeleton
 - [x] M1.1: Initialize Rust workspace, `.claudesignore`, and CI/CD pipeline.
 - [x] M1.2: Setup testing architecture workspace-wide (`proptest`, `insta`, `thiserror`) and standard `tests/` directories.
@@ -50,7 +60,7 @@
   snapshots for the application shell, menus and Action Panel variants.
 - [x] M2.16: typography (4:9 cells, k = 5), monochrome rendering and hover removal.
 - [ ] M2.17: frameless native window and 82 × 30 minimum grid.
-- [ ] M2.18: Application MenuBar, UI Scale (60/80/100/120%) and Light/Dark theme controls.
+- [ ] M2.18: Application MenuBar, UI Scale (60/80/100/120/140%) and Light/Dark theme controls; automatic checks pass, cross-monitor acceptance remains open.
 - [x] M2.19: CommandBar and centered menus.
 - [x] M2.20: TreeView layout, playhead, separators and Rename.
 - [x] M2.21: exact Action Box grammar and Extrude.
@@ -65,9 +75,32 @@
 - [x] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
 - [x] M3.2: 3D camera setup and display of a BrepKIT-generated solid through `newell-kernel`.
 - [x] M3.3: Map BrepKIT topology to the `wgpu` mesh buffers and implement 3D picking.
-- [ ] M3.4: Implement dynamic pivot point determination for camera rotation (raycasting for geometric hit, or visible bounding box center for miss).
-- [ ] M3.5: Implement Screen-Space Free Orbit kinematics (Yaw/Pitch applied to camera relative axes with strict zero-roll constraint).
-- [ ] M3.6: Implement focal-distance proportional Panning and Cursor-targeted Zoom mechanics.
+- [x] M3.4: Controller-owned f64 camera state and event-driven screen-space yaw/pitch
+  orbit with strict Z-up zero roll; the View consumes immutable camera matrices.
+  Signed pitch is clamped before rotation, with immediate reversal at the pole margin.
+- [x] M3.5: Dynamic pivot from the nearest displayed mesh hit or exposed-view AABB
+  centre. Freeze it per gesture and preserve its projected pixel without press-time recentering.
+- [x] M3.6: Context-depth middle-button pan, cursor-surface-anchored wheel/trackpad/pinch
+  zoom, model-scale limits and unobstructed fit recovery. Preserve perspective, orthographic,
+  principal-axis and projection-stable resize behavior; verify with CPU math/input tests.
+- [ ] M3.10: Visually accept mouse and trackpad feel, native pinch, natural scrolling,
+  Action Box toggles, extreme zoom, pole departure and viewport resizing in the running app.
+
+The historical M3.7–M3.9 navigation items are consolidated into M3.4–M3.6 under
+[M3 camera mechanics](plans/M3-camera-mechanics.md). The earlier fixed-target trackball
+plan is superseded. CPU geometry queries are O(T) in triangle count; UI hit testing
+remains O(1). Exposed-view bounds exclude clipped/covered geometry but do not remove
+surfaces hidden behind other model surfaces.
+
+### Mechanics revision — 2026-10-19
+
+Camera state, CPU picking and gestures now belong to `newell-app`; `newell-render`
+only consumes matrices. Zero-roll orbit uses a 0.5-degree pole margin. Surface zoom
+anchors are frozen for phased gestures, and orthographic lens shift uses affine
+translation. Mesh replacement preserves pose and invalidates query/capture state.
+The implementation corrections and validation are recorded in the mechanics plan
+and [validation report](validation/M3-mechanics-2026-10-19.md). Earlier validation
+checkpoints below describe historical implementations, not acceptance of this revision.
 
 You are the Architect for the Newell CAD project. Your role is strictly to write a development plan. Do not write production code.
 
@@ -88,6 +121,11 @@ The exact file paths to modify. You must respect our strict MVC pattern: newell-
 A list of math-focused unit tests to validate the camera quaternion and matrix transformations without requiring a GPU.
 
 Output the plan clearly so I can save it to docs/plans/M3-camera-mechanics.md.
+
+M3.4–M3.9 add event-driven right-button arcball rotation, middle-button
+camera-plane pan and cursor-anchored wheel zoom. Camera math is tested without
+a window; the full workspace and all hardware-dependent renderer tests pass.
+The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
 
 ## Milestone 4: CAD Command & Parametric Interaction
 - [ ] M4.1: Define the generic command-state/controller interface used by

@@ -6,6 +6,10 @@
 // (at your option) any later version.
 //! Controller and window manager (ARCHITECTURE.md §1, §4.3).
 
+pub mod camera;
+pub mod navigation;
+pub mod picking;
+
 mod app;
 pub mod controller;
 pub mod input;

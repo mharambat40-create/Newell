@@ -31,7 +31,7 @@
 ╰───────────────────╯
 ◀  Perspective  ▶, ◀ Orthographic  ▶
 ◀    Points     ▶, ◀  Wireframe    ▶, ◀  Hidden line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀   Flat line   ▶
-◀  60% ▶, ◀  80% ▶, ◀ 100% ▶, ◀ 120% ▶
+◀  60% ▶, ◀  80% ▶, ◀ 100% ▶, ◀ 120% ▶, ◀ 140% ▶
 [ ◐ Light ], [ ◑ Dark  ]
 ╭─Help──────╮
 │ Tutorial  │

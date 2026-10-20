@@ -32,8 +32,11 @@ use super::{
     ListItem, ModalLayout, Overlay, OverlayKind, OverlayStack, ScrollList, ScrollState,
     center_modal, compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout,
 };
-use crate::widgets::WidgetContext;
-use crate::{CellGrid, GridRect, InteractionState, WidgetId, WidgetState, draw_label};
+use crate::widgets::{Canvas, WidgetContext, cell, hover_row, owned_blank};
+use crate::{
+    BorderLine, CellContent, CellGrid, GridRect, InteractionState, WidgetId, WidgetState,
+    draw_border, draw_label,
+};
 
 /// Frame size, including the border.
 const SIZE: (u32, u32) = (30, 12);
@@ -50,6 +53,18 @@ const MOCK_ITEMS: [&str; ITEM_COUNT] = [
     "Boss_Body",
     "Rib_Surface",
     "Pin_Body",
+];
+/// Selected profiles shown by the Profile picker inside an Action Box.
+const PROFILE_ITEMS: [&str; ITEM_COUNT] = [
+    "Spline_1",
+    "Profil_3",
+    "Profil_4",
+    "Profil_4",
+    "Compound_line_1",
+    "Sketch_2",
+    "Arc_7",
+    "Guide_curve_1",
+    "Spline_2",
 ];
 /// Mock applied selection when the panel is first created: `Hub_Body` is checked, as in the
 /// reference.
@@ -100,6 +115,22 @@ impl Geometry {
     fn of(bounds: GridRect) -> Self {
         Self::from_interior(center_modal(SIZE, bounds).inset(1))
     }
+
+    fn from_action_box(frame: GridRect) -> Self {
+        let inner = frame.inset(1);
+        let (actions, above_actions) = inner.split_bottom(1);
+        let (_separator, list_frame) = above_actions.split_bottom(1);
+        let body = list_frame.inset(1);
+        Self {
+            layout: ModalLayout {
+                title: GridRect::new(inner.col(), inner.row(), inner.width(), 0),
+                body,
+                actions,
+            },
+            window: body.height(),
+            bar: body.width() >= 2 && body.height() >= 2,
+        }
+    }
 }
 
 /// The SelectionPanel state. Widget ids are `base_id` plus a fixed offset per control.
@@ -111,6 +142,7 @@ pub struct SelectionPanel {
     scroll: ScrollState,
     focus: Option<WidgetId>,
     return_focus: Option<WidgetId>,
+    title: &'static str,
     status: ModalStatus,
 }
 
@@ -126,6 +158,7 @@ impl SelectionPanel {
             scroll: ScrollState { offset: 0 },
             focus: None,
             return_focus: None,
+            title: "Selection",
             status: ModalStatus::Closed,
         }
     }
@@ -166,11 +199,17 @@ impl SelectionPanel {
     /// `inter` still holds focus on this panel (no sync after the last close), the earlier
     /// memory is kept.
     pub fn open(&mut self, inter: &mut InteractionState) {
+        self.open_titled(inter, "Selection");
+    }
+
+    /// Opens the panel with the name of the requested action in its header.
+    pub fn open_titled(&mut self, inter: &mut InteractionState, title: &'static str) {
         let stale = inter.focused.is_some_and(|f| self.slot(f).is_some());
         if !self.is_open() && !stale {
             self.return_focus = inter.focused;
         }
         self.draft = self.applied;
+        self.title = title;
         self.scroll = ScrollState::default();
         self.status = ModalStatus::Open;
         self.focus = Some(self.item_id(0));
@@ -180,6 +219,16 @@ impl SelectionPanel {
     /// Applies a keyboard key within `bounds`. Returns `true` if the key was handled. Keys
     /// are ignored while the panel is closed.
     pub fn key(&mut self, key: ModalKey, bounds: GridRect) -> bool {
+        self.key_in(key, Geometry::of(bounds))
+    }
+
+    /// Applies a key while the panel occupies an Action Box.  The caller supplies the whole
+    /// Action Box frame, including its border.
+    pub fn key_in_action_box(&mut self, key: ModalKey, frame: GridRect) -> bool {
+        self.key_in(key, Geometry::from_action_box(frame))
+    }
+
+    fn key_in(&mut self, key: ModalKey, geometry: Geometry) -> bool {
         if !self.is_open() {
             return false;
         }
@@ -188,10 +237,10 @@ impl SelectionPanel {
                 self.cancel();
                 true
             }
-            ModalKey::Tab | ModalKey::Down => self.move_focus(true, bounds),
-            ModalKey::BackTab | ModalKey::Up => self.move_focus(false, bounds),
+            ModalKey::Tab | ModalKey::Down => self.move_focus(true, geometry),
+            ModalKey::BackTab | ModalKey::Up => self.move_focus(false, geometry),
             ModalKey::Enter | ModalKey::Char(' ') => match self.focus {
-                Some(id) => self.activate(id, bounds),
+                Some(id) => self.activate_in(id, geometry),
                 None => false,
             },
             ModalKey::Char(_) | ModalKey::Backspace | ModalKey::Edit(_) => false,
@@ -202,10 +251,41 @@ impl SelectionPanel {
     /// control was active and handled. Ids outside the modal, the surface, disabled arrows and
     /// anything while closed are refused. A handled activation makes `id` the focus.
     pub fn activate(&mut self, id: WidgetId, bounds: GridRect) -> bool {
+        self.activate_in(id, Geometry::of(bounds))
+    }
+
+    /// Activates a control while the panel is drawn inside `frame`, the Action Box frame.
+    pub fn activate_in_action_box(&mut self, id: WidgetId, frame: GridRect) -> bool {
+        self.activate_in(id, Geometry::from_action_box(frame))
+    }
+
+    /// Scrolls the list by pointer-wheel or trackpad steps while it occupies an Action Box.
+    /// Scrolls the list using the centered modal's actual visible row count.
+    pub fn scroll_by(&mut self, delta: i32, bounds: GridRect) -> bool {
         if !self.is_open() {
             return false;
         }
         let geometry = Geometry::of(bounds);
+        let before = self.scroll.offset;
+        self.scroll.scroll_by(delta, ITEMS, geometry.window);
+        self.scroll.offset != before
+    }
+
+    /// Returns `true` only when the visible first item changed.
+    pub fn scroll_in_action_box(&mut self, delta: i32, frame: GridRect) -> bool {
+        if !self.is_open() || delta == 0 {
+            return false;
+        }
+        let geometry = Geometry::from_action_box(frame);
+        let before = self.offset(geometry.window);
+        self.scroll.scroll_by(delta, ITEMS, geometry.window);
+        self.offset(geometry.window) != before
+    }
+
+    fn activate_in(&mut self, id: WidgetId, geometry: Geometry) -> bool {
+        if !self.is_open() {
+            return false;
+        }
         if !self.ring(geometry).contains(&id) {
             return false;
         }
@@ -266,9 +346,219 @@ impl SelectionPanel {
         });
     }
 
+    /// Draws the selection directly in an Action Box footprint.  This deliberately does not
+    /// use an overlay: the list replaces the originating Action Box, so the viewport stays
+    /// opaque only under that footprint and the standard Action Box footer remains in place.
+    pub fn draw_in_action_box(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        frame: GridRect,
+    ) -> bool {
+        let frame = frame.intersection(&GridRect::from_grid(grid));
+        if frame.width() == 0 || frame.height() == 0 {
+            return false;
+        }
+        for row in frame.row()..frame.row().saturating_add(frame.height()) {
+            for col in frame.col()..frame.col().saturating_add(frame.width()) {
+                if let Some(slot) = grid.get_mut(col, row) {
+                    *slot = cell(CellContent::Empty, ctx.styles.normal, Some(self.surface()));
+                }
+            }
+        }
+        draw_border(grid, frame, BorderLine::Single, ctx.styles.normal);
+        for row in frame.row()..frame.row().saturating_add(frame.height()) {
+            for col in frame.col()..frame.col().saturating_add(frame.width()) {
+                if let Some(slot) = grid.get_mut(col, row)
+                    && slot.widget_id.is_none()
+                {
+                    slot.widget_id = Some(self.surface());
+                }
+            }
+        }
+        let inner_width = frame.width().saturating_sub(2);
+        let header_fill =
+            "─".repeat(inner_width.saturating_sub(self.title.chars().count() as u32 + 1) as usize);
+        Canvas::new(grid, frame).text(
+            0,
+            0,
+            &format!("╭─{}{header_fill}╮", self.title),
+            ctx.styles.normal,
+            Some(self.surface()),
+        );
+        Canvas::new(grid, frame).text(
+            0,
+            frame.height().saturating_sub(1),
+            &format!("╰{}╯", "─".repeat(inner_width as usize)),
+            ctx.styles.normal,
+            Some(self.surface()),
+        );
+        self.draw_action_content(grid, ctx, frame)
+    }
+
+    fn draw_action_content(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        frame: GridRect,
+    ) -> bool {
+        let inner = frame.inset(1);
+        let (actions, above_actions) = inner.split_bottom(1);
+        let (separator, list_frame) = above_actions.split_bottom(1);
+        self.draw_selected_items(grid, ctx, list_frame);
+        Canvas::new(grid, separator).text(
+            0,
+            0,
+            &format!("│{}│", "─".repeat(inner.width() as usize)),
+            ctx.styles.normal,
+            Some(self.surface()),
+        );
+        draw_ok_cancel(
+            grid,
+            ctx,
+            actions,
+            self.id(OK),
+            self.id(CANCEL),
+            WidgetState::default(),
+        );
+        self.hover_action_buttons(grid, ctx, frame, actions)
+    }
+
+    /// Draws the selected-input list nested inside the picker. The surrounding frame and the
+    /// separator deliberately mirror the Formula editor and Action Box grammar.
+    fn draw_selected_items(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect) {
+        if frame.width() < 3 || frame.height() < 3 {
+            return;
+        }
+        draw_border(grid, frame, BorderLine::Single, ctx.styles.normal);
+        let body = frame.inset(1);
+        let labels: &[&str] = if self.title == "Profiles" {
+            &PROFILE_ITEMS
+        } else {
+            &MOCK_ITEMS
+        };
+        let len = u32::try_from(labels.len()).unwrap_or(u32::MAX);
+        let window = body.height();
+        let offset = self.offset(window);
+        let has_bar = len > window && body.width() >= 2 && window >= 2;
+        let (bar, content) = if has_bar {
+            body.split_right(1)
+        } else {
+            (
+                GridRect::new(body.right() as u32, body.row(), 0, body.height()),
+                body,
+            )
+        };
+        let label_width = content.width().saturating_sub(4) as usize;
+        for (visible, (index, label)) in labels
+            .iter()
+            .enumerate()
+            .skip(offset as usize)
+            .take(window as usize)
+            .enumerate()
+        {
+            let row = GridRect::new(
+                content.col(),
+                content.row().saturating_add(visible as u32),
+                content.width(),
+                1,
+            );
+            let id = self.item_id(index);
+            let mut canvas = Canvas::new(grid, row);
+            canvas.fill(0, canvas.width(), 0, owned_blank(ctx.styles.normal, id));
+            let label: String = label.chars().take(label_width).collect();
+            canvas.text(0, 0, "☰ ", ctx.styles.normal, Some(id));
+            canvas.text(2, 0, &label, ctx.styles.normal, Some(id));
+            if content.width() >= 1 {
+                canvas.text(
+                    content.width().saturating_sub(1),
+                    0,
+                    "×",
+                    ctx.styles.normal,
+                    Some(id),
+                );
+            }
+        }
+        if has_bar {
+            self.draw_selected_scrollbar(grid, ctx, bar, offset, len);
+        }
+    }
+
+    fn draw_selected_scrollbar(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        bar: GridRect,
+        offset: u32,
+        len: u32,
+    ) {
+        let (up, rest) = bar.split_top(1);
+        let (down, track) = rest.split_bottom(1);
+        for (rect, glyph, id) in [(up, '▲', self.id(UP)), (down, '▼', self.id(DOWN))] {
+            let mut canvas = Canvas::new(grid, rect);
+            canvas.fill_col(0, owned_blank(ctx.styles.normal, id));
+            canvas.text(0, 0, &glyph.to_string(), ctx.styles.normal, Some(id));
+        }
+        let track_len = track.height();
+        if track_len == 0 {
+            return;
+        }
+        let window = bar.height();
+        let max = ScrollState::max_offset(len, window);
+        let thumb = u64::from(track_len)
+            .saturating_mul(u64::from(window.min(len)))
+            .div_ceil(u64::from(len.max(1)))
+            .clamp(1, u64::from(track_len));
+        let start = if max == 0 {
+            0
+        } else {
+            (u64::from(track_len) - thumb) * u64::from(offset) / u64::from(max)
+        } as u32;
+        for row in 0..track_len {
+            let in_thumb = row >= start && row < start.saturating_add(thumb as u32);
+            let glyph = if !in_thumb {
+                ' '
+            } else if thumb == 1 {
+                '┃'
+            } else if row == start {
+                '╻'
+            } else if row.saturating_add(1) == start.saturating_add(thumb as u32) {
+                '╹'
+            } else {
+                '┃'
+            };
+            Canvas::new(grid, GridRect::new(track.col(), track.row() + row, 1, 1)).text(
+                0,
+                0,
+                &glyph.to_string(),
+                ctx.styles.normal,
+                None,
+            );
+        }
+    }
+
+    fn hover_action_buttons(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        frame: GridRect,
+        actions: GridRect,
+    ) -> bool {
+        let ok_width = actions.width().saturating_sub(1) / 2;
+        let span = match ctx.interaction.hovered {
+            Some(id) if id == self.id(OK) => actions.col()..actions.col().saturating_add(ok_width),
+            Some(id) if id == self.id(CANCEL) => {
+                actions.col().saturating_add(ok_width).saturating_add(1)
+                    ..actions.col().saturating_add(actions.width())
+            }
+            _ => return false,
+        };
+        hover_row(grid, actions.row(), frame.col(), span)
+    }
+
     fn draw_content(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, inner: GridRect) {
         let geometry = Geometry::from_interior(inner);
-        draw_label(grid, geometry.layout.title, "Selection", ctx.styles.normal);
+        draw_label(grid, geometry.layout.title, self.title, ctx.styles.normal);
         let items: Vec<ListItem<'_>> = MOCK_ITEMS
             .iter()
             .zip(self.draft.iter())
@@ -303,8 +593,7 @@ impl SelectionPanel {
 
     /// Moves focus one step through the ring and scrolls the list to show an item that
     /// receives it.
-    fn move_focus(&mut self, forward: bool, bounds: GridRect) -> bool {
-        let geometry = Geometry::of(bounds);
+    fn move_focus(&mut self, forward: bool, geometry: Geometry) -> bool {
         let ring = self.ring(geometry);
         let before = self.focus;
         self.focus = step_focus(&ring, self.focus, forward);

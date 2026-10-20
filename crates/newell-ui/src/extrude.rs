@@ -309,6 +309,12 @@ impl ExtrudeUi {
         Row::new(self.base_id)
     }
 
+    /// Stable id of the primary Depth field for the model adapter.
+    #[must_use]
+    pub fn depth_field_id(&self) -> WidgetId {
+        WidgetId::new(self.base_id + K_DEPTH * crate::action_box::KEY_SLOTS)
+    }
+
     /// Composes the box for the current values, or `None` once OK / Cancel closed it.
     pub(crate) fn compose(&self) -> Option<ActionBox> {
         if !self.is_open() {

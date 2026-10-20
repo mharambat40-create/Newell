@@ -162,16 +162,56 @@ impl ShellController {
         &self.shell
     }
 
+    /// Consumes a View > Reset Cam request.
+    pub fn take_camera_reset(&mut self) -> bool {
+        self.shell.take_camera_reset()
+    }
+
+    /// Consumes a View > Normal to request.
+    pub fn take_normal_view(&mut self) -> bool {
+        self.shell.take_normal_view()
+    }
+
     /// Whole-cell area where the 3D scene is drawn.
     #[must_use]
     pub fn scene_viewport(&self) -> GridRect {
         self.shell.scene_viewport()
     }
 
-    /// `true` when a scene click cannot be intercepted by a menu or modal.
+    pub fn scene_occlusions(&self) -> Vec<GridRect> {
+        self.shell.scene_occlusions()
+    }
+
+    /// `true` when the pointer is on visible scene pixels and no UI owns input.
     #[must_use]
     pub fn scene_input_enabled(&self) -> bool {
         self.shell.scene_input_enabled()
+            && !self.dragging()
+            && self
+                .cursor
+                .and_then(|point| hit_test(point, self.metrics, &self.grid))
+                .is_some_and(|hit| hit.widget_id.is_none())
+            && self.cursor.is_some_and(|point| {
+                let col = point.x / self.metrics.cell_width_px();
+                let row = point.y / self.metrics.cell_height_px();
+                let rect = self.scene_viewport();
+                col >= rect.col()
+                    && row >= rect.row()
+                    && col < rect.col() + rect.width()
+                    && row < rect.row() + rect.height()
+                    && !self.scene_occlusions().iter().any(|rect| {
+                        col >= rect.col()
+                            && row >= rect.row()
+                            && col < rect.col() + rect.width()
+                            && row < rect.row() + rect.height()
+                    })
+            })
+    }
+
+    /// Replaces named tree rows with model labels and recomposes only when they changed.
+    pub fn set_model_tree_labels(&mut self, features: &[String], elements: &[String]) -> Update {
+        let changed = self.shell.set_model_tree_labels(features, elements);
+        self.refresh(changed)
     }
 
     /// The pointer moved to `position` (`None`: it left the window). The position is remembered
@@ -214,6 +254,12 @@ impl ShellController {
     /// The primary button was released: any separator drag ends.
     pub fn pointer_released(&mut self) {
         self.drag = None;
+    }
+
+    /// Routes a wheel or trackpad scroll to an in-place shell panel before scene navigation.
+    pub fn scroll(&mut self, steps: i32) -> Update {
+        let acted = self.shell.scroll(steps);
+        self.refresh(acted)
     }
 
     /// `true` while a separator is being dragged.

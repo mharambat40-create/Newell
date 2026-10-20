@@ -13,14 +13,19 @@ Designed for extreme performance and a minimal memory footprint, Newell adopts a
 ## The Agentic Workflow
 Newell's codebase is generated and refactored by four pipeline AI agents (Architect, Challenger, Executor, Auditor) and an optional read-only Explorer helper, working in ephemeral sessions to prevent context drift:
 
-1. **Architect (Opus 5.5):** Translates concepts into Rust implementation plans.
-2. **Challenger (Sonnet 5.5):** Reviews plans for logical flaws and borrow-checker risks.
-3. **Executor (Sonnet 5.5):** The blind coder; strictly follows the plan and makes tests pass.
-4. **Auditor (Sonnet 5.5):** Refactors green PRs (Clippy, docs, AGPL headers).
+1. **Architect:** Translates concepts into Rust implementation plans.
+2. **Challenger:** Reviews plans for logical flaws and borrow-checker risks.
+3. **Executor:** Implements the approved plan and makes its tests pass.
+4. **Auditor:** Refactors green implementations (Clippy, docs, AGPL headers).
 
-**Explorer (optional helper, Haiku 5.5):** Read-only conversational partner for project navigation. It is not a pipeline stage.
+**Explorer (optional helper):** Read-only conversational partner for project navigation. It is not a pipeline stage.
+
+**Every role is available to both Claude and ChatGPT through Codex.** The human
+assigns each role and controls every transition. Parallel writing tasks use
+separate branches/worktrees and an identified common baseline. Start with the
+[shared workflow and prompt template](docs/agents/README.md).
 
 ## Documentation & AI Entry Points
 * **Project Vision & Roadmap:** See `Description.md` for the macro-level design and goals.
 * **Binding Rules:** See `ARCHITECTURE.md` for the strict, machine-checkable constraints.
-* **AI Instructions:** See `CLAUDE.md` for CLI context management and commands.
+* **AI Instructions:** `CLAUDE.md` for Claude; `AGENTS.md` for Codex. Both load the same instructions under `docs/agents/`.
