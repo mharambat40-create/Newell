@@ -1,0 +1,17 @@
+"Construction Action Box"
+╭─Sketch──────────────────────╮
+│ Ref Plane   [Select…       ]│
+│ □ Construction              │
+│ □ Slice                     │
+│─────────────────────────────│
+│ □ Sketch Grid               │
+│ □ Profile                   │
+│ □ Point                     │
+│ □ Dimension                 │
+│ □ Constraints               │
+│ □ Projected Geometries      │
+│ □ Construction Geometries   │
+│ □ Sketch grid               │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
