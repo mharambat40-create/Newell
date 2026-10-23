@@ -1,7 +1,7 @@
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║ File │ Edit │ View │ Help                                          [-] [□] [X] ║
 ╠════════════════════════════════════════════════════════════════════════════════╣
-║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Construct │ Utilities  ║
+║ Workbench │ Sketch │ Create │ Shape │ Modify │ Pattern │ Construction          ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
 ║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
 ║ ├ □ Sketch_Profile_Ma…║                                               │       │║
