@@ -1,0 +1,95 @@
+"Construction Action Box"
+╭─Construction──────┬─────────╮
+│  Plan  │   Axis   ┆  Point  │
+├────────┘╴╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤
+│ mode  ◀   Point Plane    ▶  │
+│ │ Point     [Select…       ]│
+│ ╰╴Plane     [Select…       ]│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+
+"Construction Variants"
+╭─Construction──────┬─────────╮
+│  Plan  │   Axis   ┆  Point  │
+├────────┘╴╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┤
+╭─Construction──────┬─────────╮
+│  Plan  │   Axis   │  Point  │
+│╴╴╴╴╴╴╴╴┴──────────┘╴╴╴╴╴╴╴╴╴┤
+╭─Construction──────┬─────────╮
+│  Plan  ┆   Axis   │  Point  │
+│╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴┴─────────┤
+
+"Plan Variants"
+│ mode  ◀   Point Plane    ▶  │
+│ │ Point     [Select…       ]│
+│ ╰╴Plane     [Select…       ]│
+
+│ mode  ◀   Line Angle     ▶  │
+│ │ Plane     [Select…       ]│
+│ │ Line      [Select…       ]│
+│ ╰╴Angle   [+|0.0 deg      ☰]│
+
+│ mode  ◀   Point Normal   ▶  │
+│ │ Line      [Select…       ]│
+│ ╰╴Point     [Select…       ]│
+
+│ mode  ◀     Tangent      ▶  │
+│ │ Face      [Select…       ]│
+│ ╰╴Reference [Select…       ]│
+
+│ mode  ◀   Three Points   ▶  │
+│ │ Point 1   [Select…       ]│
+│ │ Point 2   [Select…       ]│
+│ ╰╴Point 3   [Select…       ]│
+
+│ mode  ◀    Mid Plane     ▶  │
+│ │ Plane 1   [Select…       ]│
+│ ╰╴Plane 2   [Select…       ]│
+
+│ mode  ◀   Curve Point    ▶  │
+│ │ Curve     [Select…       ]│
+│ ╰╴Point     [Select…       ]│
+
+│ mode  ◀    Along Path    ▶  │
+│ ╰╴Curve     [Select…       ]│
+
+"Axis variants"
+│ mode  ◀ Through Cylinder ▶  │
+│ ╰╴Cylinder  [Select…       ]│
+
+│ mode  ◀  Perpendicular   ▶  │
+│ │ Planes    [Select…       ]│
+│ ╰╴Point     [Select…       ]│
+
+│ mode  ◀ Through 2 Planes ▶  │
+│ │ Plane 1   [Select…       ]│
+│ ╰╴Plane 2   [Select…       ]│
+
+│ mode  ◀ Through 2 Points ▶  │
+│ │ Point 1   [Select…       ]│
+│ ╰╴Point 2   [Select…       ]│
+
+│ mode  ◀ Through 2 planes ▶  │
+│ ╰╴Edge      [Select…       ]│
+
+"Points variants"
+│ mode  ◀    At vertex     ▶  │
+│ ╰╴Vertex    [Select…       ]│
+
+│ mode  ◀ Through 2 Lines  ▶  │
+│ │ Line 1    [Select…       ]│
+│ ╰╴Line 2    [Select…       ]│
+
+│ mode  ◀ Through 3 Planes ▶  │
+│ │ Plane 1   [Select…       ]│
+│ │ Plane 2   [Select…       ]│
+│ ╰╴Plane 3   [Select…       ]│
+
+│ mode  ◀  Plane and Line  ▶  │
+│ │ Plane     [Select…       ]│
+│ ╰╴Line      [Select…       ]│
+
+│ mode  ◀    Along Path    ▶  │
+│ │ Position │
+│ ╰╴Curve     [Select…       ]│
