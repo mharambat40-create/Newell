@@ -4,59 +4,33 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//! The reference application shell (M2.13): plain state, input routing and composition.
+//! Per-window shell state, input routing and pure flat-grid composition.
 //!
-//! [`ShellState`] owns the UI-only state of one window: the MenuBar and CommandBar
-//! [`MenuState`]s (M2.9), the mock tree expansion, the Extrude panel (M2.11), the
-//! SelectionPanel and FormulaEditor (M2.12), the interaction state and the overlay stack.
-//! [`ShellState::compose`] regenerates the one flat [`crate::CellGrid`] from it. There is no widget
-//! tree, no second interaction system and no geometry: every control routes to a primitive
-//! that already exists, by [`WidgetId`].
+//! Features and Elements consume a model-independent projection; names and visibility
+//! come only from that projection. Expansion, selection, semantic focus, scrolling and
+//! insertion-cursor placement belong to this window. Visible slots reuse widget ids.
+//! The application controller publishes the grid and semantic routing with a generation;
+//! tree actions validate a captured semantic token before activation.
 //!
-//! # Regions
+//! Modal input precedes menu input, then base-shell controls. A tree cannot receive input
+//! behind either overlay owner. The existing action panels, numeric editors, focus ring,
+//! ASCII row renderer and shared-border hit routing are retained.
 //!
-//! `MenuBar`, `CommandBar`, `NavigationPanel` (Features over Elements), `Viewport3D` (the
-//! clear colour shows through its empty cells, plus a static NavCube frame), the Extrude
-//! `ActionPanel` and the `StatusBar`; see `docs/ui_design/Interface_Exemple.txt`.
-//!
-//! # Input routing
-//!
-//! Pointer and keyboard input go to exactly one owner, in this order:
-//!
-//! 1. an open **modal** (SelectionPanel or FormulaEditor): it takes every key, and a click
-//!    reaches only its own controls, because composition already cleared the ids of every
-//!    covered cell (M2.8). Closing restores the focus held before it opened (M2.12);
-//! 2. an active **menu** (MenuBar or CommandBar): clicks on its own ids go to it, any other
-//!    click closes it and is consumed; keys feed [`MenuState::handle_key`];
-//! 3. the **base shell**: tree rows toggle, Extrude controls activate, `☰` opens the
-//!    FormulaEditor and a selection field opens the SelectionPanel. Tab / Shift+Tab walk the
-//!    focus ring and Enter / Space activate the focused id, through the same
-//!    [`ShellState::activate_widget`] as a click.
-//!
-//! A modal and a menu popup are never open together: opening a modal closes the menus.
-//!
-//! # Widget ids
-//!
-//! Fixed bases, independent of layout and state (the offsets and spans are in the `*_BASE`
-//! constants below): MenuBar, CommandBar, tree rows (64 per tree), Extrude panel, SelectionPanel,
-//! FormulaEditor, window controls. The NavCube, viewport and status text own no id.
-//!
-//! # Mock state
-//!
-//! Everything is deterministic mock data. The View menu's rows, the tree markers and the
-//! FormulaEditor text change only what is displayed. No selection, formula or command is
-//! evaluated, and nothing here refers to the model or the kernel.
+//! ShellState::new supplies the historical reference fixture for artwork tests.
+//! ShellState::new_application starts with empty trees until the app publishes a document.
+//! No model or geometric-kernel type enters this crate.
 
 mod compose;
 mod data;
 mod key;
+mod tree;
+pub use tree::*;
 
 use data::{
-    ACT_BOOLEAN, ACT_EXTRUDE, ACT_LOFT, ACT_REVOLVE, ACT_SWEEP, ACT_VIEW_CHECK,
+    ACT_BOOLEAN, ACT_EXTRUDE, ACT_LOFT, ACT_REVOLVE, ACT_SWEEP, ACT_VIEW_CHECK, ACT_VIEW_COLOR,
     ACT_VIEW_FULLSCREEN, ACT_VIEW_PROJECTION, ACT_VIEW_SCALE, ACT_VIEW_SHADING, ACT_VIEW_THEME,
-    ACT_WORKBENCH, COMMAND_MENUS, DEFAULT_PLAYHEAD, ELEMENTS, FEATURES, Line, MAX_NODES, NodeKind,
-    PROJECTION, SHADING, ViewMock, clamp_playhead, full_label, has_children, initial_checks,
-    initial_open, top_level_count, visible_lines, with_bar_menus,
+    ACT_WORKBENCH, COMMAND_MENUS, Line, PROJECTION, SHADING, ViewMock, has_children,
+    with_bar_menus,
 };
 
 pub use data::ThemeChoice;
@@ -66,12 +40,13 @@ use crate::create_box::{ActionBoxUi, ID_SPAN, K_ACTIONS};
 use crate::overlays::step_focus;
 use crate::widgets::NumericFields;
 use crate::{
-    BooleanUi, CycleStep, EditKey, ExtrudeUi, FormulaEditor, GridRect, HitTestResult,
-    InteractionState, LoftUi, MAX_MNEMONIC, MenuIds, MenuKey, MenuResult, MenuState, MenuTarget,
-    Mnemonic, ModalKey, OverlayStack, RenameModal, RevolveUi, SCALE_PERCENTS, SelectionPanel,
-    SweepUi, WidgetId, WindowAction, cycle_next, cycle_prev,
+    BooleanUi, CycleStep, EditKey, ExtrudeStatus, ExtrudeUi, FormulaEditor, GridRect,
+    HitTestResult, InteractionState, LoftUi, MAX_MNEMONIC, MenuIds, MenuKey, MenuResult, MenuState,
+    MenuTarget, Mnemonic, ModalKey, OverlayStack, RenameModal, RevolveUi, SCALE_FACTORS_PERCENT,
+    SelectionPanel, SelectionThumbGrab, SweepUi, WidgetId, WindowAction, cycle_next, cycle_prev,
 };
-use compose::{PanelWidths, Split, TOP_ROWS, features_rows, nav_width};
+use compose::{PanelWidths, Split, features_rows};
+use std::collections::BTreeSet;
 
 pub use compose::Separator;
 
@@ -81,7 +56,8 @@ const TREE_BASE: u32 = COMMAND_BAR_BASE + MenuIds::SPAN;
 /// Ids per tree node: the row itself, its marker, its checkbox and its name (see [`TreePart`]).
 const TREE_STRIDE: u32 = 4;
 /// Ids of the node rows: features first, then elements; the playhead id follows them.
-const NODE_IDS: u32 = 2 * MAX_NODES as u32 * TREE_STRIDE;
+const TREE_SLOT_CAP: u32 = crate::MAX_CELLS;
+const NODE_IDS: u32 = 2 * TREE_SLOT_CAP * TREE_STRIDE;
 /// The playhead separator row of the Features tree.
 const PLAYHEAD_ID: u32 = TREE_BASE + NODE_IDS;
 /// Ids reserved for the two trees and the playhead.
@@ -143,17 +119,10 @@ enum Tree {
 }
 
 impl Tree {
-    const fn nodes(self) -> &'static [data::Node] {
-        match self {
-            Self::Features => &FEATURES,
-            Self::Elements => &ELEMENTS,
-        }
-    }
-
     const fn offset(self) -> u32 {
         match self {
             Self::Features => 0,
-            Self::Elements => MAX_NODES as u32,
+            Self::Elements => TREE_SLOT_CAP,
         }
     }
 
@@ -171,24 +140,6 @@ fn in_action_panel(id: WidgetId) -> bool {
     id.get()
         .checked_sub(ACTION_BASE)
         .is_some_and(|rel| rel < ID_SPAN)
-}
-
-/// The part of a tree row an id belongs to. Every cell of a row is owned by one of them, so
-/// a press tells the expansion marker, the visibility checkbox and the name apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TreePart {
-    /// Guides, spacing and the blanks after the name: selects the row.
-    Row = 0,
-    /// `[-]` / `[+]`: expands or collapses.
-    Marker = 1,
-    /// `□` / `■`: toggles the visibility.
-    Check = 2,
-    /// The name: selects the row; a double-click renames a named row.
-    Name = 3,
-}
-
-impl TreePart {
-    const ALL: [Self; 4] = [Self::Row, Self::Marker, Self::Check, Self::Name];
 }
 
 /// Stable id of `part` of tree node `index`, independent of which rows are visible.
@@ -217,7 +168,7 @@ fn tree_decode(id: WidgetId) -> Option<(Tree, usize, TreePart)> {
         (Tree::Elements, node - Tree::Elements.offset())
     };
     let index = usize::try_from(index).ok()?;
-    (index < tree.nodes().len()).then_some((tree, index, part))
+    Some((tree, index, part))
 }
 
 /// The UI state of one application window. See the module docs.
@@ -238,16 +189,17 @@ pub struct ShellState {
     workbench: usize,
     fps: u32,
     progress: u32,
-    features_open: [bool; MAX_NODES],
-    elements_open: [bool; MAX_NODES],
-    /// Visibility checkboxes, per tree and node (meaningful for rows that have one).
-    checks: [[bool; MAX_NODES]; 2],
-    /// Names the user gave, per tree and node; `None` keeps the mock name.
-    names: [[Option<String>; MAX_NODES]; 2],
-    /// The row last pressed. Logical state only: selection has no visual (`README_UI.md` §5.10).
-    selected: Option<(Tree, usize)>,
-    /// Top-level features before the playhead separator (see [`data::clamp_playhead`]).
-    playhead: usize,
+    projection: ModelTreeProjection,
+    nodes: [Vec<data::Node>; 2],
+    tree_content_max: u32,
+    expanded: BTreeSet<TreeTarget>,
+    selected: Option<TreeTarget>,
+    tree_focus: Option<TreeTarget>,
+    playhead: PlacedHistoryGap,
+    gap_policy: HistoryGapPolicy,
+    tree_scroll: [usize; 2],
+    tree_slots: [Vec<usize>; 2],
+    pending_tree_edit: Option<(TreeTarget, TreeIntentKind)>,
     /// The Action Box shown. The five boxes keep their own state, so switching operations
     /// restores what each one held.
     operation: ActionOperation,
@@ -264,7 +216,7 @@ pub struct ShellState {
     formula_target: Option<WidgetId>,
     rename: RenameModal,
     /// The row the open Rename modal edits.
-    rename_target: Option<(Tree, usize)>,
+    rename_target: Option<(TreeTarget, String)>,
     interaction: InteractionState,
     overlays: OverlayStack,
 }
@@ -274,6 +226,8 @@ impl ShellState {
     /// as in the reference, no menu or modal open.
     #[must_use]
     pub fn new(cols: u32, rows: u32) -> Self {
+        let (projection, initial) = data::reference_trees();
+        let nodes = data::projection_nodes(&projection);
         let mut state = Self {
             cols,
             rows,
@@ -288,12 +242,17 @@ impl ShellState {
             workbench: 0,
             fps: 0,
             progress: 0,
-            features_open: initial_open(&FEATURES),
-            elements_open: initial_open(&ELEMENTS),
-            checks: [initial_checks(&FEATURES), initial_checks(&ELEMENTS)],
-            names: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            projection,
+            nodes,
+            tree_content_max: u32::MAX,
+            expanded: initial.expanded,
             selected: None,
-            playhead: DEFAULT_PLAYHEAD,
+            tree_focus: None,
+            playhead: initial.playhead,
+            gap_policy: initial.gap_policy,
+            tree_scroll: [0, 0],
+            tree_slots: Default::default(),
+            pending_tree_edit: None,
             operation: ActionOperation::Extrude,
             extrude: ExtrudeUi::new(ACTION_BASE),
             revolve: RevolveUi::new(ACTION_BASE),
@@ -313,6 +272,24 @@ impl ShellState {
         state
     }
 
+    /// The actual application startup shell: unlike the example composition in `new`, it has
+    /// no contextual Action Box open.
+    #[must_use]
+    pub fn new_application(cols: u32, rows: u32) -> Self {
+        let mut state = Self::new(cols, rows);
+        state.close_startup_action_box();
+        let projection = ModelTreeProjection::empty(TreeDocumentId::new(0));
+        let initial = projection.initial_state();
+        state.install_projection(projection, initial);
+        state.sync();
+        state
+    }
+
+    /// Closes the reference Extrude box for an actual application launch.
+    fn close_startup_action_box(&mut self) {
+        self.extrude.status = ExtrudeStatus::Cancelled;
+    }
+
     /// Grid size `(cols, rows)` the shell is composed for.
     #[must_use]
     pub const fn size(&self) -> (u32, u32) {
@@ -327,9 +304,15 @@ impl ShellState {
         if (cols, rows) == (self.cols, self.rows) {
             return false;
         }
+        let focused = self.interaction.focused;
         self.cols = cols;
         self.rows = rows;
         self.sync();
+        // Preserve the established resize focus memory even if the pane is temporarily
+        // too short to compose any row. Activation still validates semantic focus below.
+        if self.tree_focus.is_some() && self.interaction.focused.is_none() {
+            self.interaction.set_focused(focused);
+        }
         true
     }
 
@@ -377,7 +360,7 @@ impl ShellState {
     /// (at least 8 cells, at most half the grid). Returns `true` if the laid-out width changed.
     pub fn set_nav_width(&mut self, wanted: u32) -> bool {
         let before = self.nav_width();
-        self.widths.nav = nav_width(self.cols, wanted);
+        self.widths.nav = wanted.clamp(14.min(self.tree_content_max), self.tree_content_max);
         self.nav_width() != before
     }
 
@@ -413,6 +396,51 @@ impl ShellState {
         })
     }
 
+    /// The captured scrollbar thumb offset within its visible thumb, if `hit` is that
+    /// actionable thumb in the topmost SelectionPanel.
+    #[must_use]
+    pub fn selection_thumb_grab(&self, hit: &HitTestResult) -> Option<SelectionThumbGrab> {
+        let id = hit.widget_id?;
+        let bounds = GridRect::new(0, 0, self.cols, self.rows);
+        self.selection
+            .thumb_grab(id, hit.row, bounds, self.profile_selection_frame())
+    }
+
+    /// Whether the selection drag anchor still refers to the current list allocation.
+    #[must_use]
+    pub fn selection_thumb_grab_valid(&self, grab: SelectionThumbGrab) -> bool {
+        self.selection.thumb_grab_valid(
+            grab,
+            GridRect::new(0, 0, self.cols, self.rows),
+            self.profile_selection_frame(),
+        )
+    }
+
+    /// Whether a captured drag's handle still exists under the current overlay state.
+    #[must_use]
+    pub fn captured_drag_available(&self, selection_thumb: bool) -> bool {
+        if selection_thumb {
+            self.selection.has_scrollbar(
+                GridRect::new(0, 0, self.cols, self.rows),
+                self.profile_selection_frame(),
+            )
+        } else {
+            self.input_free()
+        }
+    }
+
+    /// Moves a captured SelectionPanel scrollbar thumb to the pointer row.
+    pub fn drag_selection_thumb(&mut self, row: u32, grab: SelectionThumbGrab) -> bool {
+        let bounds = GridRect::new(0, 0, self.cols, self.rows);
+        let changed = self
+            .selection
+            .drag_thumb(row, grab, bounds, self.profile_selection_frame());
+        if changed {
+            self.sync();
+        }
+        changed
+    }
+
     /// Drags `separator` to the pointer cell `(col, row)` (any cell, even off the grid: the
     /// result is clamped). `Navigation` reads the column, `Split` and `Playhead` the row. Returns `true` if the layout or the playhead changed.
     pub fn drag_separator(&mut self, separator: Separator, col: u32, row: u32) -> bool {
@@ -427,9 +455,10 @@ impl ShellState {
     /// heights are clamped to three rows each. The proportion is remembered, so a later window
     /// resize keeps it. Returns `true` if the laid-out heights changed.
     fn set_split(&mut self, row: u32) -> bool {
-        let before = self.layout().features.height();
-        let body = self.layout().viewport.height();
-        let wanted = row.saturating_add(1).saturating_sub(TOP_ROWS);
+        let layout = self.layout();
+        let before = layout.features.height();
+        let body = layout.viewport.height();
+        let wanted = row.saturating_add(1).saturating_sub(layout.features.row());
         let features = features_rows(
             body,
             Some(Split {
@@ -441,31 +470,68 @@ impl ShellState {
         self.layout().features.height() != before
     }
 
-    /// Moves the playhead between top-level features without splitting their subtrees.
     fn drag_playhead(&mut self, row: u32) -> bool {
-        let nodes = Tree::Features.nodes();
-        let top = top_level_count(nodes);
-        let current = clamp_playhead(self.playhead, top);
-        let lines = visible_lines(nodes, &self.features_open, current);
         let first = self.layout().features.inset(1).row();
-        let gap = match row.checked_sub(first).map(|d| d as usize) {
-            None => 0,
-            Some(i) => match lines.get(i) {
+        let lines = self.tree_lines(Tree::Features);
+        let index = self.tree_scroll[0].saturating_add(row.saturating_sub(first) as usize);
+        let display = if row < first {
+            self.projection
+                .features
+                .first()
+                .map_or(GapDisplayLocation::EndOfTree, |item| {
+                    GapDisplayLocation::BeforeNode(item.id)
+                })
+        } else {
+            match lines.get(index) {
                 Some(Line::Playhead) => return false,
-                Some(_) => lines[..=i]
-                    .iter()
-                    .filter(|l| {
-                        matches!(l, Line::Node(r) if nodes.get(r.index).is_some_and(|n| n.depth == 1))
-                    })
-                    .count(),
-                None => top,
-            },
+                Some(Line::Node(shown)) if shown.index == 0 => self
+                    .projection
+                    .features
+                    .first()
+                    .map_or(GapDisplayLocation::EndOfTree, |item| {
+                        GapDisplayLocation::BeforeNode(item.id)
+                    }),
+                Some(Line::Node(shown)) if self.inline_playhead_host()
+                    == Some(self.nodes[Tree::Features.slot()][shown.index].target) => return false,
+                Some(Line::Node(shown)) if shown.index > 0 => {
+                    let item = &self.projection.features[shown.index - 1];
+                    GapDisplayLocation::AfterSubtree(item.id)
+                }
+                _ => GapDisplayLocation::EndOfTree,
+            }
         };
-        let Some(new) = clamp_playhead(gap, top) else {
+        let Ok(mut gap) = self.projection.placed_gap(display) else {
             return false;
         };
-        self.playhead = new;
-        current != Some(new)
+        if let HistoryGapPolicy::ExplicitGaps(allowed) = &self.gap_policy {
+            let reference_display = match lines.get(index) {
+                Some(Line::Node(shown))
+                    if shown.index > 0 && self.projection.features[shown.index - 1].depth > 1 =>
+                {
+                    self.projection.features[..shown.index]
+                        .iter()
+                        .rev()
+                        .find(|item| item.depth == 1)
+                        .map_or(display, |item| GapDisplayLocation::AfterSubtree(item.id))
+                }
+                _ => display,
+            };
+            let boundary = self
+                .projection
+                .display_boundary(reference_display)
+                .unwrap_or(0);
+            gap = allowed
+                .iter()
+                .min_by_key(|candidate| {
+                    self.projection
+                        .display_boundary(candidate.display)
+                        .unwrap_or(0)
+                        .abs_diff(boundary)
+                })
+                .copied()
+                .unwrap_or(gap);
+        }
+        self.set_playhead(gap).unwrap_or(false)
     }
 
     /// The window control that owns widget `id`, if it is one of `[-] [□] [X]`.
@@ -480,8 +546,12 @@ impl ShellState {
     /// The fallback reads at most the fixed 31 Action Box cells, independent of scene size.
     #[must_use]
     pub fn hover_target(&self, hit: HitTestResult, grid: &crate::CellGrid) -> Option<WidgetId> {
-        if hit.widget_id.is_some() {
-            return hit.widget_id;
+        if let Some(id) = hit.widget_id {
+            if let Some((tree, slot, _)) = tree_decode(id) {
+                return (self.input_free() && self.tree_slots[tree.slot()].get(slot).is_some())
+                    .then(|| tree_part_id(tree, slot, TreePart::Row));
+            }
+            return Some(id);
         }
         if !self.input_free() {
             return None;
@@ -516,8 +586,7 @@ impl ShellState {
                 Some(MenuTarget::Title(_) | MenuTarget::Popup)
             )
         });
-        !(tree_decode(id).is_some()
-            || id.get() == PLAYHEAD_ID
+        !(id.get() == PLAYHEAD_ID
             || id.get() == PROGRESS_ID
             || Self::window_action(id).is_some()
             || bar_chrome)
@@ -549,27 +618,6 @@ impl ShellState {
     #[must_use]
     pub const fn extrude(&self) -> &ExtrudeUi {
         &self.extrude
-    }
-
-    /// Projects model-owned Feature and Element names into the fixed reference tree grammar.
-    /// Only named rows are replaced; category rows, branch topology and widget ids remain
-    /// stable, so the renderer and hit map keep their M2 invariants.
-    pub fn set_model_tree_labels(&mut self, features: &[String], elements: &[String]) -> bool {
-        let mut changed = false;
-        for (tree, labels) in [(Tree::Features, features), (Tree::Elements, elements)] {
-            let mut labels = labels.iter();
-            for (index, node) in tree.nodes().iter().enumerate() {
-                if node.kind != NodeKind::Named {
-                    continue;
-                }
-                let next = labels.next().cloned();
-                if self.names[tree.slot()][index] != next {
-                    self.names[tree.slot()][index] = next;
-                    changed = true;
-                }
-            }
-        }
-        changed
     }
 
     /// The current M4 source for the Extrude Depth field: a literal engineering value or a
@@ -665,39 +713,49 @@ impl ShellState {
     /// double-click Rename (`README_UI.md` §23). Markers, checkboxes, category headers and the
     /// playhead are not.
     #[must_use]
-    pub fn is_rename_target(id: WidgetId) -> bool {
-        tree_decode(id).is_some_and(|(tree, index, part)| {
-            part == TreePart::Name
-                && tree
-                    .nodes()
-                    .get(index)
-                    .is_some_and(|n| n.kind == NodeKind::Named)
+    pub fn is_rename_target(&self, id: WidgetId) -> bool {
+        self.decode_tree(id).is_some_and(|(tree, index, part)| {
+            part == TreePart::Name && self.rename_eligible(self.nodes[tree.slot()][index].target)
         })
     }
-
-    /// Opens the Rename modal on the row named by `id`, starting from its full stored name.
-    /// Returns `false` (and does nothing) if `id` is not a rename target or a modal is open.
+    fn rename_eligible(&self, target: TreeTarget) -> bool {
+        match target.kind {
+            TreeTargetKind::Operation(_) | TreeTargetKind::Folder(_) => true,
+            TreeTargetKind::Entity(id) => self
+                .projection
+                .elements
+                .iter()
+                .any(|item| item.id == id && item.group == ElementGroup::Bodies),
+            _ => false,
+        }
+    }
     pub fn begin_rename(&mut self, id: WidgetId) -> bool {
-        let Some((tree, index, _)) = tree_decode(id).filter(|_| Self::is_rename_target(id)) else {
+        let Some((tree, index, _)) = self.decode_tree(id).filter(|_| self.is_rename_target(id))
+        else {
             return false;
         };
-        if self.modal_open() {
+        if !self.input_free() {
             return false;
         }
-        let name = full_label(
-            tree.nodes(),
-            index,
-            self.names[tree.slot()][index].as_deref(),
-        );
-        self.rename_target = Some((tree, index));
-        // The row keeps the focus; the modal remembers it and gives it back.
-        self.interaction.set_focused(Some(tree_id(tree, index)));
+        let node = &self.nodes[tree.slot()][index];
+        let target = node.target;
+        let name = node.label.clone();
+        self.rename_target = Some((target, name.clone()));
+        self.tree_focus = Some(target);
+        self.interaction
+            .set_focused(Some(self.node_id(tree, index, TreePart::Row)));
         self.rename.open(&mut self.interaction, &name);
         self.sync();
         true
     }
 
-    /// The UI theme chosen in the View menu. Light for every new shell.
+    /// Whether this window uses the accepted semantic palette.
+    #[must_use]
+    pub const fn color_enabled(&self) -> bool {
+        self.view.color_enabled
+    }
+
+    /// The UI theme chosen in the View menu. Dark for every new shell.
     #[must_use]
     pub const fn theme(&self) -> ThemeChoice {
         self.view.theme
@@ -731,11 +789,11 @@ impl ShellState {
         std::mem::take(&mut self.normal_view_request)
     }
 
-    /// The stored UI Scale preference (60/80/100/120/140), as the View menu shows it. It is
-    /// never a derived value: the shell holds no `k`, monitor or window-fit logic.
+    /// The rendering multiplier paired with the selected View-menu label. The shell holds no
+    /// `k`, monitor or window-fit logic.
     #[must_use]
-    pub fn preferred_scale_percent(&self) -> u32 {
-        self.view.scale_percent()
+    pub fn scale_factor_percent(&self) -> u32 {
+        self.view.scale_factor_percent()
     }
 
     /// `true` once after the Fullscreen item was activated; the application owns the window
@@ -786,7 +844,14 @@ impl ShellState {
             self.numeric[self.operation.slot()].commit();
         }
         let changed = if self.selection.is_open() {
-            id.is_some_and(|id| self.selection.activate(id, bounds))
+            id.is_some_and(|id| {
+                if self.selection.is_profile_picker() {
+                    self.selection
+                        .activate_in_action_box(id, self.profile_selection_frame())
+                } else {
+                    self.selection.activate(id, bounds)
+                }
+            })
         } else if self.formula.is_open() {
             id.is_some_and(|id| self.formula.activate(id))
         } else if self.rename.is_open() {
@@ -823,10 +888,11 @@ impl ShellState {
     /// Routes wheel or trackpad scroll steps to the modal selection list. Positive steps
     /// move the list upwards, matching native wheel conventions.
     pub fn scroll(&mut self, steps: i32) -> bool {
-        let changed = self.selection.is_open()
-            && self
-                .selection
-                .scroll_by(-steps, GridRect::new(0, 0, self.cols, self.rows));
+        let changed = self.selection.scroll_wheel(
+            steps,
+            GridRect::new(0, 0, self.cols, self.rows),
+            self.profile_selection_frame(),
+        );
         if changed {
             self.sync();
         }
@@ -837,6 +903,14 @@ impl ShellState {
     /// and modals are opened or dismissed; focus follows the active owner and is restored
     /// when a modal closes. Called after every input.
     fn sync(&mut self) {
+        self.update_tree_content_max();
+        let restoring_rename = !self.rename.is_open()
+            && (self.rename_target.is_some()
+                || self
+                    .interaction
+                    .focused
+                    .is_some_and(|id| (RENAME_BASE..RENAME_BASE + 4).contains(&id.get())));
+        self.rebuild_tree_slots();
         self.finish_rename();
         self.finish_formula();
         let layout = self.layout();
@@ -847,7 +921,14 @@ impl ShellState {
             self.command_bar.close();
             self.typed.clear();
         }
-        self.selection.sync_overlay(&mut self.overlays, bounds);
+        if !self.view_panel_visible(1) {
+            self.command_bar.close();
+            self.typed.clear();
+        }
+        let profile_frame = self.profile_selection_frame();
+        self.selection.reconcile(bounds, profile_frame);
+        self.selection
+            .sync_overlay_with_profile_frame(&mut self.overlays, bounds, profile_frame);
         self.formula.sync_overlay(&mut self.overlays, bounds);
         self.rename.sync_overlay(&mut self.overlays, bounds);
         let bar = layout.menu_bar();
@@ -868,6 +949,13 @@ impl ShellState {
         self.selection.sync_focus(&mut self.interaction);
         self.formula.sync_focus(&mut self.interaction);
         self.rename.sync_focus(&mut self.interaction);
+        if restoring_rename {
+            if self.tree_focus.is_none() {
+                self.interaction.set_focused(None);
+            } else {
+                self.rebuild_tree_slots();
+            }
+        }
     }
 
     /// Applies the name of a Rename that was confirmed, once the modal has closed; a cancelled
@@ -876,10 +964,16 @@ impl ShellState {
         if self.rename.is_open() {
             return;
         }
-        if let Some((tree, index)) = self.rename_target.take()
+        if let Some((target, source_name)) = self.rename_target.take()
             && self.rename.status() == crate::ModalStatus::Confirmed
         {
-            self.names[tree.slot()][index] = Some(self.rename.text().to_owned());
+            self.pending_tree_edit = Some((
+                target,
+                TreeIntentKind::Rename {
+                    source_name,
+                    name: self.rename.text().to_owned(),
+                },
+            ));
         }
     }
 
@@ -910,6 +1004,11 @@ impl ShellState {
     fn action_panel_rect(&self) -> Option<GridRect> {
         let panel = self.panel().compose_box()?;
         Some(self.layout().action_panel(panel.height()))
+    }
+
+    /// Frame occupied by the Profile Selection box while it replaces an Action Box.
+    fn profile_selection_frame(&self) -> GridRect {
+        self.layout().action_panel(self.selection.profile_height())
     }
 
     /// Returns `Some` only when this click is on the `+` / `-` marker of a directional
@@ -995,7 +1094,7 @@ impl ShellState {
     /// Activates the base-shell control `id`: the single path of pointer clicks and of
     /// Enter / Space on the focused widget. Returns `true` if `id` belongs to the shell.
     fn activate_widget(&mut self, id: WidgetId) -> bool {
-        if let Some((tree, index, part)) = tree_decode(id) {
+        if let Some((tree, index, part)) = self.decode_tree(id) {
             self.activate_tree(tree, index, part);
             return true;
         }
@@ -1003,6 +1102,7 @@ impl ShellState {
             return false;
         }
         // The focus is set first so a modal opened below remembers this control.
+        self.tree_focus = None;
         self.interaction.set_focused(Some(id));
         let slot = self.operation.slot();
         if self.panel().is_formula_button(id) {
@@ -1016,7 +1116,11 @@ impl ShellState {
                 self.numeric[slot].begin(id, &mock);
             }
         } else if self.panel().is_selection_field(id) {
-            self.selection.open(&mut self.interaction);
+            if self.panel().is_profile_selection_field(id) {
+                self.selection.open_profiles(&mut self.interaction);
+            } else {
+                self.selection.open(&mut self.interaction);
+            }
         } else {
             let button = self
                 .panel()
@@ -1040,28 +1144,29 @@ impl ShellState {
     /// branch, the checkbox flips the visibility, every other part selects the row. The row
     /// takes the keyboard focus in all cases. No geometry or model is touched.
     fn activate_tree(&mut self, tree: Tree, index: usize, part: TreePart) {
-        let nodes = tree.nodes();
+        let target = self.nodes[tree.slot()][index].target;
         match part {
-            TreePart::Marker => {
-                let open = match tree {
-                    Tree::Features => &mut self.features_open,
-                    Tree::Elements => &mut self.elements_open,
-                };
-                if let (true, Some(flag)) = (has_children(nodes, index), open.get_mut(index)) {
-                    *flag = !*flag;
+            TreePart::Marker if has_children(&self.nodes[tree.slot()], index) => {
+                if !self.expanded.remove(&target) {
+                    self.expanded.insert(target);
                 }
             }
             TreePart::Check => {
-                if let (Some(_), Some(flag)) = (
-                    nodes.get(index).and_then(|n| n.check),
-                    self.checks[tree.slot()].get_mut(index),
-                ) {
-                    *flag = !*flag;
+                if let Some(expected_visible) = self.nodes[tree.slot()][index].check {
+                    self.pending_tree_edit = Some((
+                        target,
+                        TreeIntentKind::SetVisibility {
+                            expected_visible,
+                            visible: !expected_visible,
+                        },
+                    ));
                 }
             }
-            TreePart::Row | TreePart::Name => self.selected = Some((tree, index)),
+            TreePart::Row | TreePart::Name => self.selected = Some(target),
+            _ => {}
         }
-        self.interaction.set_focused(Some(tree_id(tree, index)));
+        self.tree_focus = Some(target);
+        self.rebuild_tree_slots();
     }
 
     // ---- menus ----
@@ -1076,13 +1181,20 @@ impl ShellState {
                 true
             }
             MenuResult::Toggled(action) => {
-                let check = action
+                if action.get() == ACT_VIEW_COLOR {
+                    self.view.color_enabled = !self.view.color_enabled;
+                    return true;
+                }
+                let index = action
                     .get()
                     .checked_sub(ACT_VIEW_CHECK)
-                    .and_then(|i| usize::try_from(i).ok())
-                    .and_then(|i| self.view.checks.get_mut(i));
-                if let Some(flag) = check {
+                    .and_then(|i| usize::try_from(i).ok());
+                if let Some(flag) = index.and_then(|i| self.view.checks.get_mut(i)) {
                     *flag = !*flag;
+                    if index == Some(1) && !*flag {
+                        self.command_bar.close();
+                        self.typed.clear();
+                    }
                 }
                 true
             }
@@ -1090,10 +1202,14 @@ impl ShellState {
                 let (slot, len) = match action.get() {
                     ACT_VIEW_PROJECTION => (&mut self.view.projection, PROJECTION.len()),
                     ACT_VIEW_SHADING => (&mut self.view.shading, SHADING.len()),
-                    ACT_VIEW_SCALE => (&mut self.view.scale, SCALE_PERCENTS.len()),
+                    ACT_VIEW_SCALE => (&mut self.view.scale, SCALE_FACTORS_PERCENT.len()),
                     _ => return true,
                 };
                 *slot = match step {
+                    CycleStep::Next if action.get() == ACT_VIEW_SCALE => {
+                        slot.saturating_add(1).min(len.saturating_sub(1))
+                    }
+                    CycleStep::Previous if action.get() == ACT_VIEW_SCALE => slot.saturating_sub(1),
                     CycleStep::Next => cycle_next(*slot, len),
                     CycleStep::Previous => cycle_prev(*slot, len),
                 };
@@ -1109,6 +1225,14 @@ impl ShellState {
     fn run_action(&mut self, action: u32) {
         if action == ACT_VIEW_THEME {
             self.view.theme = self.view.theme.toggled();
+            // MenuState closes activated items by default. Theme is the one View item
+            // whose specification keeps the popup open, with selection on its own row.
+            with_bar_menus(&self.view, |menus| {
+                self.menu_bar.open(menus, 2);
+                for _ in 0..3 {
+                    let _ = self.menu_bar.handle_key(menus, MenuKey::Down);
+                }
+            });
         } else if action == ACT_VIEW_FULLSCREEN {
             self.fullscreen_request = true;
         } else if action == 220 {
@@ -1169,8 +1293,13 @@ impl ShellState {
             ShellKey::MenuBar | ShellKey::CommandBar | ShellKey::Alt(_) => return false,
         };
         if self.selection.is_open() {
-            self.selection
-                .key(modal, GridRect::new(0, 0, self.cols, self.rows))
+            if self.selection.is_profile_picker() {
+                self.selection
+                    .key_in_action_box(modal, self.profile_selection_frame())
+            } else {
+                self.selection
+                    .key(modal, GridRect::new(0, 0, self.cols, self.rows))
+            }
         } else if self.rename.is_open() {
             self.rename.key(modal)
         } else {
@@ -1196,6 +1325,10 @@ impl ShellState {
 
     /// F10 / F6: leaves menu navigation if that bar is active, else starts it on that bar.
     fn toggle_menu(&mut self, bar: bool) -> bool {
+        if !bar && !self.view_panel_visible(1) {
+            self.command_bar.close();
+            return true;
+        }
         let was_active = if bar {
             self.menu_bar.is_active()
         } else {
@@ -1281,9 +1414,12 @@ impl ShellState {
                     return false;
                 };
                 // Enter / Space on a focused row expand or collapse it, like its marker.
-                if let Some((tree, index, TreePart::Row)) = tree_decode(id) {
+                if let Some((tree, index, TreePart::Row)) = self.decode_tree(id) {
+                    if self.tree_focus != Some(self.nodes[tree.slot()][index].target) {
+                        return false;
+                    }
                     self.activate_tree(tree, index, TreePart::Marker);
-                    self.selected = Some((tree, index));
+                    self.selected = Some(self.nodes[tree.slot()][index].target);
                     return true;
                 }
                 self.activate_widget(id)
@@ -1298,6 +1434,10 @@ impl ShellState {
         };
         let ring = self.focus_ring(&grid);
         let next = step_focus(&ring, self.interaction.focused, forward);
+        self.tree_focus = next.and_then(|id| {
+            self.decode_tree(id)
+                .map(|(tree, index, _)| self.nodes[tree.slot()][index].target)
+        });
         self.interaction.set_focused(next)
     }
 }

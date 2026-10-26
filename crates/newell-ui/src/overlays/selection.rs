@@ -27,6 +27,7 @@
 //! disabled is not in the ring. If focus sits on a control that has just become unavailable,
 //! it moves to OK.
 
+use super::list::{SelectionListGeometry, SelectionThumb, draw_selection_scrollbar, round_half_up};
 use super::modal::{ModalKey, ModalStatus, step_focus};
 use super::{
     ListItem, ModalLayout, Overlay, OverlayKind, OverlayStack, ScrollList, ScrollState,
@@ -40,6 +41,8 @@ use crate::{
 
 /// Frame size, including the border.
 const SIZE: (u32, u32) = (30, 12);
+/// Profile selection replaces its originating Action Box with this exact reference footprint.
+const PROFILE_SIZE: (u32, u32) = (31, 11);
 /// Number of mock entries.
 const ITEM_COUNT: usize = 9;
 /// Mock entries in list order. Fixed text; they name no model element.
@@ -76,9 +79,9 @@ const UP: u32 = 1;
 const DOWN: u32 = 2;
 const OK: u32 = 3;
 const CANCEL: u32 = 4;
+const THUMB: u32 = 14;
 const FIRST_ITEM: u32 = 5;
-const ITEMS: u32 = 9;
-const SPAN: u32 = FIRST_ITEM + ITEMS;
+const SPAN: u32 = THUMB + 1;
 
 /// What a widget id of this panel refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,47 +92,128 @@ enum Slot {
     Ok,
     Cancel,
     Item(usize),
+    Thumb,
+}
+
+/// The two documented presentations of the shared mock selection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionKind {
+    Generic,
+    Profiles,
+}
+
+impl SelectionKind {
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Generic => "Selection",
+            Self::Profiles => "Profils",
+        }
+    }
 }
 
 /// Whole-cell geometry derived from the modal's interior.
 #[derive(Debug, Clone, Copy)]
 struct Geometry {
     layout: ModalLayout,
+    list: SelectionListGeometry,
+    len: u32,
     /// Visible rows of the list.
     window: u32,
-    /// Whether the scrollbar is drawn (needs a two-column body of at least two rows).
+    /// Whether a logical scrollbar gutter exists.
     bar: bool,
 }
 
 impl Geometry {
-    fn from_interior(inner: GridRect) -> Self {
-        let layout = modal_layout(inner);
-        let body = layout.body;
+    fn from_layout(layout: ModalLayout, len: u32) -> Self {
+        let list = SelectionListGeometry::new(layout.body, len);
         Self {
             layout,
-            window: body.height(),
-            bar: body.width() >= 2 && body.height() >= 2,
+            list,
+            len,
+            window: list.window,
+            bar: list.bar.is_some(),
         }
     }
 
-    fn of(bounds: GridRect) -> Self {
-        Self::from_interior(center_modal(SIZE, bounds).inset(1))
+    fn from_interior(inner: GridRect, len: u32) -> Self {
+        Self::from_layout(modal_layout(inner), len)
     }
 
-    fn from_action_box(frame: GridRect) -> Self {
+    fn of(bounds: GridRect, len: u32) -> Self {
+        Self::from_interior(center_modal(SIZE, bounds).inset(1), len)
+    }
+
+    fn from_action_box(frame: GridRect, len: u32) -> Self {
         let inner = frame.inset(1);
         let (actions, above_actions) = inner.split_bottom(1);
         let (_separator, list_frame) = above_actions.split_bottom(1);
-        let body = list_frame.inset(1);
-        Self {
-            layout: ModalLayout {
+        Self::from_layout(
+            ModalLayout {
                 title: GridRect::new(inner.col(), inner.row(), inner.width(), 0),
-                body,
+                body: list_frame.inset(1),
                 actions,
             },
-            window: body.height(),
-            bar: body.width() >= 2 && body.height() >= 2,
+            len,
+        )
+    }
+}
+
+/// A selection-thumb drag anchor. It preserves the exact content offset and
+/// whole-row grab relationship, and is invalidated by external layout changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionThumbGrab {
+    surface: WidgetId,
+    epoch: u64,
+    row: u32,
+    offset: u32,
+    position: u32,
+    len: u32,
+    geometry: SelectionListGeometry,
+    kind: SelectionKind,
+}
+
+impl SelectionThumbGrab {
+    fn new(row: u32, offset: u32, geometry: Geometry, kind: SelectionKind) -> Option<Self> {
+        let thumb = SelectionThumb::new(geometry.len, offset)?;
+        let bar = geometry.list.bar?;
+        let track_row = row.checked_sub(bar.row().checked_add(1)?)?;
+        if row as u64 >= geometry.list.allocation.bottom()
+            || thumb
+                .glyphs()
+                .get(track_row as usize)
+                .is_none_or(|&g| g == ' ')
+        {
+            return None;
         }
+        Some(Self {
+            surface: WidgetId::new(0),
+            epoch: 0,
+            row,
+            offset: thumb.offset,
+            position: thumb.position,
+            len: geometry.len,
+            geometry: geometry.list,
+            kind,
+        })
+    }
+
+    fn valid_for(self, geometry: Geometry, kind: SelectionKind) -> bool {
+        self.kind == kind
+            && self.len == geometry.len
+            && self.geometry == geometry.list
+            && geometry.len > 5
+            && geometry.bar
+    }
+
+    fn offset_at(self, row: u32) -> u32 {
+        if row == self.row {
+            return self.offset;
+        }
+        let length = 11_u32.saturating_sub(self.len).max(1);
+        let travel = 6 - length;
+        let wanted = i64::from(self.position) + 2 * (i64::from(row) - i64::from(self.row));
+        let top = wanted.clamp(0, i64::from(travel)) as u64;
+        round_half_up(u64::from(self.len - 5) * top, u64::from(travel)) as u32
     }
 }
 
@@ -138,11 +222,13 @@ impl Geometry {
 pub struct SelectionPanel {
     base_id: u32,
     applied: [bool; ITEM_COUNT],
+    profile_applied: [bool; ITEM_COUNT],
     draft: [bool; ITEM_COUNT],
     scroll: ScrollState,
+    grab_epoch: Option<u64>,
     focus: Option<WidgetId>,
     return_focus: Option<WidgetId>,
-    title: &'static str,
+    kind: SelectionKind,
     status: ModalStatus,
 }
 
@@ -154,11 +240,13 @@ impl SelectionPanel {
         Self {
             base_id,
             applied: INITIAL,
+            profile_applied: INITIAL,
             draft: INITIAL,
             scroll: ScrollState { offset: 0 },
+            grab_epoch: Some(0),
             focus: None,
             return_focus: None,
-            title: "Selection",
+            kind: SelectionKind::Generic,
             status: ModalStatus::Closed,
         }
     }
@@ -181,6 +269,12 @@ impl SelectionPanel {
         &self.applied
     }
 
+    /// The Profile Selection box's applied mock state, independent of generic checkboxes.
+    #[must_use]
+    pub fn profile_applied(&self) -> &[bool] {
+        &self.profile_applied
+    }
+
     /// The id that holds keyboard focus while the panel is open.
     #[must_use]
     pub const fn focus(&self) -> Option<WidgetId> {
@@ -199,17 +293,39 @@ impl SelectionPanel {
     /// `inter` still holds focus on this panel (no sync after the last close), the earlier
     /// memory is kept.
     pub fn open(&mut self, inter: &mut InteractionState) {
-        self.open_titled(inter, "Selection");
+        self.open_kind(inter, SelectionKind::Generic);
     }
 
-    /// Opens the panel with the name of the requested action in its header.
-    pub fn open_titled(&mut self, inter: &mut InteractionState, title: &'static str) {
+    /// Opens the Profile Selection box in the originating Action Box footprint.
+    pub fn open_profiles(&mut self, inter: &mut InteractionState) {
+        self.open_kind(inter, SelectionKind::Profiles);
+    }
+
+    /// `true` while this selection state is the Action Box Profile Selection box rather than
+    /// the centered, checkbox-based generic Selection modal.
+    #[must_use]
+    pub fn is_profile_picker(&self) -> bool {
+        self.is_open() && self.kind == SelectionKind::Profiles
+    }
+
+    /// Number of rows in the exact Profile Selection box, including its outer border.
+    #[must_use]
+    pub const fn profile_height(&self) -> usize {
+        PROFILE_SIZE.1 as usize
+    }
+
+    fn open_kind(&mut self, inter: &mut InteractionState, kind: SelectionKind) {
         let stale = inter.focused.is_some_and(|f| self.slot(f).is_some());
         if !self.is_open() && !stale {
             self.return_focus = inter.focused;
         }
-        self.draft = self.applied;
-        self.title = title;
+        self.draft = match kind {
+            SelectionKind::Generic => self.applied,
+            SelectionKind::Profiles => self.profile_applied,
+        };
+        self.kind = kind;
+        // Exhaustion disables new grabs rather than letting an old anchor become valid.
+        self.grab_epoch = self.grab_epoch.and_then(|epoch| epoch.checked_add(1));
         self.scroll = ScrollState::default();
         self.status = ModalStatus::Open;
         self.focus = Some(self.item_id(0));
@@ -219,19 +335,20 @@ impl SelectionPanel {
     /// Applies a keyboard key within `bounds`. Returns `true` if the key was handled. Keys
     /// are ignored while the panel is closed.
     pub fn key(&mut self, key: ModalKey, bounds: GridRect) -> bool {
-        self.key_in(key, Geometry::of(bounds))
+        self.key_in(key, Geometry::of(bounds, self.len()))
     }
 
     /// Applies a key while the panel occupies an Action Box.  The caller supplies the whole
     /// Action Box frame, including its border.
     pub fn key_in_action_box(&mut self, key: ModalKey, frame: GridRect) -> bool {
-        self.key_in(key, Geometry::from_action_box(frame))
+        self.key_in(key, Geometry::from_action_box(frame, self.len()))
     }
 
     fn key_in(&mut self, key: ModalKey, geometry: Geometry) -> bool {
         if !self.is_open() {
             return false;
         }
+        self.settle(geometry);
         match key {
             ModalKey::Escape => {
                 self.cancel();
@@ -251,41 +368,69 @@ impl SelectionPanel {
     /// control was active and handled. Ids outside the modal, the surface, disabled arrows and
     /// anything while closed are refused. A handled activation makes `id` the focus.
     pub fn activate(&mut self, id: WidgetId, bounds: GridRect) -> bool {
-        self.activate_in(id, Geometry::of(bounds))
+        self.activate_in(id, Geometry::of(bounds, self.len()))
     }
 
     /// Activates a control while the panel is drawn inside `frame`, the Action Box frame.
     pub fn activate_in_action_box(&mut self, id: WidgetId, frame: GridRect) -> bool {
-        self.activate_in(id, Geometry::from_action_box(frame))
+        self.activate_in(id, Geometry::from_action_box(frame, self.len()))
     }
 
-    /// Scrolls the list by pointer-wheel or trackpad steps while it occupies an Action Box.
-    /// Scrolls the list using the centered modal's actual visible row count.
+    /// Scrolls the centered selection list by whole content rows.
     pub fn scroll_by(&mut self, delta: i32, bounds: GridRect) -> bool {
+        self.scroll_delta(i64::from(delta), Geometry::of(bounds, self.len()))
+    }
+
+    /// Scrolls the profile picker by whole content rows.
+    pub fn scroll_in_action_box(&mut self, delta: i32, frame: GridRect) -> bool {
+        self.scroll_delta(
+            i64::from(delta),
+            Geometry::from_action_box(frame, self.len()),
+        )
+    }
+
+    pub(crate) fn scroll_wheel(
+        &mut self,
+        steps: i32,
+        bounds: GridRect,
+        profile_frame: GridRect,
+    ) -> bool {
+        self.scroll_delta(-i64::from(steps), self.geometry(bounds, profile_frame))
+    }
+
+    fn scroll_delta(&mut self, delta: i64, geometry: Geometry) -> bool {
         if !self.is_open() {
             return false;
         }
-        let geometry = Geometry::of(bounds);
         let before = self.scroll.offset;
-        self.scroll.scroll_by(delta, ITEMS, geometry.window);
+        self.scroll
+            .scroll_by_wide(delta, geometry.len, geometry.window);
+        self.settle(geometry);
         self.scroll.offset != before
     }
 
-    /// Returns `true` only when the visible first item changed.
-    pub fn scroll_in_action_box(&mut self, delta: i32, frame: GridRect) -> bool {
-        if !self.is_open() || delta == 0 {
-            return false;
+    fn labels(&self) -> &[&str] {
+        match self.kind {
+            SelectionKind::Generic => &MOCK_ITEMS,
+            SelectionKind::Profiles => &PROFILE_ITEMS,
         }
-        let geometry = Geometry::from_action_box(frame);
-        let before = self.offset(geometry.window);
-        self.scroll.scroll_by(delta, ITEMS, geometry.window);
-        self.offset(geometry.window) != before
+    }
+
+    fn len(&self) -> u32 {
+        u32::try_from(self.labels().len()).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn reconcile(&mut self, bounds: GridRect, profile_frame: GridRect) {
+        if self.is_open() {
+            self.settle(self.geometry(bounds, profile_frame));
+        }
     }
 
     fn activate_in(&mut self, id: WidgetId, geometry: Geometry) -> bool {
         if !self.is_open() {
             return false;
         }
+        self.settle(geometry);
         if !self.ring(geometry).contains(&id) {
             return false;
         }
@@ -296,23 +441,37 @@ impl SelectionPanel {
                     *checked = !*checked;
                 }
             }
-            Some(Slot::Up) => self.scroll.scroll_by(-1, ITEMS, geometry.window),
-            Some(Slot::Down) => self.scroll.scroll_by(1, ITEMS, geometry.window),
+            Some(Slot::Up) => self.scroll.scroll_by(-1, geometry.len, geometry.window),
+            Some(Slot::Down) => self.scroll.scroll_by(1, geometry.len, geometry.window),
             Some(Slot::Ok) => self.confirm(),
             Some(Slot::Cancel) => self.cancel(),
-            Some(Slot::Surface) | None => {}
+            Some(Slot::Surface | Slot::Thumb) | None => {}
         }
         self.settle(geometry);
         true
     }
 
-    /// Opens the modal in `stack` while it is open, or dismisses it.
+    /// Opens the centered generic modal in `stack` while it is open, or dismisses it.
     pub fn sync_overlay(&self, stack: &mut OverlayStack, bounds: GridRect) {
+        self.sync_overlay_with_profile_frame(stack, bounds, bounds);
+    }
+
+    /// Places the Profile Selection modal over its Action Box frame, retaining the stack's
+    /// modal input blocking and occlusion.
+    pub(crate) fn sync_overlay_with_profile_frame(
+        &self,
+        stack: &mut OverlayStack,
+        bounds: GridRect,
+        profile_frame: GridRect,
+    ) {
         if self.is_open() {
             stack.open(Overlay {
                 id: self.surface(),
                 kind: OverlayKind::Modal,
-                rect: center_modal(SIZE, bounds),
+                rect: match self.kind {
+                    SelectionKind::Generic => center_modal(SIZE, bounds),
+                    SelectionKind::Profiles => profile_frame,
+                },
             });
         } else {
             stack.dismiss(self.surface());
@@ -341,7 +500,12 @@ impl SelectionPanel {
     ) {
         compose_overlays(grid, ctx, stack, bounds, |g, overlay, inner| {
             if overlay.id == self.surface() {
-                self.draw_content(g, ctx, inner);
+                match self.kind {
+                    SelectionKind::Generic => self.draw_content(g, ctx, inner),
+                    SelectionKind::Profiles => {
+                        self.draw_in_action_box(g, ctx, overlay.rect.intersection(&bounds));
+                    }
+                }
             }
         });
     }
@@ -377,16 +541,25 @@ impl SelectionPanel {
             }
         }
         let inner_width = frame.width().saturating_sub(2);
+        let title: String = self
+            .kind
+            .title()
+            .chars()
+            .take(inner_width.saturating_sub(1) as usize)
+            .collect();
         let header_fill =
-            "─".repeat(inner_width.saturating_sub(self.title.chars().count() as u32 + 1) as usize);
-        Canvas::new(grid, frame).text(
+            "─".repeat(inner_width.saturating_sub(title.chars().count() as u32 + 1) as usize);
+        let mut canvas = Canvas::new(grid, frame);
+        let end = canvas.contour(0, 0, "╭─", ctx.styles.normal, Some(self.surface()));
+        let end = canvas.text(end, 0, &title, ctx.styles.normal, Some(self.surface()));
+        canvas.contour(
+            end,
             0,
-            0,
-            &format!("╭─{}{header_fill}╮", self.title),
+            &format!("{header_fill}╮"),
             ctx.styles.normal,
             Some(self.surface()),
         );
-        Canvas::new(grid, frame).text(
+        canvas.contour(
             0,
             frame.height().saturating_sub(1),
             &format!("╰{}╯", "─".repeat(inner_width as usize)),
@@ -406,10 +579,10 @@ impl SelectionPanel {
         let (actions, above_actions) = inner.split_bottom(1);
         let (separator, list_frame) = above_actions.split_bottom(1);
         self.draw_selected_items(grid, ctx, list_frame);
-        Canvas::new(grid, separator).text(
+        Canvas::new(grid, separator).contour(
             0,
             0,
-            &format!("│{}│", "─".repeat(inner.width() as usize)),
+            &"─".repeat(inner.width() as usize),
             ctx.styles.normal,
             Some(self.surface()),
         );
@@ -427,113 +600,134 @@ impl SelectionPanel {
     /// Draws the selected-input list nested inside the picker. The surrounding frame and the
     /// separator deliberately mirror the Formula editor and Action Box grammar.
     fn draw_selected_items(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect) {
+        super::for_each_visible(grid, frame, |cell| *cell = crate::Cell::default());
         if frame.width() < 3 || frame.height() < 3 {
             return;
         }
         draw_border(grid, frame, BorderLine::Single, ctx.styles.normal);
         let body = frame.inset(1);
-        let labels: &[&str] = if self.title == "Profiles" {
-            &PROFILE_ITEMS
-        } else {
-            &MOCK_ITEMS
-        };
-        let len = u32::try_from(labels.len()).unwrap_or(u32::MAX);
-        let window = body.height();
-        let offset = self.offset(window);
-        let has_bar = len > window && body.width() >= 2 && window >= 2;
-        let (bar, content) = if has_bar {
-            body.split_right(1)
-        } else {
-            (
-                GridRect::new(body.right() as u32, body.row(), 0, body.height()),
-                body,
-            )
-        };
-        let label_width = content.width().saturating_sub(4) as usize;
-        for (visible, (index, label)) in labels
+        let rows: Vec<_> = self
+            .labels()
             .iter()
             .enumerate()
+            .map(|(index, &label)| (self.item_id(index), label))
+            .collect();
+        self.draw_profile_rows(grid, ctx, body, &rows);
+    }
+
+    /// Borrowed IDs keep larger rendering fixtures independent of the fixed panel slots.
+    fn draw_profile_rows(
+        &self,
+        grid: &mut CellGrid,
+        ctx: &WidgetContext<'_>,
+        body: GridRect,
+        rows: &[(WidgetId, &str)],
+    ) {
+        super::for_each_visible(grid, body, |cell| *cell = crate::Cell::default());
+        let len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+        let geometry = SelectionListGeometry::new(body, len);
+        let offset = self.scroll.offset.min(geometry.max);
+        let content = geometry.content;
+        let label_width = content.width().saturating_sub(5) as usize;
+        for (visible, &(id, label)) in rows
+            .iter()
             .skip(offset as usize)
-            .take(window as usize)
+            .take(geometry.window as usize)
             .enumerate()
         {
-            let row = GridRect::new(
-                content.col(),
-                content.row().saturating_add(visible as u32),
-                content.width(),
-                1,
-            );
-            let id = self.item_id(index);
-            let mut canvas = Canvas::new(grid, row);
+            let mut canvas = Canvas::new(grid, geometry.row(visible as u32));
             canvas.fill(0, canvas.width(), 0, owned_blank(ctx.styles.normal, id));
             let label: String = label.chars().take(label_width).collect();
-            canvas.text(0, 0, "☰ ", ctx.styles.normal, Some(id));
-            canvas.text(2, 0, &label, ctx.styles.normal, Some(id));
-            if content.width() >= 1 {
-                canvas.text(
-                    content.width().saturating_sub(1),
+            canvas.text_with_ink(
+                1,
+                0,
+                "☰",
+                ctx.styles.normal,
+                Some(id),
+                crate::InkRole::Action,
+            );
+            canvas.text(3, 0, &label, ctx.styles.normal, Some(id));
+            if content.width() >= 2 {
+                canvas.text_with_ink(
+                    content.width() - 2,
                     0,
                     "×",
                     ctx.styles.normal,
                     Some(id),
+                    crate::InkRole::Action,
                 );
             }
         }
-        if has_bar {
-            self.draw_selected_scrollbar(grid, ctx, bar, offset, len);
+        if let Some(thumb) = SelectionThumb::new(len, offset) {
+            draw_selection_scrollbar(
+                grid,
+                ctx,
+                geometry,
+                thumb,
+                [self.id(UP), self.id(DOWN), self.id(THUMB)],
+            );
         }
     }
 
-    fn draw_selected_scrollbar(
+    pub(crate) fn thumb_grab(
         &self,
-        grid: &mut CellGrid,
-        ctx: &WidgetContext<'_>,
-        bar: GridRect,
-        offset: u32,
-        len: u32,
-    ) {
-        let (up, rest) = bar.split_top(1);
-        let (down, track) = rest.split_bottom(1);
-        for (rect, glyph, id) in [(up, '▲', self.id(UP)), (down, '▼', self.id(DOWN))] {
-            let mut canvas = Canvas::new(grid, rect);
-            canvas.fill_col(0, owned_blank(ctx.styles.normal, id));
-            canvas.text(0, 0, &glyph.to_string(), ctx.styles.normal, Some(id));
+        id: WidgetId,
+        row: u32,
+        bounds: GridRect,
+        profile_frame: GridRect,
+    ) -> Option<SelectionThumbGrab> {
+        if !self.is_open() || id != self.id(THUMB) {
+            return None;
         }
-        let track_len = track.height();
-        if track_len == 0 {
-            return;
+        let epoch = self.grab_epoch?;
+        let mut grab = SelectionThumbGrab::new(
+            row,
+            self.scroll.offset,
+            self.geometry(bounds, profile_frame),
+            self.kind,
+        )?;
+        grab.epoch = epoch;
+        grab.surface = self.surface();
+        Some(grab)
+    }
+
+    pub(crate) fn has_scrollbar(&self, bounds: GridRect, profile_frame: GridRect) -> bool {
+        self.is_open() && self.geometry(bounds, profile_frame).bar
+    }
+
+    pub(crate) fn thumb_grab_valid(
+        &self,
+        grab: SelectionThumbGrab,
+        bounds: GridRect,
+        profile_frame: GridRect,
+    ) -> bool {
+        self.is_open()
+            && grab.surface == self.surface()
+            && self.grab_epoch == Some(grab.epoch)
+            && grab.valid_for(self.geometry(bounds, profile_frame), self.kind)
+    }
+
+    pub(crate) fn drag_thumb(
+        &mut self,
+        row: u32,
+        grab: SelectionThumbGrab,
+        bounds: GridRect,
+        profile_frame: GridRect,
+    ) -> bool {
+        if !self.thumb_grab_valid(grab, bounds, profile_frame) {
+            return false;
         }
-        let window = bar.height();
-        let max = ScrollState::max_offset(len, window);
-        let thumb = u64::from(track_len)
-            .saturating_mul(u64::from(window.min(len)))
-            .div_ceil(u64::from(len.max(1)))
-            .clamp(1, u64::from(track_len));
-        let start = if max == 0 {
-            0
+        let before = self.scroll.offset;
+        self.scroll.offset = grab.offset_at(row);
+        self.settle(self.geometry(bounds, profile_frame));
+        self.scroll.offset != before
+    }
+
+    fn geometry(&self, bounds: GridRect, profile_frame: GridRect) -> Geometry {
+        if self.kind == SelectionKind::Profiles {
+            Geometry::from_action_box(profile_frame, self.len())
         } else {
-            (u64::from(track_len) - thumb) * u64::from(offset) / u64::from(max)
-        } as u32;
-        for row in 0..track_len {
-            let in_thumb = row >= start && row < start.saturating_add(thumb as u32);
-            let glyph = if !in_thumb {
-                ' '
-            } else if thumb == 1 {
-                '┃'
-            } else if row == start {
-                '╻'
-            } else if row.saturating_add(1) == start.saturating_add(thumb as u32) {
-                '╹'
-            } else {
-                '┃'
-            };
-            Canvas::new(grid, GridRect::new(track.col(), track.row() + row, 1, 1)).text(
-                0,
-                0,
-                &glyph.to_string(),
-                ctx.styles.normal,
-                None,
-            );
+            Geometry::of(bounds, self.len())
         }
     }
 
@@ -557,8 +751,13 @@ impl SelectionPanel {
     }
 
     fn draw_content(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, inner: GridRect) {
-        let geometry = Geometry::from_interior(inner);
-        draw_label(grid, geometry.layout.title, self.title, ctx.styles.normal);
+        let geometry = Geometry::from_interior(inner, self.len());
+        draw_label(
+            grid,
+            geometry.layout.title,
+            self.kind.title(),
+            ctx.styles.normal,
+        );
         let items: Vec<ListItem<'_>> = MOCK_ITEMS
             .iter()
             .zip(self.draft.iter())
@@ -579,6 +778,7 @@ impl SelectionPanel {
             },
             up: self.id(UP),
             down: self.id(DOWN),
+            thumb: self.id(THUMB),
         };
         draw_scroll_list(grid, ctx, geometry.layout.body, &list);
         draw_ok_cancel(
@@ -599,17 +799,20 @@ impl SelectionPanel {
         self.focus = step_focus(&ring, self.focus, forward);
         if let Some(i) = self.focus.and_then(|id| self.item_index(id)) {
             let index = u32::try_from(i).unwrap_or(u32::MAX);
-            self.scroll.ensure_visible(index, ITEMS, geometry.window);
+            self.scroll
+                .ensure_visible(index, geometry.len, geometry.window);
         }
         self.focus != before
     }
 
     /// Focus order: every item, then ▲ and ▼ when drawn and enabled, then OK and Cancel.
     fn ring(&self, geometry: Geometry) -> Vec<WidgetId> {
-        let mut ring: Vec<WidgetId> = (0..ITEM_COUNT).map(|i| self.item_id(i)).collect();
+        let mut ring: Vec<WidgetId> = (0..geometry.len as usize)
+            .map(|i| self.item_id(i))
+            .collect();
         if geometry.bar {
             let offset = self.offset(geometry.window);
-            let max = ScrollState::max_offset(ITEMS, geometry.window);
+            let max = ScrollState::max_offset(geometry.len, geometry.window);
             if offset > 0 {
                 ring.push(self.id(UP));
             }
@@ -624,6 +827,7 @@ impl SelectionPanel {
 
     /// Repairs focus after a change: a focus outside the ring moves to OK.
     fn settle(&mut self, geometry: Geometry) {
+        self.scroll.clamp(geometry.len, geometry.window);
         let ring = self.ring(geometry);
         if !self.focus.is_some_and(|f| ring.contains(&f)) {
             self.focus = Some(self.id(OK));
@@ -634,16 +838,22 @@ impl SelectionPanel {
     fn offset(&self, window: u32) -> u32 {
         self.scroll
             .offset
-            .min(ScrollState::max_offset(ITEMS, window))
+            .min(ScrollState::max_offset(self.len(), window))
     }
 
     fn confirm(&mut self) {
-        self.applied = self.draft;
+        match self.kind {
+            SelectionKind::Generic => self.applied = self.draft,
+            SelectionKind::Profiles => self.profile_applied = self.draft,
+        }
         self.status = ModalStatus::Confirmed;
     }
 
     fn cancel(&mut self) {
-        self.draft = self.applied;
+        self.draft = match self.kind {
+            SelectionKind::Generic => self.applied,
+            SelectionKind::Profiles => self.profile_applied,
+        };
         self.status = ModalStatus::Cancelled;
     }
 
@@ -671,6 +881,7 @@ impl SelectionPanel {
             DOWN => Slot::Down,
             OK => Slot::Ok,
             CANCEL => Slot::Cancel,
+            THUMB => Slot::Thumb,
             r if (FIRST_ITEM..SPAN).contains(&r) => {
                 Slot::Item(usize::try_from(r - FIRST_ITEM).unwrap_or(usize::MAX))
             }
@@ -694,8 +905,8 @@ mod tests {
         SelectionPanel::new(BASE)
     }
 
-    /// Frame of 30x12 centred in a 40x14 grid: interior 28x10 at (6, 2); the list has 8
-    /// visible rows (3..=10) for 9 items.
+    /// Frame of 30x12 centred in a 40x14 grid: interior 28x10 at (6, 2);
+    /// five content rows (3..=7) and three inert surplus body rows for nine items.
     fn wide() -> GridRect {
         GridRect::new(0, 0, 40, 14)
     }
@@ -744,6 +955,7 @@ mod tests {
     fn background(cols: u32, rows: u32) -> CellGrid {
         let mut g = CellGrid::new(cols, rows).unwrap();
         let covered = Cell {
+            ink: crate::InkRole::Text,
             content: CellContent::Glyph('x'),
             style: StyleId::DEFAULT,
             widget_id: Some(id(BACKGROUND)),
@@ -805,7 +1017,7 @@ mod tests {
     fn focus_cycles_inside_the_modal_and_wraps() {
         let (mut p, mut inter) = open_with(&[]);
         let bounds = wide();
-        // Items 0..=8, then ▼ (offset 0 of 1), then OK and Cancel: 12 stops.
+        // Items 0..=8, then the enabled arrow, then OK and Cancel: 12 stops.
         let mut seen = Vec::new();
         for _ in 0..12 {
             assert!(p.key(ModalKey::Tab, bounds));
@@ -883,7 +1095,9 @@ mod tests {
         let bounds = wide();
         // Top: ▲ is disabled and refused; ▼ scrolls.
         assert!(!p.activate(up(), bounds));
-        assert!(p.activate(down(), bounds));
+        for _ in 0..4 {
+            assert!(p.activate(down(), bounds));
+        }
         let mut inter = InteractionState::default();
         let g = frame(&p, &inter, 40, 14);
         assert!(has(&g, "Pin_Body") && !has(&g, "Rim_Body"));
@@ -891,7 +1105,9 @@ mod tests {
         assert!(!p.activate(down(), bounds));
         assert_eq!(p.focus(), Some(ok()));
         p.sync_focus(&mut inter);
-        assert!(p.activate(up(), bounds));
+        for _ in 0..4 {
+            assert!(p.activate(up(), bounds));
+        }
         let g = frame(&p, &inter, 40, 14);
         assert!(has(&g, "Rim_Body") && !has(&g, "Pin_Body"));
         assert!(!p.activate(up(), bounds), "back at the top");
@@ -998,6 +1214,23 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_thumb_is_hit_testable_and_drags_the_list() {
+        let bounds = wide();
+        let profile_frame = bounds;
+        let mut inter = InteractionState::default();
+        let mut p = panel();
+        p.open(&mut inter);
+        let geometry = Geometry::of(bounds, p.len());
+        let row = geometry.layout.body.row() + 1;
+        let grab = p
+            .thumb_grab(id(BASE + THUMB), row, bounds, profile_frame)
+            .unwrap();
+        assert!(!p.drag_thumb(row, grab, bounds, profile_frame));
+        assert!(p.drag_thumb(row + 3, grab, bounds, profile_frame));
+        assert_eq!(p.offset(geometry.window), 4);
+    }
+
+    #[test]
     fn tiny_and_degenerate_grids_are_safe() {
         let keys = [
             ModalKey::Tab,
@@ -1021,6 +1254,268 @@ mod tests {
             assert_eq!((g.cols(), g.rows()), (w, h));
             // An activation on an off-grid rect is also harmless.
             p.activate(ok(), GridRect::new(100, 100, 30, 30));
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{InkRole, WidgetStyles};
+    #[test]
+    fn action_box_title_frames_footer_hover_and_clipping_keep_roles_and_owners() {
+        let styles = WidgetStyles::default();
+        let mut inter = InteractionState::default();
+        let mut panel = SelectionPanel::new(2000);
+        panel.open_profiles(&mut inter);
+        for width in [31, 12, 7] {
+            let frame = GridRect::new(1, 1, width, 12);
+            let mut grid = CellGrid::new(40, 16).unwrap();
+            panel.draw_in_action_box(
+                &mut grid,
+                &WidgetContext {
+                    styles: &styles,
+                    interaction: &inter,
+                },
+                frame,
+            );
+            let title_len = panel
+                .kind
+                .title()
+                .chars()
+                .count()
+                .min(width.saturating_sub(3) as usize) as u32;
+            for dx in 0..width {
+                let c = grid.get(1 + dx, 1).unwrap();
+                assert_eq!(
+                    c.ink,
+                    if (2..2 + title_len).contains(&dx) {
+                        InkRole::Text
+                    } else {
+                        InkRole::Contour
+                    }
+                );
+                assert_eq!(c.widget_id, Some(panel.surface()));
+            }
+            for cell in grid.cells() {
+                if matches!(
+                    cell.content,
+                    CellContent::Glyph('☰' | '×' | '▲' | '▼' | '┃' | '╻' | '╹')
+                ) {
+                    assert_eq!(cell.ink, InkRole::Action);
+                }
+            }
+            assert_eq!(grid.get(0, 1).unwrap(), &crate::Cell::default());
+            assert_eq!(grid.get(1 + width, 1).unwrap(), &crate::Cell::default());
+            for dx in 0..width {
+                assert_eq!(grid.get(1 + dx, 12).unwrap().ink, InkRole::Contour);
+            }
+            // Separator precedes the action row; both are inside the outer frame.
+            for dx in 1..width - 1 {
+                assert_eq!(grid.get(1 + dx, 10).unwrap().ink, InkRole::Contour);
+            }
+            for action in [OK, CANCEL] {
+                let mut hover = inter;
+                hover.hovered = Some(panel.id(action));
+                let mut hovered = CellGrid::new(40, 16).unwrap();
+                panel.draw_in_action_box(
+                    &mut hovered,
+                    &WidgetContext {
+                        styles: &styles,
+                        interaction: &hover,
+                    },
+                    frame,
+                );
+                for (a, b) in grid.cells().iter().zip(hovered.cells()) {
+                    assert_eq!(
+                        (a.ink, a.style, a.widget_id, a.shared_border),
+                        (b.ink, b.style, b.widget_id, b.shared_border)
+                    );
+                    if a.content != b.content {
+                        assert_eq!(b.ink, InkRole::Contour);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::super::list::scrollbar_tests::CASES;
+    use super::*;
+    use crate::{Cell, InkRole, WidgetStyles};
+
+    #[test]
+    fn profile_writer_matches_every_state_with_disjoint_item_and_control_ids() {
+        let panel = SelectionPanel::new(500);
+        let styles = WidgetStyles::default();
+        let inter = InteractionState::default();
+        let ctx = WidgetContext {
+            styles: &styles,
+            interaction: &inter,
+        };
+        for &(len, states) in CASES {
+            let rows: Vec<_> = (0..len)
+                .map(|i| (WidgetId::new(2000 + i), "same name"))
+                .collect();
+            for (offset, expected) in states.iter().enumerate() {
+                let mut panel = panel.clone();
+                panel.scroll.offset = offset as u32;
+                let mut grid = CellGrid::new(29, 7).unwrap();
+                panel.draw_profile_rows(&mut grid, &ctx, GridRect::new(0, 0, 29, 7), &rows);
+                for (y, g) in expected.chars().enumerate() {
+                    let cell = grid.get(28, y as u32 + 1).unwrap();
+                    assert_eq!(
+                        cell.content,
+                        if g == ' ' {
+                            CellContent::Empty
+                        } else {
+                            CellContent::Glyph(g)
+                        }
+                    );
+                    assert_eq!(cell.widget_id, (g != ' ').then_some(panel.id(THUMB)));
+                    if g != ' ' {
+                        assert_eq!(cell.ink, InkRole::Action);
+                    }
+                }
+                for y in 0..5 {
+                    let id = rows[offset + y as usize].0;
+                    for x in 0..28 {
+                        assert_eq!(grid.get(x, y).unwrap().widget_id, Some(id));
+                    }
+                    assert_eq!(grid.get(1, y).unwrap().ink, InkRole::Action);
+                    assert_eq!(grid.get(3, y).unwrap().ink, InkRole::Text);
+                    assert_eq!(grid.get(26, y).unwrap().content, CellContent::Glyph('×'));
+                    assert_ne!(id, panel.id(THUMB));
+                }
+                assert_eq!(grid.get(28, 0).unwrap().content, CellContent::Glyph('▲'));
+                assert_eq!(grid.get(28, 4).unwrap().content, CellContent::Glyph('▼'));
+                assert_eq!(*grid.get(0, 5).unwrap(), Cell::default());
+            }
+        }
+    }
+
+    #[test]
+    fn profile_fitting_empty_and_shrinking_lists_clear_controls_and_reclaim_gutter() {
+        let panel = SelectionPanel::new(500);
+        let styles = WidgetStyles::default();
+        let inter = InteractionState::default();
+        let ctx = WidgetContext {
+            styles: &styles,
+            interaction: &inter,
+        };
+        let mut grid = CellGrid::new(29, 7).unwrap();
+        for len in [6, 5, 4, 3, 2, 1, 0] {
+            let rows: Vec<_> = (0..len)
+                .map(|i| (WidgetId::new(2000 + i), "name"))
+                .collect();
+            panel.draw_profile_rows(&mut grid, &ctx, GridRect::new(0, 0, 29, 7), &rows);
+            if len <= 5 {
+                assert!(!grid.cells().iter().any(|cell| {
+                    [
+                        Some(panel.id(UP)),
+                        Some(panel.id(DOWN)),
+                        Some(panel.id(THUMB)),
+                    ]
+                    .contains(&cell.widget_id)
+                }));
+                if len > 0 {
+                    assert_eq!(grid.get(28, 0).unwrap().widget_id, Some(rows[0].0));
+                }
+            }
+        }
+        assert!(grid.cells().iter().all(|cell| *cell == Cell::default()));
+    }
+
+    #[test]
+    fn anchors_preserve_exact_quantized_offsets_and_validate_count_kind_and_layout() {
+        let bounds = GridRect::new(0, 0, 40, 14);
+        for &(len, states) in CASES {
+            let geometry = Geometry::of(bounds, len);
+            for (s, state) in states.iter().enumerate() {
+                for (i, g) in state.chars().enumerate().filter(|(_, g)| *g != ' ') {
+                    let _ = g;
+                    let row = geometry.layout.body.row() + 1 + i as u32;
+                    let grab =
+                        SelectionThumbGrab::new(row, s as u32, geometry, SelectionKind::Generic)
+                            .unwrap();
+                    assert_eq!(grab.offset_at(row), s as u32);
+                    assert_eq!(grab.offset_at(0), 0);
+                    assert_eq!(grab.offset_at(u32::MAX), len - 5);
+                    assert!(grab.valid_for(geometry, SelectionKind::Generic));
+                    assert!(!grab.valid_for(geometry, SelectionKind::Profiles));
+                    assert!(!grab.valid_for(Geometry::of(bounds, len + 1), SelectionKind::Generic));
+                    assert!(!grab.valid_for(
+                        Geometry::of(GridRect::new(0, 0, 50, 14), len),
+                        SelectionKind::Generic
+                    ));
+                }
+            }
+        }
+        for n in 0..=5 {
+            assert!(
+                SelectionThumbGrab::new(4, 0, Geometry::of(bounds, n), SelectionKind::Generic)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn reconciliation_clamps_count_changes_preserving_draft_and_focus_identity() {
+        let bounds = GridRect::new(0, 0, 40, 14);
+        let mut panel = SelectionPanel::new(500);
+        panel.open(&mut InteractionState::default());
+        panel.scroll.offset = 4;
+        panel.focus = Some(panel.id(DOWN));
+        let original = panel.draft;
+        panel.settle(Geometry::of(bounds, 6));
+        assert_eq!(panel.scroll.offset, 1);
+        assert_eq!(panel.focus, Some(panel.id(OK)));
+        panel.focus = Some(panel.item_id(1));
+        panel.settle(Geometry::of(bounds, 5));
+        assert_eq!(panel.scroll.offset, 0);
+        assert_eq!(panel.focus, Some(panel.item_id(1)));
+        panel.settle(Geometry::of(bounds, 6));
+        assert_eq!(panel.scroll.offset, 0);
+        panel.settle(Geometry::of(bounds, 0));
+        assert_eq!(panel.focus, Some(panel.id(OK)));
+        assert_eq!(panel.draft, original);
+        panel.scroll.offset = 3;
+        panel.settle(Geometry::of(bounds, 11));
+        panel.settle(Geometry::of(bounds, 1000));
+        assert_eq!(panel.scroll.offset, 3);
+    }
+
+    #[test]
+    fn wheel_extremes_and_duplicate_profiles_keep_selection_and_item_identity() {
+        let bounds = GridRect::new(0, 0, 40, 14);
+        for profiles in [false, true] {
+            let mut panel = SelectionPanel::new(500);
+            let mut inter = InteractionState::default();
+            if profiles {
+                panel.open_profiles(&mut inter);
+            } else {
+                panel.open(&mut inter);
+            }
+            assert!(panel.activate_in(panel.item_id(2), panel.geometry(bounds, bounds)));
+            let draft = panel.draft;
+            assert!(panel.scroll_wheel(i32::MIN, bounds, bounds));
+            assert_eq!(panel.scroll.offset, 4);
+            assert!(!panel.scroll_wheel(i32::MIN, bounds, bounds));
+            assert!(panel.scroll_wheel(i32::MAX, bounds, bounds));
+            assert_eq!(panel.scroll.offset, 0);
+            assert_eq!(panel.draft, draft);
+            assert_ne!(panel.item_id(2), panel.item_id(3));
+            assert!(panel.activate_in(panel.id(OK), panel.geometry(bounds, bounds)));
+            assert_eq!(
+                if profiles {
+                    panel.profile_applied
+                } else {
+                    panel.applied
+                },
+                draft
+            );
         }
     }
 }

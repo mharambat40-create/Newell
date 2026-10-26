@@ -25,6 +25,12 @@ This document is an implementation plan. It does not override `ARCHITECTURE.md` 
 > stays removed and is not reintroduced; M2.25 is a different mechanism
 > (glyph substitution at composition time).
 
+> **Amendment (2026-10-22).** [ADR 0005](../adr/0005-dark-theme-startup.md)
+> changes the current default for each new window to Dark. The M2.16
+> Light-default statements below describe that historical stage; they are
+> superseded for current startup behavior. Light remains available through
+> the View menu.
+
 ---
 
 ## 0. Specification Sources and Precedence
@@ -1521,7 +1527,7 @@ M2.16 ─► M2.17 ─► M2.18 ─► M2.19 ─► M2.20 ─► M2.21 ─► M2
   uniform, hover removal. Nothing later may reintroduce a ratio, colour or hover
   assumption.
 - M2.17 needs M2.16 metrics and owns the **automatic per-monitor adaptation**:
-  it derives `effective_k` from the monitor, mode and `preferred_scale_percent`,
+  it derives `effective_k` from the monitor, mode and `scale_factor_percent`,
   at start-up and on every monitor, resolution, display-scale, fullscreen or
   preference change, with one atomic transition and a safe window fit
   (`ARCHITECTURE.md` §3.1.1). M2.18 needs M2.17 and M2.16 (`k`-derived metrics,
@@ -1543,8 +1549,8 @@ M2.16 ─► M2.17 ─► M2.18 ─► M2.19 ─► M2.20 ─► M2.21 ─► M2
   window grid 82 × 30. The two extra rows belong to the flexible central body;
   snapshots at 82 × 30 are compared with the reference by the two-step rule of
   `README_UI.md` §25 (M2.15 and M2.24 snapshots).
-- Defaults of every new window: `preferred_scale_percent` 100%, Light theme, neither
-  inherited nor detected from the OS (`ARCHITECTURE.md` §3.1.1, §3.6).
+- Defaults of every new window: UI Scale label 100% (mapped factor 80%), Dark
+  theme, neither inherited from another window nor detected from the OS (`ARCHITECTURE.md` §§3.1.1, 3.6).
 
 ### M2.16 — Typography, monochrome rendering, hover removal
 
@@ -1610,9 +1616,9 @@ Scope:
 
 - **Automatic per-monitor UI scale** (`ARCHITECTURE.md` §3.1.1; ADR 0003 D3, D13).
   UI Scale is a user preference; the cell size adapts to the monitor. Three
-  separate per-window values: `preferred_scale_percent` (60/80/100/120;
-  fixed at the default 100 until the M2.18 control exists, but every function
-  takes it as a parameter and is tested with all five), `monitor_reference_scale`
+  separate per-window values: `scale_factor_percent` (60/80/100/120;
+  fixed at the startup factor 80, selected by the visible 100% label, until the
+  M2.18 control exists; derivation is tested with all four factors), `monitor_reference_scale`
   (`k_fit(windowed) ≤ 3 ? max(k_fit(windowed) − 1, 2) : min(k_fit(windowed), 5)`;
   amended 2026-10-16, Full HD → 2, no monitor name tested) and `effective_k`
   (`clamp(k_req, 2, clamp(k_fit(mode), 2, 7))`,
@@ -1718,18 +1724,19 @@ Acceptance:
 
 - **Derivation unit tests (pure arithmetic).** For each monitor of the
   `ARCHITECTURE.md` §3.1.1 example table (1366×768, 1920×1080, 1920×1200,
-  2560×1440, 2560×1664, 3024×1964, 3840×2160), both modes and all five
-  percentages, `effective_k` equals the table; in particular 2560×1664 at 100%
-  → `k = 5` (20×45) and 1920×1080 at 100% → `k = 2` (8×18); the unknown-monitor
+  2560×1440, 2560×1664, 3024×1964, 3840×2160), both modes and all four
+  rendering factors, `effective_k` equals the table; in particular 2560×1664 at
+  the startup label 100% (factor 80%) → `k = 4` (16×36) and 1920×1080 → `k = 2`
+  (8×18); the unknown-monitor
   case; `k_fit < 2` runs at `k = 2`; the reference is 2 for every `k_fit ≤ 3`,
   `min(k_fit, 5)` above, and the derivation reads no monitor name (a test passes
   the same size with different names and gets the same result); `k_req` is monotone in the percentage; no
-  rounding tie exists (exhaustive over reference 2…5 × five percentages);
+  rounding tie exists (exhaustive over reference 2…5 × four rendering factors);
   `effective_k` never leaves 2…7 and never exceeds `k_cap`; several percentages
   clamp to the same `k` on a small monitor (documented behaviour); every `k` gives
   exactly `W = 4k`, `H = 9k` (ratio 4:9).
 - **Preference unchanged:** a sequence of monitor, resolution, display-scale and
-  fullscreen changes leaves `preferred_scale_percent` unchanged and returns to the
+  fullscreen changes leaves `scale_factor_percent` unchanged and returns to the
   original `effective_k` when the original inputs return.
 - **Transition tests.** Metrics, atlas, `CellGrid`, GPU buffers, minimum size and
   pointer mapping carry the same `k` after every transition (no observer sees a
@@ -1790,15 +1797,19 @@ rule belongs to M2.17):
 
 - MenuBar File/Edit/View/Help with the exact reference menus, including the
   View menu and the space-only Help popup in `Application_Menu_Bar.txt`.
-- `UI Scale ◀ 100% ▶`: a cyclic selector over the five preference values
-  60/80/100/120. It **shows and stores `preferred_scale_percent`**, never the
-  derived `effective_k`, so it reads `100%` on every monitor. `◀`/`▶` wrap; **no
-  value is skipped or hidden**, even when the current monitor clamps several to
-  the same `k`. A step stores the new preference and calls the M2.17 transition;
+- `UI Scale ◀ 100% ▶`: a bounded selector over four visible labels
+  80/100/120/140, mapped by index to the existing rendering factors
+  `scale_factor_percent` 60/80/100/120. The default 100% label maps to factor
+  80%. It **shows the label and stores its mapped factor**, never the derived
+  `effective_k`, so it reads `100%` on every monitor. At 80% the left arrow is
+  blank and inert; at 140% the right arrow is blank and inert. Neither endpoint
+  wraps; other cyclic selectors are unchanged. **No label is skipped**, even
+  when the current monitor clamps several to the same `k`. A step stores the new factor and calls the M2.17 transition;
   if `effective_k` does not change nothing visible happens and no transition runs.
   The control contains no `k` arithmetic, no monitor logic and no window fit.
 - `Theme [ ◐ Light ]` / `[ ◑ Dark  ]` toggles the uniform pair; no atlas or
-  cell-buffer regeneration. Light is the initial theme of every window.
+  cell-buffer regeneration. Dark is the initial theme of every window; Light
+  remains available through the existing View-menu control.
 - `Fullscreen` asks the M2.17 fullscreen gate (full monitor, refusal logged once
   when 656 × 540 does not fit; leaving restores the windowed fit); the item adds
   no sizing logic.
@@ -1810,20 +1821,22 @@ rule belongs to M2.17):
 
 Acceptance:
 
-- The row shows the stored preference on both a Retina and a 1080p monitor and
-  does not change when the window moves between them (stub monitor snapshots in
+- The row shows the selected label 100% on both a Retina and a 1080p monitor
+  and does not change when the window moves between them (stub monitor snapshots in
   tests, manual check with real monitors).
-- `◀`/`▶` visit all four values in order and wrap, on a monitor that maps all of them
-  to one `k` (1920 × 1080: `k` = 2/2/2/2, so every step changes only the
-  stored preference and runs no transition).
+- `◀`/`▶` visit only adjacent labels with factor mapping 60/80/100/120;
+  decrement at 80% and increment at 140% leave the selection unchanged. The
+  endpoint arrow cells are blank and inert. On a monitor that maps all labels
+  to one `k` (1920 × 1080: `k` = 2/2/2/2), each valid step changes only the
+  stored preference and runs no transition.
 - A step that changes `effective_k` calls the M2.17 transition exactly once;
   a press cancelled by it does not activate on release; a second click acts on
   the control now under the pointer.
 - Theme change leaves the cell buffer byte-identical and the atlas untouched.
 - Snapshots contain the reference rows `│ UI Scale ◀ 100% ▶ │` and
-  `│ Theme [ ◐ Light ] │` (Dark: `[ ◑ Dark  ]`) and the Help popup of
-  `Application_Menu_Bar.txt` row for row; the five `UI Scale` states of
-  `Application_Menu_Bar.txt` render exactly.
+  `│ Theme [ ◑ Dark  ] │` by default (Light: `[ ◐ Light ]`) and the Help popup of
+  `Application_Menu_Bar.txt` row for row; its four UI Scale labels map to the
+  original factors and render exactly.
 - Fullscreen item: refused below 656 × 540 with one log entry; otherwise the
   M2.17 derivation applies (1920 × 1080 → `k_fit(fs) = 4`).
 
@@ -2193,9 +2206,10 @@ Their real model/kernel binding belongs to later milestones.
 - No placeholder logo atlas is required.
 - No runtime-generated logo atlas is allowed as a substitute for the architecture-defined PNG atlas.
 - Logo work is deferred until needed.
-- UI Scale is a user preference (60/80/100/120%); the cell size `k` adapts
+- UI Scale has four displayed labels (80/100/120/140%) mapped to rendering
+  factors 60/80/100/120%; the cell size `k` adapts
   automatically to the monitor (`ARCHITECTURE.md` §3.1.1, ADR 0003 D3/D13):
-  `preferred_scale_percent`, `monitor_reference_scale` and `effective_k` are
+  `ui_scale_label_percent`, `scale_factor_percent`, `monitor_reference_scale` and `effective_k` are
   separate; the View menu always shows the preference; a small monitor may map
   several percentages to one `k`; `k = 2` (8 × 18) is the smallest cell (second
   amendment of ADR 0003, 2026-10-16: Full HD 100% = `k = 2`). The automatic mechanism is M2.17; the View menu

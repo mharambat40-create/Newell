@@ -60,7 +60,7 @@ physical-device/visual acceptance remain open. See the
   snapshots for the application shell, menus and Action Panel variants.
 - [x] M2.16: typography (4:9 cells, k = 5), monochrome rendering and hover removal.
 - [ ] M2.17: frameless native window and 82 × 30 minimum grid.
-- [ ] M2.18: Application MenuBar, UI Scale (60/80/100/120/140%) and Light/Dark theme controls; automatic checks pass, cross-monitor acceptance remains open.
+- [ ] M2.18: Application MenuBar, UI Scale labels (80/100/120/140%, mapped to rendering factors 60/80/100/120%) and Light/Dark theme controls; automatic checks pass, cross-monitor acceptance remains open.
 - [x] M2.19: CommandBar and centered menus.
 - [x] M2.20: TreeView layout, playhead, separators and Rename.
 - [x] M2.21: exact Action Box grammar and Extrude.

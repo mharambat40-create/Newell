@@ -11,6 +11,8 @@ pub mod navigation;
 pub mod picking;
 
 mod app;
+mod document;
+pub use document::{DocumentInstanceId, DocumentNotification, DocumentSession, project_document};
 pub mod controller;
 pub mod input;
 pub mod pacing;
@@ -21,6 +23,12 @@ pub mod window;
 /// Fatal application errors. Crate-local by design (no global error type).
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    #[error(transparent)]
+    Model(#[from] newell_model::ModelError),
+    #[error("document identity or revision capacity exhausted")]
+    DocumentCounterExhausted,
+    #[error("inconsistent document projection")]
+    InvalidDocumentProjection,
     #[error("event loop failed: {0}")]
     EventLoop(#[from] winit::error::EventLoopError),
     #[error("window creation failed: {0}")]

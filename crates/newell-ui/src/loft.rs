@@ -155,13 +155,13 @@ impl LoftUi {
     ) {
         let (key, kind_key, magnitude_key, entity_key) = keys;
         if !on {
-            b.push(self.row().text("│ ").check_fill(key, false, label).end());
+            b.push(self.row().contour("│ ").check_fill(key, false, label).end());
             return;
         }
         let width = u32::try_from(label.chars().count() + 2).unwrap_or(0);
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check(key, true, label, width)
                 .text(gap)
                 .cycle(kind_key, kind.label(), 11)
@@ -170,14 +170,16 @@ impl LoftUi {
         if kind == LoftEndType::Match {
             b.push(
                 self.row()
-                    .text("│ ╰╴Entity    ")
+                    .contour("│")
+                    .text(" ╰╴Entity    ")
                     .select(entity_key, entity.count())
                     .end(),
             );
         } else {
             b.push(
                 self.row()
-                    .text("│ ╰╴Magnitude ")
+                    .contour("│")
+                    .text(" ╰╴Magnitude ")
                     .numeric(magnitude_key, MAGNITUDE)
                     .end(),
             );
@@ -194,14 +196,14 @@ impl LoftUi {
         selection: MockSelection,
     ) {
         if !on {
-            b.push(self.row().text("│ ").check_fill(key, false, label).end());
+            b.push(self.row().contour("│ ").check_fill(key, false, label).end());
             return;
         }
         let width = u32::try_from(label.chars().count() + 2).unwrap_or(0);
         let gap = " ".repeat(12usize.saturating_sub(width as usize));
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check(key, true, label, width)
                 .text(&gap)
                 .select(selection_key, selection.count())
@@ -224,7 +226,8 @@ impl ActionBoxUi for LoftUi {
         push_head(&mut b, self.base(), "Loft", v.geometry, v.result);
         b.push(
             self.row()
-                .text("│ Profile     ")
+                .contour("│")
+                .text(" Profile     ")
                 .select(K_PROFILE, v.profile.count())
                 .end(),
         );
@@ -260,20 +263,22 @@ impl ActionBoxUi for LoftUi {
         );
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_CONNECTION, v.connection, "Connection")
                 .end(),
         );
         if v.connection {
             b.push(
                 self.row()
-                    .text("│ │ Start     ")
+                    .contour("│")
+                    .text(" │ Start     ")
                     .select(K_CONNECTION_START, v.connection_start.count())
                     .end(),
             );
             b.push(
                 self.row()
-                    .text("│ ╰╴End       ")
+                    .contour("│")
+                    .text(" ╰╴End       ")
                     .select(K_CONNECTION_END, v.connection_end.count())
                     .end(),
             );

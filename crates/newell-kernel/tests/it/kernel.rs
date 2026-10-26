@@ -31,6 +31,21 @@ fn box_tessellation_is_renderer_owned_data_with_six_face_ranges() {
             .flatten()
             .all(|coordinate| coordinate.is_finite())
     );
+    let edges = mesh.feature_edges();
+    assert_eq!(
+        edges.offsets().len(),
+        13,
+        "12 box feature edges plus sentinel"
+    );
+    assert_eq!(edges.positions().len(), 24);
+    assert_eq!(edges.offsets().first(), Some(&0));
+    assert_eq!(edges.offsets().last(), Some(&24));
+    assert!(
+        edges
+            .offsets()
+            .windows(2)
+            .all(|range| range[1] - range[0] == 2)
+    );
 }
 
 #[test]

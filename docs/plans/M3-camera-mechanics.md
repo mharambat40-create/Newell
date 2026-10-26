@@ -9,8 +9,9 @@ Implement Onshape-style viewport navigation while preserving BrepKIT geometry ge
 
 The requested interaction model is:
 
-- Right-drag: screen-space yaw/pitch orbit with a level horizon.
-- Middle-drag: focal-distance proportional pan.
+- Primary-button drag: screen-space yaw/pitch orbit with a level horizon.
+- Secondary-button drag: focal-distance proportional pan; middle-button drag is a pan fallback.
+- Primary and secondary presses capture navigation only after the click/drag threshold.
 - Wheel, smooth trackpad scrolling, and native pinch where available: cursor-targeted zoom.
 - Orbit pivot: geometric hit under the pointer; otherwise the visible model bounding-box centre.
 - Navigation state and input handling: `newell-app`.
@@ -339,7 +340,7 @@ Update eye and any retained world-space navigation reference by the same transla
 
 This makes the scene follow the pointer:
 
-- Right drag moves the camera left.
+- Dragging to the right moves the camera left.
 - Downward drag moves the camera up.
 - Twice the focal distance produces twice the world translation.
 - Twice the viewport height produces half the translation for identical physical-pixel movement.

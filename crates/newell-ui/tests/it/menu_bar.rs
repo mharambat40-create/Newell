@@ -110,37 +110,46 @@ fn states(prefix: &str) -> Vec<String> {
 }
 
 #[test]
-fn ui_scale_visits_the_five_reference_states_and_wraps() {
-    let want = states("◀  60%");
-    assert_eq!(want.len(), 5);
+fn ui_scale_labels_keep_the_original_rendering_factors_and_stop_at_endpoints() {
+    let labels = states("│ UI Scale    80%");
+    assert_eq!(
+        labels,
+        [
+            "│ UI Scale    80% ▶ │",
+            "│ UI Scale ◀ 100% ▶ │",
+            "│ UI Scale ◀ 120% ▶ │",
+            "│ UI Scale ◀ 140%  │",
+        ]
+    );
     let mut s = shell();
+    assert_eq!(
+        s.scale_factor_percent(),
+        80,
+        "100% label uses former 80% factor"
+    );
     open_view(&mut s);
     keys(&mut s, &[ShellKey::Down, ShellKey::Down]); // UI Scale row
-    // 100 % is the default; every value remains selectable, including 140 %.
-    for percent in [120, 140, 60, 80, 100] {
+    for (index, factor) in [(2, 100), (3, 120), (3, 120)] {
         s.key(ShellKey::Right);
-        assert_eq!(s.preferred_scale_percent(), percent);
-        let g = s.compose().unwrap();
-        let idx = [60, 80, 100, 120, 140]
-            .iter()
-            .position(|&p| p == percent)
-            .unwrap();
-        let row: String = row_chars(&g, 5).into_iter().collect();
-        assert!(
-            row.contains(&format!("│ UI Scale {} │", want[idx])),
-            "{percent}: {row:?}"
-        );
+        assert_eq!(s.scale_factor_percent(), factor);
+        let row: String = row_chars(&s.compose().unwrap(), 5).into_iter().collect();
+        assert!(row.contains(&labels[index]), "{factor}: {row:?}");
     }
-    // Left walks back and wraps the other way.
-    s.key(ShellKey::Left);
-    assert_eq!(s.preferred_scale_percent(), 80);
+    for (index, factor) in [(2, 100), (1, 80), (0, 60), (0, 60)] {
+        s.key(ShellKey::Left);
+        assert_eq!(s.scale_factor_percent(), factor);
+        let row: String = row_chars(&s.compose().unwrap(), 5).into_iter().collect();
+        assert!(row.contains(&labels[index]), "{factor}: {row:?}");
+    }
+    // Left at 80% keeps the former 60% rendering factor instead of wrapping.
+    assert_eq!(s.scale_factor_percent(), 60);
 }
 
 #[test]
 fn projection_and_shading_states_match_the_reference() {
     let projections = states("◀  Perspective");
     let shadings = states("◀    Points");
-    assert_eq!((projections.len(), shadings.len()), (2, 6));
+    assert_eq!((projections.len(), shadings.len()), (2, 7));
     let mut s = shell();
     open_view(&mut s);
     for want in projections.iter().cycle().skip(1).take(2) {
@@ -149,9 +158,18 @@ fn projection_and_shading_states_match_the_reference() {
         assert!(row.contains(&format!("│ {want} │")), "{want:?} in {row:?}");
     }
     s.key(ShellKey::Down);
-    // Default is `Shaded` (index 4); Right goes Flat line, then wraps to Points...
-    for i in [5, 0, 1, 2, 3, 4] {
+    // Startup is `Wireframe` (index 2); Right visits all seven cyclic states.
+    for i in [3, 4, 5, 6, 0, 1, 2] {
         s.key(ShellKey::Right);
+        let row: String = row_chars(&s.compose().unwrap(), 4).into_iter().collect();
+        assert!(
+            row.contains(&format!("│ {} │", shadings[i])),
+            "{i}: {row:?}"
+        );
+    }
+    // Left visits the same states in reverse and wraps back to Wireframe.
+    for i in [1, 0, 6, 5, 4, 3, 2] {
+        s.key(ShellKey::Left);
         let row: String = row_chars(&s.compose().unwrap(), 4).into_iter().collect();
         assert!(
             row.contains(&format!("│ {} │", shadings[i])),
@@ -161,29 +179,23 @@ fn projection_and_shading_states_match_the_reference() {
 }
 
 #[test]
-fn theme_row_switches_and_leaves_the_cells_untouched() {
+fn theme_row_switches_and_keeps_the_view_popup_open() {
     let states = states("[ ◐ Light ]");
     assert_eq!(states, ["[ ◐ Light ]", "[ ◑ Dark  ]"]);
     let mut s = shell();
-    assert_eq!(s.theme(), ThemeChoice::Light);
-    let base = s.compose().unwrap();
+    assert_eq!(s.theme(), ThemeChoice::Dark);
     open_view(&mut s);
     keys(&mut s, &[ShellKey::Down, ShellKey::Down, ShellKey::Down]);
+    let row: String = row_chars(&s.compose().unwrap(), 6).into_iter().collect();
+    assert!(row.contains("│ Theme [ ◑ Dark  ] │"), "{row:?}");
+    s.key(ShellKey::Enter);
+    assert_eq!(s.theme(), ThemeChoice::Light);
     let row: String = row_chars(&s.compose().unwrap(), 6).into_iter().collect();
     assert!(row.contains("│ Theme [ ◐ Light ] │"), "{row:?}");
     s.key(ShellKey::Enter);
     assert_eq!(s.theme(), ThemeChoice::Dark);
-    assert_eq!(
-        s.compose().unwrap(),
-        base,
-        "a theme change touches no cell: it is a uniform"
-    );
-    open_view(&mut s);
     let row: String = row_chars(&s.compose().unwrap(), 6).into_iter().collect();
     assert!(row.contains("│ Theme [ ◑ Dark  ] │"), "{row:?}");
-    keys(&mut s, &[ShellKey::Down, ShellKey::Down, ShellKey::Down]);
-    s.key(ShellKey::Enter);
-    assert_eq!(s.theme(), ThemeChoice::Light);
 }
 
 #[test]
@@ -191,7 +203,7 @@ fn fullscreen_item_leaves_one_request_and_closes_the_menu() {
     let mut s = shell();
     assert!(!s.take_fullscreen_request());
     open_view(&mut s);
-    keys(&mut s, &[ShellKey::Down; 11]);
+    keys(&mut s, &[ShellKey::Down; 12]);
     s.key(ShellKey::Enter);
     assert!(s.take_fullscreen_request());
     assert!(!s.take_fullscreen_request(), "taken once");
@@ -200,7 +212,7 @@ fn fullscreen_item_leaves_one_request_and_closes_the_menu() {
 
 #[test]
 fn the_view_popup_fits_the_minimum_grid() {
-    // 82 x 30 holds the whole 14-row View popup under the MenuBar.
+    // 82 x 30 holds the whole 15-row View popup under the MenuBar.
     let mut s = shell();
     open_view(&mut s);
     let g = s.compose().unwrap();

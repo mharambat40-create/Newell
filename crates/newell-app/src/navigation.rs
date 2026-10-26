@@ -11,14 +11,36 @@ use crate::input::NavigationGesture;
 use crate::picking::{PickHit, PickingScene};
 use newell_kernel::NewellMesh;
 use newell_render::{CameraSnapshot, SceneViewport, exposed_regions};
-use winit::event::TouchPhase;
+use winit::event::{MouseButton, TouchPhase};
 
 /// Mouse mapping belongs to the Controller rather than the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragKind {
+    /// A deferred primary-button orbit after the pointer has crossed the click-drag threshold.
+    PrimaryOrbit,
     Orbit,
+    /// A deferred secondary-button pan after the pointer has crossed the click-drag threshold.
+    SecondaryPan,
     Pan,
 }
+
+impl DragKind {
+    /// Auxiliary mouse buttons keep distinct capture ownership while sharing the pan path.
+    #[must_use]
+    pub const fn from_auxiliary_button(button: MouseButton) -> Option<Self> {
+        match button {
+            MouseButton::Right => Some(Self::SecondaryPan),
+            MouseButton::Middle => Some(Self::Pan),
+            _ => None,
+        }
+    }
+}
+
+/// Logical-pixel pointer movement needed to capture a primary or secondary drag.
+///
+/// A primary press still reaches ordinary scene picking immediately. Keeping this slop in
+/// logical pixels makes clicks equally stable on standard and Retina displays.
+pub const CLICK_DRAG_THRESHOLD_LOGICAL_PX: f64 = 4.0;
 /// Distinct phase streams cannot steal each other's zoom anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoomSource {
@@ -49,6 +71,11 @@ pub struct Navigation {
     scene: PickingScene,
     occlusions: Vec<SceneViewport>,
     drag: Option<Drag>,
+    pending_drag: Option<Drag>,
+    /// Physical-pixel displacement supplied by macOS scroll events during a secondary press.
+    secondary_scroll_offset: (f64, f64),
+    /// Keeps the same phased scroll stream out of UI scrolling/zoom after button release.
+    secondary_scroll_stream: bool,
     zoom: Option<Zoom>,
     scroll_gate: NavigationGesture,
     pinch_gate: NavigationGesture,
@@ -130,6 +157,7 @@ impl Navigation {
         if !eligible
             || !self.visible(point)
             || self.drag.is_some()
+            || self.pending_drag.is_some()
             || self.zoom.is_some()
             || !display_scale.is_finite()
             || display_scale <= 0.0
@@ -148,6 +176,155 @@ impl Navigation {
             mesh_revision: self.scene.revision(),
         });
         true
+    }
+    /// Starts a primary-button press over exposed scene pixels without changing the camera.
+    /// The press becomes an orbit capture only after [`CLICK_DRAG_THRESHOLD_LOGICAL_PX`].
+    pub fn begin_primary_orbit(
+        &mut self,
+        point: (f64, f64),
+        display_scale: f64,
+        eligible: bool,
+    ) -> bool {
+        self.begin_pending(DragKind::PrimaryOrbit, point, display_scale, eligible)
+    }
+    /// Starts a secondary-button press over exposed scene pixels without changing the camera.
+    /// After the threshold, the existing contextual-depth pan path owns the drag.
+    pub fn begin_secondary_pan(
+        &mut self,
+        point: (f64, f64),
+        display_scale: f64,
+        eligible: bool,
+    ) -> bool {
+        let started = self.begin_pending(DragKind::SecondaryPan, point, display_scale, eligible);
+        if started {
+            self.secondary_scroll_offset = (0.0, 0.0);
+            self.secondary_scroll_stream = false;
+        }
+        started
+    }
+    fn begin_pending(
+        &mut self,
+        kind: DragKind,
+        point: (f64, f64),
+        display_scale: f64,
+        eligible: bool,
+    ) -> bool {
+        if !self.begin(kind, point, display_scale, eligible) {
+            return false;
+        }
+        self.pending_drag = self.drag.take();
+        true
+    }
+    /// Advances a pending press. Returns `true` only when it changed the camera.
+    /// After the threshold is crossed it uses the captured orbit or pan path.
+    pub fn advance_pending_drag(&mut self, point: (f64, f64)) -> bool {
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return false;
+        }
+        let Some(pending) = self.pending_drag else {
+            return false;
+        };
+        let dx = (point.0 - pending.start.0) / pending.display_scale;
+        let dy = (point.1 - pending.start.1) / pending.display_scale;
+        if dx.mul_add(dx, dy * dy) <= CLICK_DRAG_THRESHOLD_LOGICAL_PX.powi(2) {
+            return false;
+        }
+        self.pending_drag = None;
+        self.drag = Some(pending);
+        self.navigate(point)
+    }
+    /// Advances the pending primary press without affecting a secondary press.
+    pub fn advance_primary_orbit(&mut self, point: (f64, f64)) -> bool {
+        self.primary_orbit_pending() && self.advance_pending_drag(point)
+    }
+    /// Advances the pending secondary press without affecting a primary press.
+    pub fn advance_secondary_pan(&mut self, point: (f64, f64)) -> bool {
+        self.secondary_pan_pending() && self.advance_pending_drag(point)
+    }
+    /// `true` while a primary-button press is waiting to cross the orbit threshold.
+    #[must_use]
+    pub const fn primary_orbit_pending(&self) -> bool {
+        matches!(
+            self.pending_drag,
+            Some(Drag {
+                kind: DragKind::PrimaryOrbit,
+                ..
+            })
+        )
+    }
+    /// `true` while a secondary-button press is waiting to cross the pan threshold.
+    #[must_use]
+    pub const fn secondary_pan_pending(&self) -> bool {
+        matches!(
+            self.pending_drag,
+            Some(Drag {
+                kind: DragKind::SecondaryPan,
+                ..
+            })
+        )
+    }
+    /// `true` while either press is waiting to cross the click-drag threshold.
+    #[must_use]
+    pub const fn has_pending_drag(&self) -> bool {
+        self.pending_drag.is_some()
+    }
+    fn secondary_pan_active(&self) -> bool {
+        self.pending_drag
+            .or(self.drag)
+            .is_some_and(|drag| drag.kind == DragKind::SecondaryPan)
+    }
+    /// Routes pointer movement through the captured drag, including any two-finger scroll
+    /// displacement accumulated while the secondary button is held.
+    pub fn advance_pointer(&mut self, point: (f64, f64)) -> bool {
+        let point = if self.secondary_pan_active() {
+            (
+                point.0 + self.secondary_scroll_offset.0,
+                point.1 + self.secondary_scroll_offset.1,
+            )
+        } else {
+            point
+        };
+        if self.has_pending_drag() {
+            self.advance_pending_drag(point)
+        } else {
+            self.navigate(point)
+        }
+    }
+    /// A macOS two-finger movement may arrive as a pixel scroll while the secondary click
+    /// remains pressed. Treat that stream as motion of the existing pan capture. `None`
+    /// leaves ordinary scrolling to the UI or zoom controller.
+    pub fn advance_secondary_pan_scroll(
+        &mut self,
+        delta: (f64, f64),
+        phase: TouchPhase,
+        pointer: (f64, f64),
+    ) -> Option<bool> {
+        if !self.secondary_pan_active() {
+            if !self.secondary_scroll_stream || phase == TouchPhase::Started {
+                self.secondary_scroll_stream = false;
+                return None;
+            }
+            if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.secondary_scroll_stream = false;
+            }
+            return Some(false);
+        }
+        // Reject the same scroll stream's momentum after button release; a fresh Started
+        // phase can still begin ordinary cursor-targeted zoom.
+        self.scroll_gate.update(phase, false);
+        self.secondary_scroll_stream = !matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        if phase == TouchPhase::Cancelled || !delta.0.is_finite() || !delta.1.is_finite() {
+            return Some(false);
+        }
+        let next = (
+            self.secondary_scroll_offset.0 + delta.0,
+            self.secondary_scroll_offset.1 + delta.1,
+        );
+        if !next.0.is_finite() || !next.1.is_finite() {
+            return Some(false);
+        }
+        self.secondary_scroll_offset = next;
+        Some(self.advance_pointer(pointer))
     }
     /// Whether mouse capture owns motion, including zero-displacement events.
     #[must_use]
@@ -168,7 +345,7 @@ impl Navigation {
         }
         let before = self.camera;
         self.camera = match drag.kind {
-            DragKind::Orbit => {
+            DragKind::PrimaryOrbit | DragKind::Orbit => {
                 let displacement = (point.0 - drag.start.0, point.1 - drag.start.1);
                 let next = drag
                     .camera
@@ -180,13 +357,21 @@ impl Navigation {
                     .pitch_excess_pixels(displacement, drag.display_scale);
                 next
             }
-            DragKind::Pan => drag.camera.pan(drag.start, point, drag.depth),
+            DragKind::SecondaryPan | DragKind::Pan => {
+                drag.camera.pan(drag.start, point, drag.depth)
+            }
         };
         self.drag = Some(drag);
         self.record(before)
     }
     /// Only the initiating mouse button releases a captured drag.
     pub fn release(&mut self, kind: DragKind) {
+        if kind == DragKind::SecondaryPan {
+            self.secondary_scroll_offset = (0.0, 0.0);
+        }
+        if self.pending_drag.is_some_and(|drag| drag.kind == kind) {
+            self.pending_drag = None;
+        }
         if self.drag.is_some_and(|drag| drag.kind == kind) {
             self.drag = None;
         }
@@ -194,6 +379,8 @@ impl Navigation {
     /// Cancels captures without altering pose. Ongoing trackpad streams stay rejected.
     pub fn cancel(&mut self) {
         self.drag = None;
+        self.pending_drag = None;
+        self.secondary_scroll_offset = (0.0, 0.0);
         self.zoom = None;
         self.scroll_gate.cancel();
         self.pinch_gate.cancel();
@@ -214,7 +401,8 @@ impl Navigation {
         stream: Option<(ZoomSource, TouchPhase)>,
         eligible: bool,
     ) -> bool {
-        let visible = eligible && self.visible(point) && self.drag.is_none();
+        let visible =
+            eligible && self.visible(point) && self.drag.is_none() && self.pending_drag.is_none();
         let mut end = false;
         let capture = if let Some((source, phase)) = stream {
             let gate = match source {

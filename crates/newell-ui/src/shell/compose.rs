@@ -7,26 +7,24 @@
 //! Shell layout and composition: pure functions from [`ShellState`] to a flat [`CellGrid`].
 
 use super::data::{
-    COMMAND_MENUS, Line, NodeKind, clamp_playhead, full_label, has_children, status_text,
-    top_level_count, visible_lines, with_bar_menus,
+    self, COMMAND_MENUS, Line, NodeKind, full_label, has_children, status_text, with_bar_menus,
 };
-use super::{
-    BAR_IDS, COMMAND_IDS, PLAYHEAD_ID, ShellState, Tree, TreePart, WINDOW_BASE, tree_id,
-    tree_part_id,
-};
-use crate::widgets::{Canvas, owned_blank};
+use super::{BAR_IDS, COMMAND_IDS, PLAYHEAD_ID, ShellState, Tree, TreePart, WINDOW_BASE};
+use crate::widgets::Canvas;
 use crate::{
     BorderLine, CellGrid, GridRect, InteractionState, TreeNodeKind, TreeRow, TreeRowIds, UiError,
     WidgetContext, WidgetId, WidgetState, WidgetStyles, compose_overlays, draw_border, draw_label,
-    draw_menu_bar, draw_menu_popup, draw_tree_row, title_rect,
+    draw_menu_bar, draw_menu_popup, title_rect,
 };
 
 /// Default NavigationPanel width, frame included.
 pub(super) const NAV_WIDTH: u32 = 25;
 /// Narrowest NavigationPanel, frame included (a smaller grid caps it at half its width).
 const NAV_MIN: u32 = 14;
-/// Rows above the body: MenuBar and CommandBar frames sharing their middle border.
+/// Rows above the body when both MenuBar and CommandBar are visible.
 pub(super) const TOP_ROWS: u32 = 4;
+/// Shared border row at the bottom of the MenuBar, also the body top when Task bar is hidden.
+const MENU_BODY_TOP: u32 = 2;
 /// Features pane height of the reference, frame included (`Interface_Exemple.txt`: rows 5..17).
 /// At the default split every row of the body beyond the reference body belongs to Elements
 /// (`README_UI.md` §25).
@@ -91,8 +89,8 @@ pub(super) fn features_rows(body: u32, split: Option<Split>) -> u32 {
 
 /// NavigationPanel width actually used on a grid `cols` wide: at least [`NAV_MIN`] and at most
 /// half the grid, and never more than the grid on a tiny one.
-pub(super) fn nav_width(cols: u32, wanted: u32) -> u32 {
-    let half = cols / 2;
+pub(super) fn nav_width(cols: u32, wanted: u32, content_max: u32) -> u32 {
+    let half = (cols / 2).min(content_max);
     wanted.clamp(NAV_MIN.min(half), half)
 }
 
@@ -136,43 +134,54 @@ impl Layout {
         cols: u32,
         rows: u32,
         widths: PanelWidths,
+        content_max: u32,
         show_tree: bool,
+        show_command_bar: bool,
         show_status: bool,
     ) -> Self {
+        let top_rows = if show_command_bar {
+            TOP_ROWS
+        } else {
+            MENU_BODY_TOP
+        };
         let nav = if show_tree {
-            nav_width(cols, widths.nav)
+            nav_width(cols, widths.nav, content_max)
         } else {
             0
         };
         let status_height = if show_status { STATUS_ROWS } else { 0 };
         let status_top = rows.saturating_sub(status_height);
-        // Body frames run from row `TOP_ROWS` to the status frame's top row, inclusive,
+        // Body frames run from row `top_rows` to the status frame's top row, inclusive,
         // or to the grid's last row when the status bar is hidden.
         let body = if show_status {
-            status_top.saturating_sub(TOP_ROWS - 1)
+            status_top.saturating_sub(top_rows - 1)
         } else {
-            rows.saturating_sub(TOP_ROWS)
+            rows.saturating_sub(top_rows)
         };
         let features_h = features_rows(body, widths.split);
         let (elements_top, elements_h) = if features_h == 0 {
-            (TOP_ROWS, body)
+            (top_rows, body)
         } else {
             (
-                TOP_ROWS.saturating_add(features_h - 1),
+                top_rows.saturating_add(features_h - 1),
                 body - features_h + 1,
             )
         };
         let viewport = GridRect::new(
             nav.saturating_sub(1),
-            TOP_ROWS,
+            top_rows,
             cols.saturating_sub(nav.saturating_sub(1)),
             body,
         );
         Self {
             grid: GridRect::new(0, 0, cols, rows),
             menu: GridRect::new(0, 0, cols, 3),
-            command: GridRect::new(0, 2, cols, 3),
-            features: GridRect::new(0, TOP_ROWS, nav, features_h),
+            command: if show_command_bar {
+                GridRect::new(0, MENU_BODY_TOP, cols, 3)
+            } else {
+                GridRect::new(0, MENU_BODY_TOP, cols, 0)
+            },
+            features: GridRect::new(0, top_rows, nav, features_h),
             elements: GridRect::new(0, elements_top, nav, elements_h),
             viewport,
             status: GridRect::new(0, status_top, cols, status_height),
@@ -235,7 +244,9 @@ impl ShellState {
             self.cols,
             self.rows,
             self.widths,
+            self.tree_content_max,
             self.view_panel_visible(0),
+            self.view_panel_visible(1),
             self.view_panel_visible(2),
         )
     }
@@ -261,7 +272,7 @@ impl ShellState {
         let mut grid = CellGrid::new(self.cols, self.rows)?;
         let styles = WidgetStyles::default();
         let below = InteractionState {
-            hovered: hovered.filter(|_| self.overlays.is_empty()),
+            hovered: hovered.filter(|_| self.input_free()),
             ..self.interaction
         };
         let above = InteractionState {
@@ -279,7 +290,9 @@ impl ShellState {
         let layout = self.layout();
         self.draw_chrome(&mut grid, &base, &layout);
         let mut lit = false;
-        if let Some(panel) = self.panel().compose_box() {
+        if !self.selection.is_profile_picker()
+            && let Some(panel) = self.panel().compose_box()
+        {
             let (_, drawn) = panel.draw_with(
                 &mut grid,
                 &base,
@@ -289,6 +302,26 @@ impl ShellState {
             lit |= drawn;
         }
         lit |= self.draw_overlays(&mut grid, &top, layout.grid);
+        if self.color_enabled() {
+            single_contours(&mut grid);
+        }
+        if self.input_free() && let Some(id) = hovered {
+            for (tree, frame) in [(Tree::Features, layout.features), (Tree::Elements, layout.elements)] {
+                if let Some((shown_tree, slot, _)) = super::tree_decode(id)
+                    && shown_tree == tree
+                    && let Some(index) = self.tree_slots[tree.slot()].get(slot)
+                    && let Some(line) = self.tree_lines(tree).iter().skip(self.tree_scroll[tree.slot()])
+                        .take(frame.inset(1).height() as usize)
+                        .position(|line| matches!(line, Line::Node(row) if row.index == *index))
+                    && frame.width() >= 2
+                    && let Some(cell) = grid.get_mut(frame.col() + frame.width() - 1,
+                        frame.inset(1).row() + u32::try_from(line).unwrap_or(u32::MAX))
+                {
+                    cell.content = crate::CellContent::Glyph(if self.color_enabled() { '╡' } else { '╣' });
+                    lit = true;
+                }
+            }
+        }
         Ok((grid, lit))
     }
 
@@ -296,13 +329,15 @@ impl ShellState {
         let style = ctx.styles.normal;
         for frame in [
             layout.menu,
-            layout.command,
             layout.features,
             layout.elements,
             layout.viewport,
             layout.status,
         ] {
             draw_border(grid, frame, BorderLine::Double, style);
+        }
+        if layout.command.height() > 0 {
+            draw_border(grid, layout.command, BorderLine::Double, style);
         }
 
         let bar = layout.menu_bar();
@@ -319,18 +354,27 @@ impl ShellState {
                 let mut canvas = Canvas::new(grid, controls);
                 for (i, label) in WINDOW_CONTROLS.iter().enumerate() {
                     let id = WidgetId::new(WINDOW_BASE + u32::try_from(i).unwrap_or(0));
-                    canvas.text(4 * u32::try_from(i).unwrap_or(0), 0, label, style, Some(id));
+                    canvas.text_with_ink(
+                        4 * u32::try_from(i).unwrap_or(0),
+                        0,
+                        label,
+                        style,
+                        Some(id),
+                        crate::InkRole::Action,
+                    );
                 }
             }
         });
-        draw_menu_bar(
-            grid,
-            ctx,
-            layout.command_bar(),
-            COMMAND_IDS,
-            &COMMAND_MENUS,
-            &self.command_bar,
-        );
+        if layout.command.height() > 0 {
+            draw_menu_bar(
+                grid,
+                ctx,
+                layout.command_bar(),
+                COMMAND_IDS,
+                &COMMAND_MENUS,
+                &self.command_bar,
+            );
+        }
 
         self.draw_tree(grid, ctx, layout.features, Tree::Features);
         self.draw_tree(grid, ctx, layout.elements, Tree::Elements);
@@ -361,28 +405,43 @@ impl ShellState {
     /// The lines of `tree` currently shown (before clipping to the pane): the visible nodes
     /// and, in the Features tree, the playhead separator.
     pub(super) fn tree_lines(&self, tree: Tree) -> Vec<Line> {
-        let (open, playhead) = match tree {
-            Tree::Features => (
-                &self.features_open,
-                clamp_playhead(self.playhead, top_level_count(tree.nodes())),
-            ),
-            Tree::Elements => (&self.elements_open, None),
-        };
-        visible_lines(tree.nodes(), open, playhead)
+        let nodes = &self.nodes[tree.slot()];
+        let open: Vec<_> = nodes
+            .iter()
+            .map(|node| self.expanded.contains(&node.target))
+            .collect();
+        let rows = data::visible_rows(nodes, &open);
+        let boundary = (tree == Tree::Features
+            && self.inline_playhead_host().is_none()
+            && self
+                .expanded
+                .contains(&self.projection.target(super::TreeTargetKind::FeaturesRoot)))
+        .then(|| self.projection.display_boundary(self.playhead.display).ok())
+        .flatten();
+        let mut lines = Vec::new();
+        let mut inserted = false;
+        for row in rows {
+            if !inserted && boundary.is_some_and(|boundary| row.index > boundary) {
+                lines.push(Line::Playhead);
+                inserted = true;
+            }
+            lines.push(Line::Node(row));
+        }
+        if boundary.is_some() && !inserted {
+            lines.push(Line::Playhead);
+        }
+        lines
     }
 
     fn draw_tree(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, tree: Tree) {
         let inner = frame.inset(1);
-        let nodes = tree.nodes();
-        let open = match tree {
-            Tree::Features => &self.features_open,
-            Tree::Elements => &self.elements_open,
-        };
+        let nodes = &self.nodes[tree.slot()];
         for (line, shown) in self
             .tree_lines(tree)
             .iter()
-            .enumerate()
+            .skip(self.tree_scroll[tree.slot()])
             .take(inner.height() as usize)
+            .enumerate()
         {
             let at = GridRect::new(
                 inner.col(),
@@ -394,7 +453,7 @@ impl ShellState {
             );
             let row = match shown {
                 Line::Playhead => {
-                    draw_playhead(grid, ctx, at);
+                    draw_playhead(grid, ctx, at, self.playhead_depth(), &self.playhead_trunk());
                     continue;
                 }
                 Line::Node(row) => row,
@@ -402,17 +461,13 @@ impl ShellState {
             let Some(node) = nodes.get(row.index) else {
                 continue;
             };
-            let label = full_label(
-                nodes,
-                row.index,
-                self.names[tree.slot()][row.index].as_deref(),
-            );
+            let label = full_label(nodes, row.index, None);
             let tree_row = TreeRow {
                 ids: TreeRowIds {
-                    row: tree_id(tree, row.index),
-                    marker: tree_part_id(tree, row.index, TreePart::Marker),
-                    check: tree_part_id(tree, row.index, TreePart::Check),
-                    name: tree_part_id(tree, row.index, TreePart::Name),
+                    row: self.node_id(tree, row.index, TreePart::Row),
+                    marker: self.node_id(tree, row.index, TreePart::Marker),
+                    check: self.node_id(tree, row.index, TreePart::Check),
+                    name: self.node_id(tree, row.index, TreePart::Name),
                 },
                 kind: if has_children(nodes, row.index) {
                     TreeNodeKind::Branch
@@ -423,15 +478,17 @@ impl ShellState {
                 last: row.last,
                 trunk: &row.trunk,
                 spaced: node.kind == NodeKind::Named,
-                check: node.check.map(|_| self.checks[tree.slot()][row.index]),
+                check: node.check,
                 label: &label,
                 state: WidgetState {
-                    expanded: open.get(row.index).copied().unwrap_or(false),
-                    selected: self.selected == Some((tree, row.index)),
+                    expanded: self.expanded.contains(&node.target),
+                    selected: self.selected == Some(node.target),
                     ..WidgetState::default()
                 },
             };
-            draw_tree_row(grid, ctx, at, &tree_row);
+            let inline = (tree == Tree::Features && self.inline_playhead_host() == Some(node.target))
+                .then_some(WidgetId::new(PLAYHEAD_ID));
+            tree_row.draw_with_inline(grid, ctx, at, inline);
         }
     }
 
@@ -480,16 +537,10 @@ impl ShellState {
     pub(super) fn focus_ring(&self, grid: &CellGrid) -> Vec<WidgetId> {
         let layout = self.layout();
         let mut ring = Vec::new();
-        for (tree, frame) in [
-            (Tree::Features, layout.features),
-            (Tree::Elements, layout.elements),
-        ] {
-            let shown = frame.inset(1).height() as usize;
-            for line in self.tree_lines(tree).iter().take(shown) {
-                if let Line::Node(row) = line {
-                    ring.push(tree_id(tree, row.index));
-                }
-            }
+        for tree in [Tree::Features, Tree::Elements] {
+            ring.extend(
+                (0..self.tree_slots[tree.slot()].len()).map(|slot| super::tree_id(tree, slot)),
+            );
         }
         if let Some(panel) = self.panel().compose_box() {
             collect_ids(grid, layout.action_panel(panel.height()), &mut ring);
@@ -498,17 +549,20 @@ impl ShellState {
     }
 }
 
-/// The playhead separator row: `│ ─────────────────── ` (`Interface_Exemple.txt`), the `│`
-/// continuing the guide of the top-level features. Every cell is owned by the playhead id so it
-/// can be dragged; it is not a feature and is never selected or focused.
-fn draw_playhead(grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect) {
+/// Boundary guides are inert Text cells; only the horizontal stroke admits capture.
+fn draw_playhead(
+    grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect, depth: u32, trunk: &[bool],
+) {
     let style = ctx.styles.normal;
-    let id = WidgetId::new(PLAYHEAD_ID);
     let mut canvas = Canvas::new(grid, rect);
-    canvas.fill(0, canvas.width(), 0, owned_blank(style, id));
-    canvas.text(0, 0, " │ ", style, Some(id));
-    let dashes = canvas.width().saturating_sub(4).min(canvas.reach());
-    canvas.text(3, 0, &"─".repeat(dashes as usize), style, Some(id));
+    for level in 0..depth.min(canvas.reach() / 2) {
+        if trunk.get(level as usize).copied().unwrap_or(false) {
+            canvas.text(level.saturating_mul(2).saturating_add(1), 0, "│", style, None);
+        }
+    }
+    let start = depth.saturating_mul(2).saturating_add(1);
+    let count = canvas.width().saturating_sub(start).min(canvas.reach());
+    canvas.text(start, 0, &"─".repeat(count as usize), style, Some(WidgetId::new(PLAYHEAD_ID)));
 }
 
 fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, show_cube: bool) {
@@ -549,6 +603,82 @@ fn collect_ids(grid: &CellGrid, rect: GridRect, out: &mut Vec<WidgetId>) {
                 && !out.contains(&id)
             {
                 out.push(id);
+            }
+        }
+    }
+}
+
+/// Color presentation changes only structural glyphs, after existing hover composition.
+fn single_contours(grid: &mut CellGrid) {
+    for row in 0..grid.rows() {
+        for col in 0..grid.cols() {
+            let Some(cell) = grid.get_mut(col, row) else {
+                continue;
+            };
+            if cell.ink != crate::InkRole::Contour {
+                continue;
+            }
+            if let crate::CellContent::Glyph(ch) = cell.content {
+                let single = match ch {
+                    '═' => '─',
+                    '║' => '│',
+                    '╔' => '┌',
+                    '╗' => '┐',
+                    '╚' => '└',
+                    '╝' => '┘',
+                    '╠' => '├',
+                    '╣' => '┤',
+                    '╦' => '┬',
+                    '╩' => '┴',
+                    '╬' => '┼',
+                    _ => continue,
+                };
+                cell.content = crate::CellContent::Glyph(single);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{BorderAxis, CellContent, InkRole, SharedBorder, StyleId, WidgetId};
+    #[test]
+    fn eleven_frame_mappings_preserve_metadata_and_exclude_other_roles() {
+        let doubles = "═║╔╗╚╝╠╣╦╩╬─│╭╮╰╯┆╞╡╘";
+        let singles = "─│┌┐└┘├┤┬┴┼─│╭╮╰╯┆╞╡╘";
+        for ink in [InkRole::Text, InkRole::Contour, InkRole::Action] {
+            let mut grid = CellGrid::new(doubles.chars().count() as u32, 1).unwrap();
+            for (x, ch) in doubles.chars().enumerate() {
+                let cell = grid.get_mut(x as u32, 0).unwrap();
+                cell.content = CellContent::Glyph(ch);
+                cell.ink = ink;
+                cell.style = StyleId::new(3);
+                cell.widget_id = Some(WidgetId::new(12));
+                cell.shared_border = Some(SharedBorder {
+                    axis: BorderAxis::Vertical,
+                    low: Some(WidgetId::new(1)),
+                    high: Some(WidgetId::new(2)),
+                });
+            }
+            let before = grid.clone();
+            single_contours(&mut grid);
+            let expected = if ink == InkRole::Contour {
+                singles
+            } else {
+                doubles
+            };
+            for ((a, b), ch) in before
+                .cells()
+                .iter()
+                .zip(grid.cells())
+                .zip(expected.chars())
+            {
+                assert_eq!(b.content, CellContent::Glyph(ch));
+                assert_eq!(
+                    (a.ink, a.style, a.widget_id, a.shared_border),
+                    (b.ink, b.style, b.widget_id, b.shared_border)
+                );
             }
         }
     }

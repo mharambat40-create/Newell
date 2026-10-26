@@ -6,7 +6,7 @@
 // (at your option) any later version.
 //! Automatic per-monitor UI scale of one window (M2.17, `ARCHITECTURE.md` §3.1.1).
 //!
-//! [`ScaleManager`] owns the three separate values: the user's `preferred_scale_percent`, the
+//! [`ScaleManager`] owns the three separate values: the user's `scale_factor_percent`, the
 //! monitor's reference scale and `effective_k`, plus the grid the user last chose. It decides
 //! *whether* a re-derivation is needed from a monitor snapshot and *what* the window must
 //! become ([`plan_rescale`]); the `winit` and GPU calls live in `app.rs`. There are no `winit`
@@ -17,8 +17,8 @@
 //! cannot feed back into itself.
 
 use newell_ui::{
-    DEFAULT_SCALE_PERCENT, GridMetrics, MIN_COLS, MIN_ROWS, ScaleDecision, ScaleMode, ScreenRect,
-    UiError, effective_scale, fit_window,
+    DEFAULT_SCALE_FACTOR_PERCENT, GridMetrics, MIN_COLS, MIN_ROWS, ScaleDecision, ScaleMode,
+    ScreenRect, UiError, effective_scale, fit_window,
 };
 
 /// What is known about the monitor that hosts the window, in the monitor's own physical pixels.
@@ -93,7 +93,7 @@ pub fn rect_in_window_space(monitor: &MonitorInfo, window_scale: f64) -> ScreenR
 struct Input {
     monitor: Option<MonitorInfo>,
     mode: ScaleMode,
-    percent: u32,
+    scale_factor_percent: u32,
 }
 
 /// A re-derivation that changed an input.
@@ -114,7 +114,7 @@ pub struct Rescale {
 /// user last chose.
 #[derive(Debug)]
 pub struct ScaleManager {
-    percent: u32,
+    scale_factor_percent: u32,
     k: Option<u32>,
     input: Option<Input>,
     /// The grid the user last chose; derived changes never overwrite it, so a window moved to
@@ -126,7 +126,7 @@ pub struct ScaleManager {
 impl Default for ScaleManager {
     fn default() -> Self {
         Self {
-            percent: DEFAULT_SCALE_PERCENT,
+            scale_factor_percent: DEFAULT_SCALE_FACTOR_PERCENT,
             k: None,
             input: None,
             desired: (MIN_COLS, MIN_ROWS),
@@ -136,16 +136,15 @@ impl Default for ScaleManager {
 }
 
 impl ScaleManager {
-    /// The user's preference in percent (60/80/100/120). Never changed by a monitor.
+    /// The rendering multiplier selected by the View menu. Never changed by a monitor.
     #[must_use]
-    pub const fn preferred_percent(&self) -> u32 {
-        self.percent
+    pub const fn scale_factor_percent(&self) -> u32 {
+        self.scale_factor_percent
     }
 
-    /// Stores a new preference (the M2.18 control calls this; M2.17 uses 100 %). The next
-    /// [`Self::evaluate`] re-derives `k`.
-    pub fn set_preferred_percent(&mut self, percent: u32) {
-        self.percent = percent;
+    /// Stores the selected rendering multiplier. The next [`Self::evaluate`] re-derives `k`.
+    pub fn set_scale_factor_percent(&mut self, scale_factor_percent: u32) {
+        self.scale_factor_percent = scale_factor_percent;
     }
 
     /// The `k` currently in use, if any.
@@ -180,12 +179,16 @@ impl ScaleManager {
         let input = Input {
             monitor,
             mode,
-            percent: self.percent,
+            scale_factor_percent: self.scale_factor_percent,
         };
         if self.input.as_ref() == Some(&input) {
             return None;
         }
-        let decision = effective_scale(input.monitor.as_ref().map(|m| m.size), mode, self.percent);
+        let decision = effective_scale(
+            input.monitor.as_ref().map(|m| m.size),
+            mode,
+            self.scale_factor_percent,
+        );
         let previous_k = self.k;
         self.k = Some(decision.k);
         let size = input.monitor.as_ref().map(|m| m.size);
@@ -305,16 +308,16 @@ mod tests {
     }
 
     #[test]
-    fn launching_on_the_macbook_gives_k5_and_20_by_45() {
+    fn startup_label_100_uses_the_former_80_factor_on_retina() {
         let mut m = ScaleManager::default();
-        m.start(5);
+        m.start(4);
         let r = m.evaluate(Some(macbook()), WINDOWED).unwrap();
-        assert_eq!((r.decision.k, r.k_changed), (5, false));
-        assert_eq!(m.preferred_percent(), 100);
+        assert_eq!((r.decision.k, r.k_changed), (4, false));
+        assert_eq!(m.scale_factor_percent(), 80);
         let metrics = GridMetrics::from_k(r.decision.k).unwrap();
         assert_eq!(
             (metrics.cell_width_px(), metrics.cell_height_px()),
-            (20, 45)
+            (16, 36)
         );
     }
 
@@ -329,7 +332,11 @@ mod tests {
             (r.decision.k, r.k_changed, r.previous_k),
             (2, true, Some(5))
         );
-        assert_eq!(m.preferred_percent(), 100, "the preference is untouched");
+        assert_eq!(
+            m.scale_factor_percent(),
+            80,
+            "the startup factor is untouched"
+        );
         let metrics = GridMetrics::from_k(2).unwrap();
         assert_eq!((metrics.cell_width_px(), metrics.cell_height_px()), (8, 18));
     }
@@ -337,12 +344,12 @@ mod tests {
     #[test]
     fn macbook_to_full_hd_reduces_k_and_back_restores_it() {
         let mut m = ScaleManager::default();
-        m.start(5);
-        assert_eq!(k_of(&mut m, &macbook()), 5);
+        m.start(4);
+        assert_eq!(k_of(&mut m, &macbook()), 4);
         assert_eq!(k_of(&mut m, &full_hd_right()), 2);
-        assert_eq!(k_of(&mut m, &macbook()), 5);
-        assert_eq!(m.preferred_percent(), 100);
-        assert_eq!(m.effective_k(), Some(5));
+        assert_eq!(k_of(&mut m, &macbook()), 4);
+        assert_eq!(m.scale_factor_percent(), 80);
+        assert_eq!(m.effective_k(), Some(4));
     }
 
     #[test]
@@ -372,6 +379,7 @@ mod tests {
     #[test]
     fn resolution_and_display_scale_changes_rederive_k() {
         let mut m = ScaleManager::default();
+        m.set_scale_factor_percent(100);
         m.start(5);
         assert_eq!(k_of(&mut m, &macbook()), 5);
         // macOS "scaled resolution" change: same display, other backing size and factor.
@@ -390,10 +398,10 @@ mod tests {
         assert_eq!(k_of(&mut m, &full_hd_right()), 2);
         let mut seen = Vec::new();
         for percent in [120, 60, 80, 100] {
-            m.set_preferred_percent(percent);
+            m.set_scale_factor_percent(percent);
             let r = m.evaluate(Some(full_hd_right()), WINDOWED).unwrap();
             seen.push((percent, r.decision.k, r.k_changed));
-            assert_eq!(m.preferred_percent(), percent);
+            assert_eq!(m.scale_factor_percent(), percent);
         }
         assert_eq!(
             seen,
@@ -415,9 +423,9 @@ mod tests {
         let ks: Vec<u32> = [60, 80, 100, 120]
             .into_iter()
             .map(|p| {
-                m.set_preferred_percent(p);
+                m.set_scale_factor_percent(p);
                 let k = k_of(&mut m, &macbook());
-                assert_eq!(m.preferred_percent(), p);
+                assert_eq!(m.scale_factor_percent(), p);
                 k
             })
             .collect();
@@ -444,7 +452,7 @@ mod tests {
                     .into_iter()
                     .map(|p| {
                         let mut m = ScaleManager::default();
-                        m.set_preferred_percent(p);
+                        m.set_scale_factor_percent(p);
                         m.evaluate(Some(monitor.clone()), mode).unwrap().decision.k
                     })
                     .collect();
@@ -472,12 +480,12 @@ mod tests {
             m.start(expected[2]);
             let mut ks = Vec::new();
             for p in [60, 80, 100, 120, 60] {
-                m.set_preferred_percent(p);
+                m.set_scale_factor_percent(p);
                 let k = match m.evaluate(Some(monitor.clone()), WINDOWED) {
                     Some(r) => r.decision.k,
                     None => m.effective_k().unwrap(),
                 };
-                assert_eq!(m.preferred_percent(), p);
+                assert_eq!(m.scale_factor_percent(), p);
                 assert_eq!(m.effective_k(), Some(k));
                 ks.push(k);
             }
@@ -496,11 +504,11 @@ mod tests {
         assert_eq!(fs.decision.k, 2, "100 % is the same in both modes");
         let back = m.evaluate(Some(full_hd_right()), WINDOWED).unwrap();
         assert_eq!(back.decision.k, 2);
-        m.set_preferred_percent(120);
+        m.set_scale_factor_percent(120);
         assert_eq!(k_of(&mut m, &macbook()), 5, "clamped to the monitor's cap");
-        m.set_preferred_percent(60);
+        m.set_scale_factor_percent(60);
         assert_eq!(k_of(&mut m, &macbook()), 3);
-        assert_eq!(m.preferred_percent(), 60);
+        assert_eq!(m.scale_factor_percent(), 60);
     }
 
     #[test]
@@ -508,7 +516,7 @@ mod tests {
         let mut m = ScaleManager::default();
         m.start(5);
         let r = m.evaluate(None, WINDOWED).unwrap();
-        assert_eq!(r.decision.k, 5);
+        assert_eq!(r.decision.k, 4, "unknown monitor uses startup factor 80%");
         assert_eq!(
             k_of(&mut m, &full_hd_right()),
             2,
@@ -586,10 +594,10 @@ mod tests {
         let up = m.evaluate(Some(macbook()), WINDOWED).unwrap();
         let on_mac = plan(&up, m.desired_grid(), 2.0, (100, 100));
         assert_eq!(
-            on_mac.size.0, 2000,
-            "the desired 100 columns are back at 20 px"
+            on_mac.size.0, 1600,
+            "the desired 100 columns are back at 16 px"
         );
-        assert_eq!(on_mac.size.1 % 45, 0);
+        assert_eq!(on_mac.size.1 % 36, 0);
     }
 
     #[test]
@@ -657,11 +665,11 @@ mod tests {
         m.start(5);
         let r = m.evaluate(Some(macbook()), WINDOWED).unwrap();
         let min = plan(&r, (1, 1), 2.0, (0, 0));
-        assert_eq!(min.size, (1640, 1350));
+        assert_eq!(min.size, (1312, 1080));
         let max = plan(&r, (10_000, 10_000), 2.0, (0, 0));
         assert!(max.size.0 <= 2560 && max.size.1 <= 1664 - 104);
-        assert_eq!(max.size.0 % 20, 0);
-        assert_eq!(max.size.1 % 45, 0);
+        assert_eq!(max.size.0 % 16, 0);
+        assert_eq!(max.size.1 % 36, 0);
     }
 
     #[test]

@@ -83,9 +83,19 @@ const BOTTOM_ROW: &str = "╰─────────────────
 
 /// `╭─Title─────┬───────────────╮`: the title sits in the top border, the `┬` over the
 /// `Solid | Surface` divider.
+#[cfg(test)]
 pub(crate) fn top_border(title: &str) -> String {
     let shown: String = title.chars().take(12).collect();
     format!("╭─{shown:─<12}┬───────────────╮")
+}
+
+fn top_row(base: u32, title: &str) -> Row {
+    let shown: String = title.chars().take(12).collect();
+    Row::new(base)
+        .contour("╭─")
+        .text(&shown)
+        .contour(&"─".repeat(12 - shown.chars().count()))
+        .contour("┬───────────────╮")
 }
 
 /// Top border, `Solid | Surface` and `New | Add | Remove` with the border topology of the
@@ -99,55 +109,56 @@ pub(crate) fn push_head(
 ) {
     let (under_type, new_add, add_remove, under_mode) =
         HEAD[geometry as usize * 3 + result as usize];
-    b.push(Row::new(base).text(&top_border(title)));
+    b.push(top_row(base, title));
     b.push(
         Row::new(base)
-            .text("│")
+            .contour("│")
             .button(K_GEOMETRY, 0, "Solid", 13)
             .divider('│', K_GEOMETRY, 0, 1)
             .button(K_GEOMETRY, 1, "Surface", 15)
-            .text("│"),
+            .contour("│"),
     );
-    b.push(Row::new(base).text(under_type));
+    b.push(Row::new(base).contour(under_type));
     b.push(
         Row::new(base)
-            .text("│")
+            .contour("│")
             .button(K_RESULT, 0, "New", 7)
             .divider(new_add, K_RESULT, 0, 1)
             .button(K_RESULT, 1, "Add", 9)
             .divider(add_remove, K_RESULT, 1, 2)
             .button(K_RESULT, 2, "Remove", 11)
-            .text("│"),
+            .contour("│"),
     );
-    b.push(Row::new(base).text(under_mode));
+    b.push(Row::new(base).contour(under_mode));
 }
 
 /// The separator, `OK | Cancel` and the bottom border.
 pub(crate) fn push_footer(b: &mut ActionBox, base: u32) {
-    b.push(Row::new(base).text(SEPARATOR_ROW));
+    b.push(Row::new(base).contour(SEPARATOR_ROW));
     b.push(
         Row::new(base)
-            .text("│")
+            .contour("│")
             .action_button(K_ACTIONS, 0, "OK", 14)
             .divider('│', K_ACTIONS, 0, 1)
             .action_button(K_ACTIONS, 1, "Cancel", 14)
-            .text("│"),
+            .contour("│"),
     );
-    b.push(Row::new(base).text(BOTTOM_ROW));
+    b.push(Row::new(base).contour(BOTTOM_ROW));
 }
 
 /// `Merge with all`, and `Targets` while it is unchecked.
 pub(crate) fn push_merge(b: &mut ActionBox, base: u32, on: bool, targets: MockSelection) {
     b.push(
         Row::new(base)
-            .text("│ ")
+            .contour("│ ")
             .check_fill(K_MERGE, on, "Merge with all")
             .end(),
     );
     if !on {
         b.push(
             Row::new(base)
-                .text("│ ╰╴Targets   ")
+                .contour("│")
+                .text(" ╰╴Targets   ")
                 .select(K_MERGE_TARGETS, targets.count())
                 .end(),
         );
@@ -168,7 +179,8 @@ pub(crate) fn offset_head(
     let width = u32::try_from(label.chars().count() + 2).unwrap_or(0);
     b.push(
         Row::new(base)
-            .text(prefix)
+            .contour("│")
+            .text(&prefix.chars().skip(1).collect::<String>())
             .check(key, true, label, width)
             .text(&" ".repeat(gap))
             .cycle(mode_key, mode.label(), 9)
@@ -190,13 +202,21 @@ pub(crate) fn offset_children(
     match mode {
         ExtrudeOffsetMode::Blind => b.push(
             Row::new(base)
-                .text(&format!("{prefix}{label}"))
+                .contour("│")
+                .text(&format!(
+                    "{}{label}",
+                    prefix.chars().skip(1).collect::<String>()
+                ))
                 .numeric(keys.0, text)
                 .end(),
         ),
         ExtrudeOffsetMode::UpTo => b.push(
             Row::new(base)
-                .text(&format!("{prefix}Target  "))
+                .contour("│")
+                .text(&format!(
+                    "{}Target  ",
+                    prefix.chars().skip(1).collect::<String>()
+                ))
                 .select(keys.1, target.count())
                 .end(),
         ),
@@ -216,7 +236,8 @@ pub(crate) fn push_nested_end(
     if !on {
         b.push(
             Row::new(base)
-                .text("│   ╰╴")
+                .contour("│")
+                .text("   ╰╴")
                 .check_fill(K_NESTED, false, "End Offset")
                 .end(),
         );
@@ -233,13 +254,15 @@ pub(crate) fn push_nested_end(
     match mode {
         ExtrudeOffsetMode::Blind => b.push(
             Row::new(base)
-                .text(&format!("│     ╰╴{label}"))
+                .contour("│")
+                .text(&format!("     ╰╴{label}"))
                 .numeric(K_NESTED_DIST, text)
                 .end(),
         ),
         ExtrudeOffsetMode::UpTo => b.push(
             Row::new(base)
-                .text("│     ╰╴Target")
+                .contour("│")
+                .text("     ╰╴Target")
                 .select(K_NESTED_TARGET, target.count())
                 .end(),
         ),
@@ -347,6 +370,14 @@ pub(crate) trait ActionBoxUi {
         self.decode(id).is_some_and(|(key, slot)| {
             slot < 2 && self.select_keys().contains(&key) && self.shows(key)
         })
+    }
+
+    /// `true` if `id` belongs to the universally shared Profile selection field. Profile
+    /// selection is an ordered list, so it uses the Profile Selection box rather than the
+    /// generic checkbox selection modal.
+    fn is_profile_selection_field(&self, id: WidgetId) -> bool {
+        self.decode(id)
+            .is_some_and(|(key, slot)| slot < 2 && key == K_PROFILE && self.shows(key))
     }
 
     /// `(key, slot)` of `id` if it is a control currently shown by an open box.

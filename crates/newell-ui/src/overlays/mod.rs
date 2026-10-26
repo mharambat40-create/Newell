@@ -46,7 +46,7 @@ pub(crate) use modal::step_focus;
 pub use modal::{ModalKey, ModalStatus};
 pub use place::{ModalLayout, center_modal, modal_layout, place_popup};
 pub use rename::RenameModal;
-pub use selection::SelectionPanel;
+pub use selection::{SelectionPanel, SelectionThumbGrab};
 
 /// Kind of an overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

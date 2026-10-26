@@ -15,6 +15,6 @@ automatically. For a question without an assigned role, answer in read-only mode
 Claude adapters under `.claude/agents/` configure Claude only. They do not
 configure Codex tools, models or permissions. Use the shared role documents.
 
-For parallel work, follow `docs/agents/README.md`: separate writable checkouts,
-an identified baseline and plan revision, and no changes to another task's work
-or Git index. Never merge into `main`; the human controls integration.
+All roles work sequentially in this Newell checkout on `main`. Do not create
+task branches, worktrees or separate execution checkouts. Preserve existing
+work and the Git index. The human controls integration and external publication.

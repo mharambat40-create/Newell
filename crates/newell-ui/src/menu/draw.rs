@@ -217,6 +217,19 @@ pub fn draw_menu_popup(
                     state: ws,
                 };
                 draw_cyclic(grid, ctx, ctl, &sel);
+                let show_prev = !cy.bounded || cy.current > 0;
+                let show_next = !cy.bounded || cy.current.saturating_add(1) < cy.values.len();
+                if !show_prev && let Some(slot) = grid.get_mut(ctl.col(), ctl.row()) {
+                    *slot = cell(CellContent::Empty, ctx.styles.normal, Some(ids.popup()));
+                }
+                if !show_next
+                    && let Some(slot) = grid.get_mut(
+                        ctl.col().saturating_add(ctl.width().saturating_sub(1)),
+                        ctl.row(),
+                    )
+                {
+                    *slot = cell(CellContent::Empty, ctx.styles.normal, Some(ids.popup()));
+                }
                 // The value area is unowned in `draw_cyclic`; give it to the row, in the
                 // row style, so a click there is on the item and the highlight shows.
                 for dx in 1..ctl.width().saturating_sub(1) {
@@ -225,7 +238,16 @@ pub fn draw_menu_popup(
                         c.style = style;
                     }
                 }
-                if cy.enabled && hovers(ctx, &[Some(id), Some(prev), Some(next)]) {
+                if cy.enabled
+                    && hovers(
+                        ctx,
+                        &[
+                            Some(id),
+                            show_prev.then_some(prev),
+                            show_next.then_some(next),
+                        ],
+                    )
+                {
                     lit |= hover_menu_row(grid, row);
                 }
             }
@@ -240,15 +262,21 @@ pub fn draw_menu_popup(
                 let style = ctx.style_of(id, ws);
                 canvas.fill(0, canvas.width(), 0, owned_blank(style, id));
                 canvas.text(1, 0, item.label, style, Some(id));
+                for &offset in item.action_offsets {
+                    if offset < text_len(item.label) {
+                        canvas.ink_at(1u32.saturating_add(offset), 0, crate::InkRole::Action);
+                    }
+                }
                 if item.enabled && hovers(ctx, &[Some(id)]) {
                     lit |= hover_menu_row(grid, row);
                 }
             }
             MenuEntry::Separator => {
-                let sep = cell(
+                let sep = crate::widgets::cell_with_ink(
                     CellContent::Glyph('─'),
                     ctx.styles.normal,
                     Some(ids.popup()),
+                    crate::InkRole::Contour,
                 );
                 canvas.fill(0, canvas.width(), 0, sep);
             }
@@ -276,8 +304,9 @@ fn hover_menu_row(grid: &mut CellGrid, row: GridRect) -> bool {
 }
 
 /// Rounds the frame around `inner` and puts `title` in its top edge (`╭─View────╮`). The
-/// overlay frame already owns these cells; only their glyphs change. Cells cut by the grid
-/// edge are skipped, and a title longer than the edge is cut.
+/// overlay frame already owns these cells; glyphs and semantic ink are assigned without
+/// changing routing or style. Corners use Contour and title letters use Text. Cells cut by
+/// the grid edge are skipped, and a title longer than the edge is cut.
 fn draw_popup_frame(grid: &mut CellGrid, inner: GridRect, title: &str) {
     if inner.width() == 0 || inner.height() == 0 || inner.col() == 0 || inner.row() == 0 {
         return;
@@ -285,19 +314,20 @@ fn draw_popup_frame(grid: &mut CellGrid, inner: GridRect, title: &str) {
     let (left, top) = (inner.col() - 1, inner.row() - 1);
     let right = inner.col().saturating_add(inner.width());
     let bottom = inner.row().saturating_add(inner.height());
-    let mut set = |col: u32, row: u32, glyph: char| {
+    let mut set = |col: u32, row: u32, glyph: char, ink| {
         if let Some(c) = grid.get_mut(col, row) {
             c.content = CellContent::Glyph(glyph);
+            c.ink = ink;
         }
     };
-    set(left, top, '╭');
-    set(right, top, '╮');
-    set(left, bottom, '╰');
-    set(right, bottom, '╯');
+    set(left, top, '╭', crate::InkRole::Contour);
+    set(right, top, '╮', crate::InkRole::Contour);
+    set(left, bottom, '╰', crate::InkRole::Contour);
+    set(right, bottom, '╯', crate::InkRole::Contour);
     for (dx, glyph) in title.chars().enumerate() {
         let col = left.saturating_add(2).saturating_add(to_u32(dx as u64));
         if col < right {
-            set(col, top, glyph);
+            set(col, top, glyph, crate::InkRole::Text);
         }
     }
 }

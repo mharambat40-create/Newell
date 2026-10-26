@@ -8,7 +8,7 @@ The project follows a strict Model-View-Controller (MVC) architecture, segregate
 
 - **Model (`newell-kernel`, `newell-model`):** The single source of truth. Contains the parametric feature tree, parameters, and all BrepKIT topology/geometry operations. It has NO knowledge of the UI or the GPU.
 - **View (`newell-render`):** The `wgpu` rendering pipeline. It only reads states and draws them. It draws the ASCII grid, samples the texture atlas, and renders the 3D viewport.
-- **Controller (`newell-ui`, `newell-app`):** Handles OS events (`winit`), mouse/keyboard inputs, and translates them into O(1) grid hit-testing. It updates the UI state (e.g., focus, pressed, selection, expansion) and mutates the Model. Hover is tracked exclusively for M2.25 ASCII border
+- **Controller (`newell-ui`, `newell-app`):** Handles OS events (`winit`), mouse/keyboard inputs, and translates them into O(1) grid hit-testing. It updates the UI state (e.g., focus, pressed, selection, expansion) and mutates the Model. Hover is tracked exclusively for the documented ASCII border/tree
 highlighting through one Controller-owned
 hovered: Option<WidgetId>. No hover animation,
 colour change or shader effect is permitted.
@@ -19,16 +19,16 @@ Codex. Provider/model choice does not change a role's authority. Each agent
 MUST adhere to its boundaries. Shared instructions are in `docs/agents/`;
 `CLAUDE.md` and `AGENTS.md` are the respective provider entry points.
 
-- **Architect:** You draft plans in `docs/plans/`. You define interfaces, module structures, and list the tests to be written. You DO NOT write production code.
-- **Challenger:** You critique the Architect's plan. Look for borrow-checker issues, architectural bottlenecks, and missing edge cases. Be ruthless.
-- **Executor:** You write the actual Rust code. You MUST strictly follow the Architect's plan. You DO NOT know about the Auditor. You must write the tests, make them pass, and ensure the code compiles without errors.
+- **Architect:** Resolve functional choices, ownership, interfaces, specification conflicts and measurable acceptance criteria before handing off a minimal plan. A correction pass addresses identified findings without redesigning unrelated plan sections. Do NOT write production code.
+- **Challenger:** When the human requests a review, examine the affected behavior end to end and consolidate actionable findings. Report concrete blocking failures separately from recommendations; a verdict is advisory, not an approval gate.
+- **Executor:** Implement the explicitly approved behavior and plan. Resolve routine technical details and implementation defects within the approved behavior, architecture and file scope, supported by appropriate tests. Return only for a product decision, material scope change, structural interface or ownership change, or required amendment to a binding rule.
 - **Auditor:** You clean up the Executor's code. You enforce idiomatic Rust, resolve Clippy warnings, remove duplications, and ensure the AGPL header is present. You MUST NOT change the runtime behavior or break tests.
 
 ### 2.1 Auxiliary Agent: Explorer
 
 Explorer is an optional, read-only auxiliary agent.
 It is NOT a fifth primary agent and is NOT part of the
-mandatory execution pipeline.
+implementation path.
 
 Responsibilities:
 - Inspect the repository structure and existing implementations.
@@ -44,12 +44,32 @@ Restrictions:
 - Explorer MUST NOT execute destructive commands.
 - Explorer MUST NOT commit, push, or merge changes.
 
-The mandatory workflow remains:
+The bounded normal path is:
 
-Architect → Challenger → Executor → Auditor
+Architect → optional Challenger → one targeted Architect correction if needed
+→ human approval and implementation request → Executor
 
-Explorer may assist any primary agent without changing
-the responsibilities or authority of that agent.
+Challenger review occurs only at the human's request. The first review must
+cover affected behavior end to end and consolidate findings. A further
+Challenger pass requires a separate explicit human request. Challenger findings
+and verdicts are advisory and never constitute an approval gate. A correction
+pass addresses findings without redesigning unrelated plan sections.
+
+A finding is blocking only when a specific failure path demonstrates that the
+proposed implementation would fail to compile or violate a required interface;
+fail a required behavior; create invalid persistent state, lose a committed
+change, or leave required synchronization permanently incomplete; or contradict
+a binding specification or architectural rule. Preferences, optional
+optimizations, speculative future risks and requests for abstraction are
+recommendations unless they demonstrate one of these concrete current failures.
+
+The human's explicit approval of an identified plan revision plus a request to
+implement ends the review stage and authorizes Executor. The human may give both
+in one instruction. Do not request approval again after it has been given. A
+plan's existence, a remaining “proposed” label or a Challenger verdict does not
+add or remove that authorization. Auditor may follow a green implementation
+only when separately requested by the human. Explorer may assist on request
+without changing any role's authority.
 
 ### 2.2 Workflow Orchestration & Human Control
 
@@ -75,11 +95,12 @@ pipeline.
 An agent may recommend the next role at the end of its work, but MUST wait for
 explicit human instruction before that role is started.
 
-The mandatory ordering remains:
-
-Architect → Challenger → Executor → Auditor
-
-This ordering constrains sequence; it does not imply automatic execution.
+The human may request Challenger review or proceed directly from an approved
+Architect plan to Executor. Approval of the identified plan revision together
+with a request to implement is sufficient to start Executor; no additional
+review or approval is required. Neither a plan's existence nor a Challenger
+verdict implies approval. Each role starts only on the human's instruction;
+completion of a stage never advances the workflow automatically.
 
 ### 2.3 Engineering Decision & Complexity Policy
 
@@ -106,8 +127,17 @@ Human approval is required when a decision would:
 - require an irreversible or externally visible action not already authorised.
 
 A technical choice is NOT a blocking issue merely because several valid
-implementations exist. When a reasonable default exists, the responsible agent
-should select it and document the decision.
+implementations exist. Executor resolves local technical details and corrects
+implementation defects within the approved behavior, architecture and file
+scope, using appropriate tests, then records the choice and rationale. These
+routine choices do not require an Architect revision.
+
+Return to Architect only when implementation requires a product decision, a
+material scope change, a structural interface or ownership change, or an
+amendment to a binding rule. State the exact decision required and stop
+implementation only for work dependent on that decision; do not start another
+role. A concrete conflict with a binding rule must be reported before dependent
+implementation proceeds.
 
 A dependency is NOT forbidden merely because it is not named in
 `ARCHITECTURE.md`. A dependency may be introduced when the approved plan allows
@@ -119,25 +149,23 @@ implementation of standard infrastructure when the dependency satisfies those
 constraints. Custom implementations require a concrete project-specific
 justification.
 
-### 2.4 Parallel Provider Sessions
+### 2.4 Sequential Work in the Main Checkout
 
-The human may assign any role to Claude or Codex, including independent work
-on the same task. Role ordering and human approval requirements remain in force
-for each implementation; parallel execution does not authorize automatic dispatch.
-Explorer remains an optional read-only helper for either provider.
+Claude and Codex use the existing Newell directory on `main` sequentially.
+Do not create task branches, worktrees, separate execution checkouts or parallel
+implementations. Finish the human-assigned role before another role begins.
 
-Each writing task MUST use a separate branch and checkout/worktree, with an
-identified baseline and plan revision. Two writers MUST NOT share a checkout
-or overwrite each other's work or Git index. Worktrees created from HEAD do not
-include staged, unstaged or untracked changes; required uncommitted inputs need
-an explicitly authorized snapshot or a human-provided commit before dispatch.
-Independent plans use distinct paths. Reviews identify their exact input
-revision; input changes require reviewing the affected content again. Auditor
-takes over a green implementation only after its writer has stopped.
+Identify the plan revision being reviewed or implemented and the relevant
+staged, unstaged and untracked changes. Preserve existing work and the Git
+index. An uncommitted plan or source change in this checkout does not by itself
+block review or execution. If a real conflict prevents safe progress, report
+the affected files and conflict. No source snapshot, content hash, snapshot
+archive or snapshot commit is required as a prerequisite. If reviewed inputs
+change materially, identify the changes and reconsider the affected findings.
 
-Only the human selects between parallel alternatives and authorizes integration.
-Agents MUST NOT automatically merge or cherry-pick alternatives. The operational
-task/handoff contract is defined in `docs/agents/README.md`.
+Only the human authorizes integration or external publication. Agents MUST NOT
+automatically commit, push, merge or publish. The operational task/handoff
+contract is defined in `docs/agents/README.md`.
 
 ## 3. UI & Rendering Rules (wgpu)
 The interface is a 2D grid of characters.
@@ -170,17 +198,19 @@ Implementation plans under `docs/plans/` MUST reference the relevant
 - The UI is one fixed-size logical grid. Every cell has the same size: **W × H
   physical pixels, with W = 4k and H = 9k** for one positive integer `k`. The
   ratio W:H is therefore exactly **4:9**.
-- Reference size: **k = 5 → 20 × 45 px**, the cell of UI Scale 100% on the
-  reference display (a monitor whose reference scale is 5, §3.1.1). On a
-  *compact-class* monitor (reference scale 2, §3.1.1, e.g. Full HD) the same
-  100% is **k = 2 → 8 × 18 px**, one step below the reference.
+- Reference size: **k = 5 → 20 × 45 px**, the cell of UI Scale label 120%
+  (rendering factor 100%) on the reference display (a monitor whose reference
+  scale is 5, §3.1.1). On a *compact-class* monitor (reference scale 2,
+  §3.1.1, e.g. Full HD) the same factor 100% is **k = 2 → 8 × 18 px**,
+  one step below the reference.
   W, H and
   `k` are whole pixels. They are defined once, as a single source of truth (one
   metrics value derived from `k`), and used by layout, glyph rasterisation,
   rendering and hit-testing. No other constant, literal or per-component copy
   of W or H is allowed.
 - The only permitted values of `k` are 2, 3, 4, 5, 6 and 7. `k` is **not** a user
-  setting: the user sets a UI Scale *percentage* (default 100%) and the
+  setting: the user selects a displayed UI Scale label (default 100%, mapped
+  to rendering factor 80%) and the
   application derives `effective_k` automatically for the monitor showing the
   window (§3.1.1). M2.16 renders with `k = 5` only; from M2.17 production derives
   `k` at start-up and again on every monitor, resolution, display-scale,
@@ -252,18 +282,18 @@ permitted `k`: `L = 8k`, `H − L = k`, `top = k div 2`,
 font asset changes, these values and the continuity checks below MUST be
 re-verified.
 
-| k | Preference on reference 5 | W × H (px) | L | top | baseline_y |
+| k | Displayed UI Scale label on reference 5 | W × H (px) | L | top | baseline_y |
 |---|---|---|---|---|---|
-| 2 | — (100% on reference 2, §3.1.1) | 8 × 18 | 16 | 1 | 13 |
-| 3 | 60% | 12 × 27 | 24 | 1 | 19 |
-| 4 | 80% | 16 × 36 | 32 | 2 | 26 |
-| 5 | 100% | 20 × 45 | 40 | 2 | 32 |
-| 6 | 120% | 24 × 54 | 48 | 3 | 39 |
-| 7 | 140% | 28 × 63 | 56 | 3 | 45 |
+| 2 | — (minimum clamp; reached on compact monitors) | 8 × 18 | 16 | 1 | 13 |
+| 3 | 80% (factor 60%) | 12 × 27 | 24 | 1 | 19 |
+| 4 | 100% (factor 80%, default) | 16 × 36 | 32 | 2 | 26 |
+| 5 | 120% (factor 100%) | 20 × 45 | 40 | 2 | 32 |
+| 6 | 140% (factor 120%) | 24 × 54 | 48 | 3 | 39 |
+| 7 | — (no menu preset requests k = 7) | 28 × 63 | 56 | 3 | 45 |
 
-`k = 2` is the smallest permitted cell. It is reachable only through a monitor
-whose reference scale is 2 (§3.1.1); the preference ladder of the reference
-display (60% … 140% = `k` 3 … 7) never produces it.
+`k = 2` is the smallest permitted cell. On a reference-scale-5 monitor the
+80% label requests factor 60%, which rounds to `k = 3`; on a compact monitor
+the selected presets can be clamped to `k = 2` (§3.1.1).
 
 **Fira Code at `k = 2` (8 × 18 px), verified 2026-10-16.** `s = 1/150`, one em =
 13 px, line box `L = 16`, leading `H − L = 2` (`top = 1`, one blank row below),
@@ -382,35 +412,49 @@ This is a numeric and coverage check, **not** a visual check on a screen.
 > the monitor that displays the window, and is re-derived whenever that monitor,
 > its resolution, the window mode or the preference changes. **M2.17** owns the
 > whole automatic mechanism (derivation, triggers, atomic transition, window
-> fit and repositioning) with the preference fixed at 100%. **M2.18** adds only
+> fit and repositioning) with the selected label fixed at 100% (factor 80%).
+> **M2.18** adds only
 > the user-facing View menu selector that changes the preference. The previous
 > one-shot start-up rule and the "one percentage = one `k` on every monitor"
 > assumption are withdrawn.
 
-**Preference values.** Exactly five: 60%, 80%, **100% (default)**, 120%, 140%.
-A percentage is a label for a *multiplier of the monitor reference scale*
-(below); there is no fractional scale, no interpolation and no other value. On
-the reference display (reference scale 5) the five values are `k` = 3 / 4 / 5 /
-6 / 7, i.e. the cell sizes 12×27, 16×36, 20×45, 24×54, 28×63 px of the table in
-§3.1; on any other monitor the same percentage may give another `k`. On a
-compact-class monitor (reference scale 2, e.g. Full HD) 100% is `k = 2`, 8×18 px.
+**UI Scale presets.** Exactly four labels are selectable: 80%, **100% (default)**,
+120% and 140%. The displayed label is not the multiplier used by the existing
+scale calculation. Each label maps to the former rendering multiplier as
+follows:
 
-**Three separate values per window (§4.2).** They are never merged:
+| Displayed label | `scale_factor_percent` | Former preset |
+|---|---:|---:|
+| 80% | 60% | 60% |
+| 100% (default) | 80% | 80% |
+| 120% | 100% | 100% |
+| 140% | 120% | 120% |
+
+The former 140% preset is removed. There is no displayed 60% preset. The
+rendering multiplier is used by the unchanged per-monitor derivation below; on a
+monitor with reference scale 5, the four choices request `k` = 3 / 4 / 5 / 6
+(cell sizes 12×27 / 16×36 / 20×45 / 24×54 px). On a compact-class monitor
+(reference scale 2, e.g. Full HD), all four choices can resolve to `k = 2`,
+8×18 px, under the existing minimum-cell clamp.
+
+**Four separate values per window (§4.2).** They are never merged:
 
 | Name | Meaning | Changed by |
 |---|---|---|
-| `preferred_scale_percent` | The user's choice, one of 60/80/100/120/140. Default 100. | Only an explicit user action on the UI Scale control (M2.18). Never by a monitor, mode or resolution change. |
-| `monitor_reference_scale` | The integer `k` that means "100%" on the monitor currently showing the window; range 2…5 (only 2, 4 and 5 occur, below). | Derived from the monitor only (below). |
+| `ui_scale_label_percent` | The selected visible label, one of 80/100/120/140. Default 100. | Only an explicit user action on the UI Scale control (M2.18). Never by a monitor, mode or resolution change. |
+| `scale_factor_percent` | The rendering multiplier paired with the label: 60/80/100/120. Default 80. | Derived from the selected label using the fixed mapping above. |
+| `monitor_reference_scale` | The integer `k` corresponding to a 100% rendering multiplier on the monitor; range 2…5 (only 2, 4 and 5 occur, below). | Derived from the monitor only (below). |
 | `effective_k` | The integer `k` in use: the only value from which W = 4k and H = 9k come. Range 2…7. | Derived (below); never stored as a preference. |
 
-The View menu shows `preferred_scale_percent`, so it reads `100%` on every
-monitor. It never shows a value derived from `effective_k`, and the adaptation
-is invisible to the user: no dialog, no notice, no change of the displayed
-percentage. A change of `effective_k` never writes `preferred_scale_percent`, so
+The View menu shows `ui_scale_label_percent`, so the startup choice reads
+`100%` on every monitor. It never shows a value derived from `effective_k`, and
+the adaptation is invisible to the user: no dialog, no notice, no change of the
+displayed label. A change of `effective_k` never changes the selected label, so
 returning to the original monitor restores the original look without any user
-action. Persisting the preference across sessions is not defined by this
-document. A new window starts with preference 100% and the Light theme (§3.6),
-regardless of other windows and of any OS appearance setting.
+action. Persisting the selected label across sessions is not defined by this
+document. A new window starts with UI Scale label 100% (factor 80%), the Dark
+theme and Color unchecked (§3.6), regardless of other windows and of any OS
+appearance setting.
 
 **Inputs of the derivation.** `effective_k` is a pure function of exactly four
 inputs and of nothing else:
@@ -418,7 +462,7 @@ inputs and of nothing else:
 1. the monitor snapshot: physical width `mon_w` and height `mon_h` in pixels as
    reported by `winit` (`MonitorHandle::size`);
 2. the window mode: *windowed* (including maximised) or *fullscreen*;
-3. `preferred_scale_percent`;
+3. `scale_factor_percent` (mapped from `ui_scale_label_percent`);
 4. the supported integer cell sizes `2…7` and the minimum grid 82 × 30
    (`328k × 270k` physical px, below).
 
@@ -437,7 +481,7 @@ avail_h(windowed)   = mon_h - mon_h / 16        // §Window fit reserve estimate
 avail_h(fullscreen) = mon_h                      // no reserve
 k_fit(mode)         = min( mon_w / 328 , avail_h(mode) / 270 )     // floor divisions
 
-// 2. Monitor reference scale = what "100%" means here (windowed fit)
+// 2. Monitor reference scale = what a 100% rendering multiplier means here
 //    compact class (k_fit <= 3): one step below the fit, floor 2  -> always 2
 //    otherwise: the fit, capped at 5                              -> 4 or 5
 monitor_reference_scale = ( k_fit(windowed) <= 3 )
@@ -445,7 +489,7 @@ monitor_reference_scale = ( k_fit(windowed) <= 3 )
                         : min( k_fit(windowed), 5 )
 
 // 3. Requested k: round-half-up of reference × percent
-k_req = ( monitor_reference_scale * preferred_scale_percent + 50 ) / 100
+k_req = ( monitor_reference_scale * scale_factor_percent + 50 ) / 100
 
 // 4. Clamp to the supported range and to what fits in the current mode
 k_cap       = clamp( k_fit(mode), 2, 7 )
@@ -453,26 +497,27 @@ effective_k = clamp( k_req, 2, k_cap )          // = min( max(k_req, 2), k_cap )
 ```
 
 *Rounding rule.* Step 3 is round-half-up on non-negative integers. A tie would
-need `reference × percent ≡ 50 (mod 100)`; every percentage is a multiple of 20,
+need `reference × percent ≡ 50 (mod 100)`; every rendering multiplier is a multiple of 20,
 so `reference × percent` is a multiple of 20 and never ends in 50: **no tie can
 occur** and the rounding is unambiguous. `k_req` is monotonically non-decreasing
 in the percentage, so a larger preference never gives a smaller `effective_k`.
 
-*Clamping rule.* Step 4 clamps in this order: lower bound 3 (the smallest
+*Clamping rule.* Step 4 clamps in this order: lower bound 2 (the smallest
 supported cell), then upper bound `k_cap` (2…7, from the monitor and mode). The
 lower bound wins when `k_fit < 2`: the application then runs at `k = 2`, keeps
 the exact 4:9 ratio and the 82 × 30 minimum, and logs the physical limitation
 **once** per distinct monitor snapshot (the window may overflow the monitor, see
 *When even `k = 2` does not fit*). The ratio is never relaxed, and the grid is
 never reduced below 82 × 30. The lower bound also raises a `k_req` below 2:
-at reference 2 the 60% and 80% preferences request 1.2 and 1.6 and both give 2.
+at reference 2, factor 60% requests `k = 1` and is raised to 2; the other
+available factors request 2 or more and are also clamped by fit as needed.
 
 *Why the reference is capped at 5 and taken from the windowed fit.* `k = 5`
 (20 × 45 px) is the design reference size (§3.1); a very large monitor does not
-make "100%" larger than the reference, it only makes the larger percentages
-available. The reference is taken from the windowed fit in **both** modes so
-that entering or leaving fullscreen does not change what 100% means: only the
-cap `k_cap` differs between the modes.
+make a 100% rendering multiplier larger than the reference, it only makes
+larger rendering factors available. The reference is taken from the windowed fit in **both** modes so
+that entering or leaving fullscreen does not change what the 100% rendering
+multiplier means: only the cap `k_cap` differs between the modes.
 
 *Why the compact class is one step below its fit (amended 2026-10-16).* On a
 monitor whose windowed fit is 3 (usable height 810…1079 px and width ≥ 984, e.g. a Full HD
@@ -485,41 +530,36 @@ or hard-coded, and any monitor with the same fit behaves the same. The MacBook
 Retina rows and every monitor with `k_fit(windowed) ≥ 4` are unchanged. The
 reference therefore takes only the values 2, 4 and 5; 3 is reachable as
 `effective_k` (a preference on a larger monitor, or the cap) but is never a
-reference. Preferences do not change: 100% stays 100% on both kinds of monitor.
+reference. The selected label does not change: 100% still maps to factor 80% on
+both kinds of monitor.
 
 **Examples** (`mon_w × mon_h` → `k_fit` windowed / fullscreen → reference →
-`effective_k` for 60 / 80 / 100 / 120 / 140 %):
+`effective_k` for rendering factors 60 / 80 / 100 / 120; displayed labels are
+80 / 100 / 120 / 140 in the same order):
 
-| Monitor (physical px) | `k_fit` win / fs | Reference | Windowed 60 / 80 / 100 / 120 / 140 | Fullscreen 60 / 80 / 100 / 120 / 140 |
+| Monitor (physical px) | `k_fit` win / fs | Reference | Windowed factors 60 / 80 / 100 / 120 | Fullscreen factors 60 / 80 / 100 / 120 |
 |---|---|---|---|---|
-| 1366 × 768 | 2 / 2 | 2 | 2 / 2 / 2 / 2 / 2 → cells 8 × 18, fits (656 × 540 ≤ 1366 × 720) | 2 / 2 / 2 / 2 / 2 |
-| **1920 × 1080 (Full HD, external)** | 3 / 4 | **2** | 2 / 2 / **2** / 2 / 3 → 100% = cells **8 × 18** | 2 / 2 / 2 / 2 / 3 |
-| 1920 × 1200 | 4 / 4 | 4 | 2 / 3 / 4 / 4 / 4 | 2 / 3 / 4 / 4 / 4 |
-| 2560 × 1440 | 5 / 5 | 5 | 3 / 4 / 5 / 5 / 5 | 3 / 4 / 5 / 5 / 5 |
-| **2560 × 1664 (MacBook Air Retina)** | 5 / 6 | **5** | 3 / 4 / **5** / 5 / 5 → cells **20 × 45** | 3 / 4 / 5 / 6 / 6 |
-| 3024 × 1964 | 6 / 7 | 5 | 3 / 4 / 5 / 6 / 6 | 3 / 4 / 5 / 6 / 7 |
-| 3840 × 2160 | 7 / 8 | 5 | 3 / 4 / 5 / 6 / 7 | 3 / 4 / 5 / 6 / 7 |
+| 1366 × 768 | 2 / 2 | 2 | 2 / 2 / 2 / 2 → cells 8 × 18, fits (656 × 540 ≤ 1366 × 720) | 2 / 2 / 2 / 2 |
+| **1920 × 1080 (Full HD, external)** | 3 / 4 | **2** | 2 / 2 / **2** / 2 → every label uses cells **8 × 18** | 2 / 2 / 2 / 2 |
+| 1920 × 1200 | 4 / 4 | 4 | 2 / 3 / 4 / 4 | 2 / 3 / 4 / 4 |
+| 2560 × 1440 | 5 / 5 | 5 | 3 / 4 / 5 / 5 | 3 / 4 / 5 / 5 |
+| **2560 × 1664 (MacBook Air Retina)** | 5 / 6 | **5** | 3 / **4** / 5 / 5 → default label 100% gives **16 × 36** | 3 / 4 / 5 / 6 |
+| 3024 × 1964 | 6 / 7 | 5 | 3 / 4 / 5 / 6 | 3 / 4 / 5 / 6 |
+| 3840 × 2160 | 7 / 8 | 5 | 3 / 4 / 5 / 6 | 3 / 4 / 5 / 6 |
 
-The MacBook Air and Full HD rows
-are the two worked cases of the human decision (amended 2026-10-16): preference
-100% gives `k = 5` (20 × 45 px) on the Retina display and `k = 2` (8 × 18 px) on
-the 1920 × 1080 monitor, and the View menu shows `100%` on both. (The earlier
-value for Full HD was `k = 3`, 12 × 27 px.) The exact pixel size the
-macOS Retina panel reports depends on its selected scaled resolution; the
-result `k = 5` at 100% holds for every monitor with `k_fit(windowed) ≥ 5`.
+The MacBook Air and Full HD rows demonstrate the startup choice: visible label
+100% maps to the former 80% rendering multiplier, producing `k = 4` (16 × 36
+px) on the Retina display and `k = 2` (8 × 18 px) on Full HD. The exact pixel
+size the macOS Retina panel reports depends on its selected scaled resolution.
+On a monitor able to fit all sizes, visible labels 80 / 100 / 120 / 140 produce
+the former multiplier sizes `k = 3 / 4 / 5 / 6`.
 
-**Several percentages may share one `k` (documented behaviour).** A small
-monitor *clamps* or rounds requested values: on 1920 × 1080 windowed the five
-percentages give `k` = 2 / 2 / 2 / 2 / 3 (four of them the same cell), and on
-2560 × 1664 the 100%, 120% and 140% preferences all give `k = 5`. This is
-intended, not a defect. (The coarse reference-2 ladder is recorded as an open
-point in ADR 0003, *Open compatibility points*.) The control still shows the stored
-preference; selecting a different percentage that maps to the same `effective_k`
-changes the preference and nothing visible, and triggers no transition (the
-transition below is skipped when `effective_k` is unchanged). A larger monitor
-later honours the preference without any user action. The UI Scale control
-therefore **never skips or hides** a percentage (this replaces the old "skip
-unavailable values" rule): all five are always selectable.
+**Several labels may share one `k` (documented behaviour).** On 1920 × 1080
+windowed all four labels resolve to `k = 2`; on 2560 × 1664 visible labels
+120% and 140% both resolve to `k = 5`. This is intended under the existing
+monitor-fit behavior. Selecting another label that maps to the same
+`effective_k` stores that choice and triggers no transition. The menu never
+skips or hides a label: all four are selectable.
 
 **Invariants at every `effective_k`.** Exact 4:9 cells with `W = 4k`,
 `H = 9k`; one uniform glyph scale (`s = k / 300`) and natural Fira Code
@@ -543,7 +583,7 @@ transition below runs if it differs, when and only when one of these happens:
    the new snapshot is what counts);
 5. the window enters or exits fullscreen, whether requested by the application
    or by the OS;
-6. `preferred_scale_percent` changes (M2.18 control; M2.17 tests it with a
+6. `scale_factor_percent` changes (M2.18 control; M2.17 tests it with a
    stub).
 
 `winit` 0.30 has no monitor-change event. The Controller therefore takes a
@@ -678,8 +718,9 @@ every `effective_k`: `82·4k × 30·9k` = `328k × 270k` physical px (k = 5:
   (minimised) skips drawing as before. The ratio is never changed to fit.
 - *Window above the minimum.* Any larger size is whole-cell
   (`floor`); leftover pixels on the right and bottom belong to no cell.
-- *Reference shell.* `Interface_Exemple.txt` is an 82 × 28 reference that is not
-  modified. The two rows by which the minimum exceeds it belong to the flexible
+- *Reference shell.* `Interface_Exemple.txt` is an 82 × 28 reference. The authorized
+  2026-10-26 tree endpoint amendment replaces its one terminal playhead blank
+  with `─`; its dimensions and other cells are preserved. The two rows by which the minimum exceeds it belong to the flexible
   central body, never to the fixed MenuBar, CommandBar or StatusBar heights; how
   82 × 30 snapshots are compared with the reference is defined in
   `docs/ui_design/README_UI.md` §25.
@@ -753,7 +794,7 @@ grid is ever violated silently.
 - *M2.17 — automatic per-monitor adaptation (everything above except the
   control).* Pure derivation (`monitor_reference_scale`, `k_req`, `effective_k`,
   `fit_window`) in `newell-ui`; the per-window triple of §3.1.1 with
-  `preferred_scale_percent` fixed at 100% by default; start-up selection before
+  `scale_factor_percent` fixed at 80% (the default 100% menu label); start-up selection before
   window creation with explicit `PhysicalSize` initial and minimum dimensions
   (initial size = the 82 × 30 minimum at the derived `k`, or the fitted desired
   grid); monitor snapshot and all six re-evaluation triggers (trigger 6 is
@@ -765,8 +806,9 @@ grid is ever violated silently.
   frameless move/resize mechanism below (including the application-managed edge
   resize). No View-menu control.
 - *M2.18 — user-facing selector only.* The View menu row
-  `UI Scale ◀ 100% ▶` showing and changing `preferred_scale_percent` (all five
-  values, wrap, never skipped); the `Theme` row; the `Fullscreen` item, which
+  `UI Scale ◀ 100% ▶` showing the selected label and mapping four labels to
+  rendering factors 60/80/100/120, bounded at 80% and 140% with hidden blank
+  arrow cells and no wrapping; the `Theme` row; the `Fullscreen` item, which
   asks the M2.17 fullscreen gate and adds no sizing logic of its own. Changing the
   preference calls the M2.17 transition; M2.18 contains no `k` arithmetic,
   window fit or monitor logic.
@@ -833,7 +875,7 @@ decorations, so it MUST stay manually resizable and movable from the grid.
 
 ### 3.2 The Texture Atlas (Logos)
 - Tool icons (Extrude, Sketch, etc.) MUST be loaded from a **single RGBA `.png` Texture Atlas**.
-- **Monochrome use (§3.6):** The atlas keeps its RGBA format, but the UI shader MUST treat it as a coverage mask. Only the alpha channel (or, equivalently, luminance) is meaningful; the RGB colour of the atlas texels MUST NOT reach the screen. Icons are painted in the current theme foreground colour over the theme background.
+- **Coverage-mask ink (§3.6):** The single RGBA logo/icon Texture Atlas keeps its RGBA format, Power-of-Two resolution and padded slices. The UI shader MUST treat its alpha channel (or equivalent luminance) as coverage only; atlas RGB MUST NOT reach the screen. Each logo/icon cell is assigned a semantic ink role by its component: `Text` by default, or `Action` only when that cell is explicitly an actionable affordance. With View > Color unchecked, both roles paint the current monochrome theme foreground over its background. With Color checked, coverage blends the selected role ink over the current palette background. Neither Theme nor Color regenerates the atlas. This does not alter the 240 × 240 visible art within each 256 × 256 slice, the 8 px transparent inward padding, or the one batched GPU UI draw call.
 - **Resolution:** The atlas must be a Power of Two (POT), e.g., 1024x1024 or 2048x2048.
 - **Internal Padding:** Each logo is allocated a strict 256x256 pixel slice in the atlas. The visible logo MUST be drawn at 240x240, leaving an 8px transparent inward padding to prevent texture bleeding during GPU downscaling.
 
@@ -844,7 +886,7 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 - The previous 5 × 3 and 3 × 2 allocations assumed 3:5 cells and are superseded.
 - Logo allocations are whole cells only. They MUST NOT be adjusted with blank padding cells (§3.1).
 - **Logos are not implemented in M2.16–M2.24.** This section binds the first milestone that renders logos (see `docs/plans/M2-ui-framework.md` §12.5).
-- **Logo resampling exception.** The "no resampling, nearest-neighbour" rule of §3.1 applies to the text glyph atlas only. A logo is a 240 × 240 drawing in a 256 × 256 atlas slice shown in an allocation of at most 28k × 27k px (at most 196 × 189 px for `k` ≤ 7), so it is always downscaled by the fragment shader's Scale-to-Fit. Logos are therefore the single permitted resampled content: they are sampled with the logo atlas's own filtered sampler (a separate sampler and bind group from the glyph atlas; no mipmaps are required because of the 8 px padding), as a coverage mask (§3.2) blended between the theme foreground and background (§3.6). This changes neither the single draw call nor the monochrome palette, and never touches text glyphs: ASCII and Unicode glyph cells are always sampled from the glyph atlas with the nearest-neighbour sampler of §3.1, in the same frame, whatever the logo sampler does. Filtered sampling is permitted for logo textures only. At small `k` aliasing is accepted; at `k = 2` the minor logo (32 × 32 px drawn from 240 × 240) is minified about 7.5:1 by a bilinear sampler without mipmaps, so thin strokes may drop out or shimmer. This is accepted for now and must be re-judged visually by the first milestone that renders logos (ADR 0003, *Open compatibility points*).
+- **Logo resampling exception.** The “no resampling, nearest-neighbour” rule of §3.1 applies to the text glyph atlas only. A logo is a 240 × 240 drawing in a 256 × 256 atlas slice shown in the existing whole-cell major allocation of 7 columns × 3 rows or minor allocation of 4 columns × 2 rows, at most 28k × 27k px (at most 196 × 189 px for `k` ≤ 7), so the fragment shader's Scale-to-Fit downscales it. Logos are the single permitted resampled content: they use the logo atlas's own filtered sampler, separate from the glyph atlas sampler and bind group, without mipmaps under the existing 8 px padding rule. The logo atlas remains a coverage mask (§3.2). Each logo cell uses its component-assigned `Text` ink, or `Action` ink only for an explicitly actionable icon, blended by coverage over the selected background (§3.6); with Color unchecked this resolves to the exact current monochrome foreground/background pair. The colour lookup does not change the single batched UI draw call, the separate logo sampler, the allocations or the centering geometry. ASCII and Unicode text glyph cells always use the glyph atlas's nearest-neighbour sampler in the same frame. Filtered sampling is permitted for logo textures only. At small `k` aliasing is accepted; at `k = 2` the minor logo (32 × 32 px drawn from 240 × 240) is minified about 7.5:1 by a bilinear sampler without mipmaps, so thin strokes may drop out or shimmer. This must be re-judged visually by the first milestone that renders logos (ADR 0003, *Open compatibility points*).
 - **Shader Rule:** The wgpu Fragment Shader MUST use "Scale to Fit" logic. It receives the allocated grid area and the 256x256 texture UVs, and centers the square texture within the rectangular bounds perfectly, leaving transparent gaps. The Executor (CPU logic) must NEVER calculate sub-pixel offsets.
 
 ### 3.4 UI State & Hit-Testing Rules
@@ -867,15 +909,17 @@ Because the cell ratio is 4:9 (§3.1), square logos must be allocated asymmetric
 > removed the previous hover implementation, including colour-based
 > highlighting, brightness changes and GPU effects. Its absence in code is
 > NOT a regression. M2.25 explicitly authorizes hover exclusively through
-> instantaneous Unicode border-character substitutions, as specified below,
+> instantaneous Unicode border/tree-character substitutions, including the
+> human-authorized 2026-10-26 tree amendment below,
 > without colour changes, animations or GPU effects. Any hover implementation
-> outside this approved M2.25 exception remains an architectural violation.
+> outside these documented exceptions remains an architectural violation.
 
 - **Pointer routing (unchanged):** The Controller resolves pointer position to a grid cell and `widget_id` via O(1) division (`mouse_x / cell_width`), including Sub-Cell Modulo Logic (§3.4). This applies to click, press, release, drag and scroll. No bounding-box iteration is allowed.
 - **Retained interaction mechanisms:** Hit-testing, clicking, dragging, keyboard focus and navigation, selection, pressed state during a click/drag, disabled state, expansion/checked state and all other non-hover interactions remain fully in force.
 ### ASCII Hover Highlight (M2.25)
 
-M2.25 authorizes discrete, text-only hover highlighting.
+M2.25 authorizes discrete, text-only hover highlighting. The human-authorized
+2026-10-26 tree amendment below extends it to Features and Elements rows.
 
 The approved Action Box extension includes all parameter and checkbox rows,
 including cyclic selectors, and every header segment (Solid, Surface, New,
@@ -887,6 +931,23 @@ region id for hover only through at most 31 cell reads in their Action Box
 row. Click routing and region-specific WidgetIds remain unchanged. This
 fixed-width lookup preserves O(1) resolution and introduces no stored state.
 
+**Tree interaction amendment (2026-10-26, explicitly authorized by the human).**
+`docs/ui_design/README_UI.md` §26.1–§26.5 defines the exact tree structures.
+Features alone owns the playhead; collapse changes its presentation, never its
+logical insertion anchor. Tree row hover uses `├→╞`, leaf `╰╴→╘╸` (branch
+`╰→╘` beside its unchanged handle), and right frame `║→╣` (Color on:
+`│→╡`). Selection uses row-local `│→┃`, `├→┣`, `╰→┗`, `╴→╸`.
+Selection wins at hierarchy cells when also hovered; hover still substitutes
+the right frame. These are font glyph substitutions at unchanged cell geometry,
+not increased raster stroke width, selection colour, inversion or animation.
+Root rows have no hierarchy slots to replace. Focus alone has no visual.
+Tree hover normalizes the hit row's part to its row WidgetId in O(1); original
+click/drag ownership remains intact. Hierarchy/playhead ink remains Text,
+frame ink remains Contour and expansion/visibility controls remain Action.
+This tree-specific amendment supersedes the older tree exclusion and the
+`╰╴→╘ ` wording of ADR 0006 only for trees; Action Box behavior and all
+palette decisions remain unchanged. No new selection semantics are authorized.
+
 **Controller**
 - The Controller MAY store `hovered: Option<WidgetId>`.
 - Update it through pointer movement and pointer exit events.
@@ -896,11 +957,12 @@ fixed-width lookup preserves O(1) resolution and introduces no stored state.
 - Clear hover when the pointer leaves or the target disappears.
 
 **Visual representation**
-- Hover changes only Unicode border characters.
-- No colors, brightness changes, fades or transitions.
+- Hover changes only documented Unicode border and tree hierarchy characters.
+- Hover never changes a cell's semantic ink role or palette entry (§3.6); no brightness changes, fades or transitions. Every replacement glyph inherits the role of its replaced cell.
 - No hover animations or shader effects.
 - No changes to layout dimensions, spacing or text content.
-- Restore original characters immediately on hover exit.
+- Restore the current non-hovered state immediately on exit (selected tree
+  glyphs if selected, otherwise normal glyphs).
 
 **Canonical transformations**
 
@@ -942,8 +1004,9 @@ authorized animation. M2.25 hover is instantaneous and
 does not constitute an animation.
 
 No other hover visual effects are authorized.
-- **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The only approved addition is the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness or any third colour, intensity or alpha level. Inversion is not a state visual; the only foreground/background exchange in the UI is the global theme switch (§3.6). Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
-- **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It is drawn in the monochrome foreground colour as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
+- **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The approved additions include the tree selection glyph structures of §26 in `docs/ui_design/README_UI.md` and the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness, or state-dependent colour, intensity or alpha levels. The fixed semantic palette of §3.6 is permitted when View > Color is checked; roles are assigned by structural/control semantics, never by focus, selection, press, disabled state, hover or glyph identity. Widget-level inversion remains forbidden; palette selection is global to the window. Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
+- **Selected viewport entity brightness (M4.3 exception):** Geometry belonging to a selected entity is rendered with its existing RGB multiplied by `1.10` after normal lighting, clamped to `1.0` before framebuffer encoding. Deselecting restores the unmodified output. Apply the multiplier once to that entity's existing surface, line, point and hidden-line fragments in every viewport display mode. The effect is independent of Theme and View > Color; alpha, background, depth, clipping and occlusion are unchanged. The Controller supplies only the derived selected boolean; the renderer performs no picking or selection mutation. This exception authorizes no selection outline, animation or extra rendering pass or draw call. It does not change UI ink, palette, hover, focus, or any other state visual. All other brightness and state-dependent UI color/intensity changes remain forbidden. This exception is limited to Newell's viewport geometry; it does not enable general brightness variation across the UI.
+- **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It uses the `Text` ink role (§3.6) as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no caret-specific shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
 - **Temporary accepted deviation (until M2.21).** The segmented-selector active-segment `║` separators built in M2.7 are not a documented structure. They may remain, unmodified and not extended to any new widget, until M2.21 replaces them with the exact canonical border topology of `docs/ui_design/`. M2.16 does not need to remove them. After M2.21 their presence is a violation of this section.
 - **Animation (M2.24 exception):**
 
@@ -1005,22 +1068,24 @@ No other hover visual effects are authorized.
 - A subsequent independent press is required to activate Progress.
 - No click-through or deferred activation is permitted.
 
-### 3.6 Monochrome Palette & Themes
+### 3.6 UI Palette, Color and Themes
 
-The 2D UI is strictly monochrome. The only permitted colours are:
+Approved by the human on 2026-10-26 through [ADR 0006](docs/adr/0006-view-color-semantic-palette.md).
 
-| Name | Value |
-|---|---|
-| Black | `#000000` |
-| White | `#FFFFFF` |
+The ASCII UI has two independent per-window choices: Light/Dark Theme and View > Color (initially unchecked). Every new window starts Dark with Color unchecked. An unchecked window is strictly monochrome: Dark uses background `#000000` and ink `#FFFFFF`; Light uses background `#FFFFFF` and ink `#000000`. Every composed glyph cell carries one of three semantic ink roles, which affect output only when Color is checked: `Text` for ordinary text, values, labels, caret, progress, menu popup/dialog/selection-panel title letters and treeview hierarchy strokes; `Contour` for box/panel/menu/dialog/selection-panel/field frames and shared structural joins; `Action` for explicit actionable affordances such as checkbox glyphs, tree `[-]`/`[+]` handles, selector arrows, selection-field controls, direction toggle and formula control. A logo/icon cell uses `Text` unless its component explicitly designates it as an `Action` affordance (§§3.2–3.3). Dark + Color uses background `#071521`, Text `#FFFFFF`, Contour `#41B4E5`, Action `#FFA24A`. Light + Color uses background `#FFFFFF`, Text `#111827`, Contour `#0969A0`, Action `#9A4D00`. Roles are assigned by the component's semantics, never inferred from a Unicode glyph or a WidgetId. For menu popup, dialog and selection-panel title rows, the title letters are Text while adjacent top-edge strokes, corners, frame junctions and structural separators are Contour. The View Theme row keeps exactly `Theme [ ◑ Dark  ]` or `Theme [ ◐ Light ]`: `Theme` and `Dark`/`Light` are Text, its `[`/`]` and `◑`/`◐` are Action, its spaces have no visible ink, and the popup's outer `│` borders are Contour. This role allocation does not change the Theme row's cell positions, ownership or activation. A shared cell takes the role of its visible structural stroke; frame intersections and segment dividers are Contour even when routing is split, while adjacent tree guides stay Text. Overlay composition overwrites glyph and role together.
 
-- **Light theme:** background White (`#FFFFFF`), foreground Black (`#000000`).
-- **Dark theme:** background Black (`#000000`), foreground White (`#FFFFFF`).
-- **Theme switch:** Switching themes exchanges foreground and background globally; it is the only difference between the themes and the only place where foreground and background are exchanged (§3.5 forbids widget-level inversion). A theme is therefore a single foreground/background pair, supplied to the shader as theme data (e.g. a uniform or per-frame constant), never per cell. Light is the default theme of every new window; the OS appearance setting is not consulted, and the theme is per-window state (§4.2). The theme control is `Theme [ ◐ Light ]` / `[ ◑ Dark  ]` in the View menu (M2.18); the glyph atlas is a coverage mask and is not regenerated on a theme change.
-- **Forbidden:** decorative colours, grey palettes or tints, gradients, shadows, glow, brightness/colour multipliers, and state-dependent colours. UI states MUST NOT introduce additional colours.
-- **Permitted:** anti-aliasing of text glyph edges (coverage-based blending between foreground and background). Icon edges rendered from the atlas follow the same rule (§3.2).
-- **Scope:** This section governs the 2D ASCII UI overlay only. The 3D viewport (clear colour, model display, selection display) is not covered and is specified separately.
-- **Invariants preserved:** O(1) event routing (§3.4), a single UI draw call (§3.4), GPU-side UI rendering, and the separation of Model/View/Controller (§1).
+With Color checked, only Contour cells use the same-cell glyph map `═→─`, `║→│`, `╔→┌`, `╗→┐`, `╚→└`, `╝→┘`, `╠→├`, `╣→┤`, `╦→┬`, `╩→┴`, `╬→┼`. Single-stroke and rounded corners, dashed separators, tree strokes and geometry do not change. The approved hover substitutions `│→╞/╡` and `╰╴→╘ ` remain and preserve the replaced cell's semantic role; together with the tree-specific substitutions of §3.5, they are the only stroke-form exceptions while hovered. Tree selection uses the documented heavy hierarchy glyphs without changing semantic roles; the same-cell Contour map must preserve the tree hovered right border `╣` rather than converting it to `┤` (compose it as `╡` when Color is checked). Hover adds no colour or shader effect. Focus, selection, press, disabled, checked and expanded states cannot alter a role or palette entry. Theme and Color changes select a new palette for that window; a Color change also recomposes the glyph grid. A Theme change with View open changes the displayed Theme row and uploads its recomposed cells; palette-only updating is permitted only when the glyph grid is unchanged. The glyph and logo atlases remain coverage masks and are not regenerated by either choice; text glyph sampling remains nearest and logo sampling remains filtered under §§3.2–3.3. The viewport clear follows the selected background; model display styles are unchanged apart from the selected-entity brightness exception in §3.5. The renderer uses one role word per cell, one palette per window and exactly one batched GPU UI draw call. O(1) hit testing and MVC separation remain binding. No gradients, tints, glow or decorative UI colour are permitted. UI ink/brightness and state-dependent UI colour remain forbidden; selected-entity viewport brightness follows §3.5. Glyph-edge antialiasing remains coverage blending.
+
+| Theme / Color | Background | Text, values, labels, tree guides | Contour | Action |
+|---|---|---|---|---|
+| Dark / off | `#000000` | `#FFFFFF` | `#FFFFFF` | `#FFFFFF` |
+| Light / off | `#FFFFFF` | `#000000` | `#000000` | `#000000` |
+| Dark / on | `#071521` | `#FFFFFF` | `#41B4E5` | `#FFA24A` |
+| Light / on | `#FFFFFF` | `#111827` | `#0969A0` | `#9A4D00` |
+
+At a cell where a tree hierarchy guide actually joins a frame, the frame/junction owns that one cell as `Contour`; the guide's next nonshared cell stays `Text`. A divider between controls remains one `Contour` cell even when `SharedBorder` routes its halves to different controls. Interaction ownership never determines ink. Scrollbar arrows and draggable thumbs, plus explicit selection-list control glyphs, are Action; inert annotations remain Text. Tree playhead strokes remain Text despite their draggable owner. For the Action Box two-cell hover replacement `╰╴→╘ `, `╘` inherits the former `╰` role and the blank retains the former `╴` metadata.
+
+Theme activation by pointer or Enter/Space retains its existing open-popup and focused-row behavior. Color uses the established View checkbox behavior: toggle, keep the popup open and keep its row focused. Both choices are independent of OS appearance and other windows.
 
 ## 4. Multi-Window & State Management Architecture
 To support unlimited, synchronized windows, the application architecture must strictly enforce the MVC pattern and the separation of crates.
@@ -1031,7 +1096,7 @@ To support unlimited, synchronized windows, the application architecture must st
 - **Geometry Workers:** Feature tree recomputations and booleans run in the background (e.g., via a thread pool) to ensure the main thread never waits on geometry.
 
 ### 4.2 Local Window State (The View/Controller)
-- **Isolated UI Context:** The Controller (`newell-ui`, `newell-app`) handles OS events via `winit` per window. There is no global UI singleton. Each window instance exclusively owns its active Workbench, selection state, Feature Tree expansion state, UI Scale (`preferred_scale_percent`, `monitor_reference_scale` and `effective_k`, §3.1.1) and theme (§3.6). Only `preferred_scale_percent` is a user setting; the other two are derived from the window's current monitor and are recomputed, never inherited, when it changes.
+- **Isolated UI Context:** The Controller (`newell-ui`, `newell-app`) handles OS events via `winit` per window. There is no global UI singleton. Each window instance exclusively owns its active Workbench, selection state, Feature Tree expansion state, UI Scale choice (`ui_scale_label_percent`, mapped `scale_factor_percent`, `monitor_reference_scale` and `effective_k`, §3.1.1) and Theme plus Color (§3.6). Each new window initializes the 100% UI Scale label (factor 80%), Dark and Color unchecked independently of other windows and OS appearance. The selected label is user state; the multiplier is mapped from it, and the remaining scale values are derived from the window's current monitor and recomputed, never inherited.
 - **Render Context:** The View (`newell-render`) reads states and draws them independently for each window. Each window owns its independent swapchain and command encoder to render the 3D viewport and the ASCII grid overlay.
 
 ### 4.4 3D viewport navigation
@@ -1041,7 +1106,8 @@ Viewport navigation is mutable per-window Controller state in `newell-app`.
 it owns no gesture, pivot selection, CPU ray queries or camera mutation.
 The approved implementation contract is [M3 camera mechanics](docs/plans/M3-camera-mechanics.md).
 
-Right-drag performs camera-relative yaw/pitch with strict zero roll against
+Primary-button drag over exposed viewport pixels performs camera-relative
+yaw/pitch with strict zero roll against
 world Z-up. Level the yaw result before applying pitch; clamp signed elevation
 before constructing the pitch rotation, to 0.5 degrees short of either pole.
 Exact principal-axis views retain a deterministic heading for departure.
@@ -1051,7 +1117,9 @@ the world AABB centre of geometry clipped to the frustum and exposed viewport
 regions. Rotate both eye offset and orientation by the same final quaternion,
 preserving the pivot's projected pixel without recentering at gesture start.
 
-Middle-drag pans in the camera-facing plane at contextual focal depth. Wheel,
+Secondary-button drag pans in the camera-facing plane at contextual focal depth;
+middle-button drag remains a pan fallback. Primary and secondary clicks capture
+navigation only after the existing click/drag threshold. Wheel,
 DPI-normalized fractional scrolling and native pinch zoom toward a geometric
 hit or focal-plane anchor. Phased gestures retain their anchor and input owner.
 The absolute minimum navigation distance is 0.001 model units; maximum distance

@@ -1,5 +1,5 @@
 // One instance per grid cell; a cell is two triangles sampling one atlas slot.
-// The UI is strictly monochrome: only the theme foreground (blended by glyph coverage over the cleared background) reaches the screen.
+// Semantic ink is fixed per cell; interaction state never changes the palette.
 struct Uniforms {
     viewport_px: vec2<f32>,
     cell_px: vec2<f32>,
@@ -7,7 +7,7 @@ struct Uniforms {
     atlas_px: vec2<f32>,
     cols: u32,
     srgb_target: u32,
-    foreground: vec4<f32>,
+    inks: array<vec4<f32>, 3>,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -20,6 +20,7 @@ struct VsIn {
     @builtin(vertex_index) vertex: u32,
     @builtin(instance_index) instance: u32,
     @location(0) glyph: u32,
+    @location(1) ink: u32,
 }
 
 struct VsOut {
@@ -27,6 +28,7 @@ struct VsOut {
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) origin: vec2<f32>,
     @location(2) @interpolate(flat) has_glyph: f32,
+    @location(3) @interpolate(flat) ink: u32,
 }
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -56,6 +58,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.local = corner;
     out.origin = vec2<f32>(f32(in.glyph & 0xFFFFu), f32(in.glyph >> 16u));
     out.has_glyph = select(0.0, 1.0, has_glyph);
+    out.ink = select(0u, in.ink, in.ink < 3u);
     return out;
 }
 
@@ -66,7 +69,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let coverage = textureSample(atlas, atlas_sampler, (in.origin + texel) / u.atlas_px).r * in.has_glyph;
     // Foreground glyph over whatever is behind it; the alpha is the glyph's coverage, which is
     // the only thing that makes an edge pixel differ from pure foreground.
-    var rgb = u.foreground.rgb;
+    var rgb = u.inks[in.ink].rgb;
     let alpha = coverage;
     if u.srgb_target == 1u {
         rgb = srgb_to_linear(rgb);

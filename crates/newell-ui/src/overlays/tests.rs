@@ -48,6 +48,7 @@ fn background(cols: u32, rows: u32) -> CellGrid {
     for row in 0..rows {
         for col in 0..cols {
             *g.get_mut(col, row).unwrap() = Cell {
+                ink: crate::InkRole::Text,
                 content: CellContent::Glyph('#'),
                 style: StyleId::new(2),
                 widget_id: Some(id(1)),
@@ -611,6 +612,7 @@ fn draw_list(g: &mut CellGrid, rect: GridRect, offset: u32, items: &[ListItem<'_
             scroll: ScrollState { offset },
             up: id(2),
             down: id(3),
+            thumb: id(4),
         };
         draw_scroll_list(g, c, rect, &list);
     });
@@ -618,70 +620,68 @@ fn draw_list(g: &mut CellGrid, rect: GridRect, offset: u32, items: &[ListItem<'_
 
 #[test]
 fn list_draws_window_with_scrollbar() {
-    let it = items(&[1]);
-    let mut g = grid(12, 3);
-    draw_list(&mut g, r(0, 0, 12, 3), 0, &it);
+    let mut it = items(&[1]);
+    it.push(ListItem {
+        id: id(15),
+        label: "Sixth",
+        state: WidgetState::default(),
+    });
+    let mut g = grid(12, 5);
+    draw_list(&mut g, r(0, 0, 12, 5), 0, &it);
     assert_eq!(text_row(&g, 0), "□.Rim_Body.▲");
     assert_eq!(text_row(&g, 1), "■.Hub_Body.┃");
-    assert_eq!(text_row(&g, 2), "□.Inner....▼");
-    // Arrows own their cells; the thumb and track do not.
+    assert_eq!(text_row(&g, 4), "□.Shaft....▼");
     assert_eq!(g.get(11, 0).unwrap().widget_id, Some(id(2)));
-    assert_eq!(g.get(11, 1).unwrap().widget_id, None);
-    assert_eq!(g.get(11, 2).unwrap().widget_id, Some(id(3)));
-    // Up is disabled at the top; down is not.
-    let styles = WidgetStyles::default();
-    assert_eq!(g.get(11, 0).unwrap().style, styles.disabled);
-    assert_eq!(g.get(11, 2).unwrap().style, styles.normal);
-    // Whole row is owned by its checkbox.
+    assert_eq!(g.get(11, 1).unwrap().widget_id, Some(id(4)));
+    assert_eq!(g.get(11, 4).unwrap().widget_id, Some(id(3)));
+    assert_eq!(
+        g.get(11, 0).unwrap().style,
+        WidgetStyles::default().disabled
+    );
     assert_eq!(g.get(9, 1).unwrap().widget_id, Some(id(11)));
 }
 
 #[test]
 fn list_scrolled_and_clamped_offsets() {
-    let it = items(&[]);
-    let mut g = grid(12, 3);
-    draw_list(&mut g, r(0, 0, 12, 3), 2, &it);
-    assert_eq!(text_row(&g, 0), "□.Inner....▲");
-    assert_eq!(text_row(&g, 2), "□.Shaft....▼");
-    let styles = WidgetStyles::default();
+    let mut it = items(&[]);
+    it.push(ListItem {
+        id: id(15),
+        label: "Sixth",
+        state: WidgetState::default(),
+    });
+    let mut g = grid(12, 5);
+    draw_list(&mut g, r(0, 0, 12, 5), 1, &it);
+    assert_eq!(text_row(&g, 0), "□.Hub_Body.▲");
+    assert_eq!(text_row(&g, 4), "□.Sixth....▼");
     assert_eq!(
-        g.get(11, 2).unwrap().style,
-        styles.disabled,
-        "at the bottom"
+        g.get(11, 4).unwrap().style,
+        WidgetStyles::default().disabled
     );
-    // Out-of-range offset behaves as the maximum.
-    let mut g2 = grid(12, 3);
-    draw_list(&mut g2, r(0, 0, 12, 3), u32::MAX, &it);
-    assert_eq!(g, g2);
+    let mut stale = grid(12, 5);
+    draw_list(&mut stale, r(0, 0, 12, 5), u32::MAX, &it);
+    assert_eq!(g, stale);
 }
 
 #[test]
-fn thumb_tracks_position_and_proportion() {
+fn fitting_lists_have_no_thumb_even_in_a_constrained_allocation() {
     let it = items(&[]);
-    let thumb_rows = |h: u32, offset: u32| -> String {
-        let mut g = grid(6, h);
-        draw_list(&mut g, r(0, 0, 6, h), offset, &it);
-        (0..h)
-            .map(|row| match g.get(5, row).unwrap().content {
-                CellContent::Glyph(c) => c,
-                CellContent::Empty => ' ',
-            })
-            .collect()
-    };
-    // 5 items, window 4: track 2, thumb 1.
-    assert_eq!(thumb_rows(4, 0), "▲┃ ▼");
-    assert_eq!(thumb_rows(4, 1), "▲ ┃▼");
-    // Everything fits: thumb fills the track.
-    assert_eq!(thumb_rows(6, 0), "▲┃┃┃┃▼");
-    // Height 2: arrows only. Height 3: one-cell track.
-    assert_eq!(thumb_rows(2, 0), "▲▼");
-    assert_eq!(thumb_rows(3, 0), "▲┃▼");
-    assert_eq!(thumb_rows(3, 2), "▲┃▼");
+    for height in 0..8 {
+        let mut g = grid(12, 8);
+        draw_list(&mut g, r(0, 0, 12, height), u32::MAX, &it);
+        assert!(
+            g.cells()
+                .iter()
+                .all(|cell| ![Some(id(2)), Some(id(3)), Some(id(4))].contains(&cell.widget_id))
+        );
+        if height > 0 {
+            assert_eq!(g.get(0, 0).unwrap().widget_id, Some(id(10)));
+        }
+    }
 }
 
 #[test]
 fn thumb_reaches_the_end_exactly_at_max_offset() {
-    let many: Vec<ListItem<'static>> = (0..100)
+    let many: Vec<_> = (0..100)
         .map(|i| ListItem {
             id: id(100 + i),
             label: "x",
@@ -689,14 +689,13 @@ fn thumb_reaches_the_end_exactly_at_max_offset() {
         })
         .collect();
     let mut g = grid(4, 12);
-    draw_list(&mut g, r(0, 0, 4, 12), 88, &many);
-    let glyph = |row| g.get(3, row).unwrap().content;
-    assert_eq!(glyph(10), CellContent::Glyph('┃'), "last track row");
-    assert_eq!(glyph(1), CellContent::Empty);
-    let mut g = grid(4, 12);
+    draw_list(&mut g, r(0, 0, 4, 12), 95, &many);
+    assert_eq!(g.get(3, 3).unwrap().content, CellContent::Glyph('╻'));
+    assert_eq!(g.get(3, 1).unwrap().content, CellContent::Empty);
     draw_list(&mut g, r(0, 0, 4, 12), 0, &many);
-    assert_eq!(g.get(3, 1).unwrap().content, CellContent::Glyph('┃'));
+    assert_eq!(g.get(3, 1).unwrap().content, CellContent::Glyph('╹'));
     assert_eq!(g.get(3, 2).unwrap().content, CellContent::Empty);
+    assert!(g.get(3, 5).unwrap().widget_id.is_none());
 }
 
 #[test]
@@ -710,7 +709,7 @@ fn list_small_and_zero_regions() {
     // Height 1: no scrollbar, one row.
     let mut g = grid(6, 2);
     draw_list(&mut g, r(0, 0, 6, 1), 1, &it);
-    assert_eq!(text_row(&g, 0), "□.Hub_");
+    assert_eq!(text_row(&g, 0), "□.Rim_");
     assert_eq!(text_row(&g, 1), "......");
     // Zero regions and an empty list never panic and leave the outside alone.
     for rect in [r(0, 0, 0, 0), r(0, 0, 0, 3), r(0, 0, 5, 0), r(99, 99, 5, 5)] {
@@ -720,8 +719,8 @@ fn list_small_and_zero_regions() {
     }
     let mut g = grid(6, 3);
     draw_list(&mut g, r(0, 0, 6, 3), 4, &[]);
-    assert_eq!(text_row(&g, 0), "     ▲".replace(' ', "."));
-    assert_eq!(text_row(&g, 2), ".....▼");
+    assert_eq!(text_row(&g, 0), "......");
+    assert_eq!(text_row(&g, 2), "......");
 }
 
 #[test]
@@ -778,11 +777,11 @@ fn list_widget_ids_hit_test() {
         .unwrap()
         .widget_id
     };
-    assert_eq!(hit(4, 0), Some(id(11)));
-    assert_eq!(hit(4, 2), Some(id(13)));
-    assert_eq!(hit(11, 0), Some(id(2)));
-    assert_eq!(hit(11, 2), Some(id(3)));
-    assert_eq!(hit(11, 1), None);
+    assert_eq!(hit(4, 0), Some(id(10)));
+    assert_eq!(hit(4, 2), Some(id(12)));
+    assert_eq!(hit(11, 0), Some(id(10)));
+    assert_eq!(hit(11, 2), Some(id(12)));
+    assert_eq!(hit(11, 1), Some(id(11)));
 }
 
 #[test]
@@ -811,14 +810,15 @@ fn selection_panel_style_composition_end_to_end() {
             scroll: ScrollState::default(),
             up: id(2),
             down: id(3),
+            thumb: id(6),
         };
         draw_scroll_list(g, &ctx, l.body, &list);
         draw_ok_cancel(g, &ctx, l.actions, id(4), id(5), WidgetState::default());
     });
     assert_eq!(text_row(&g, 2), "#####╔══════════════════╗#####");
     assert_eq!(text_row(&g, 3), "#####║Selection.........║#####");
-    assert_eq!(text_row(&g, 4), "#####║□.Rim_Body.......▲║#####");
-    assert_eq!(text_row(&g, 5), "#####║■.Hub_Body.......┃║#####");
+    assert_eq!(text_row(&g, 4), "#####║□.Rim_Body........║#####");
+    assert_eq!(text_row(&g, 5), "#####║■.Hub_Body........║#####");
     assert_eq!(text_row(&g, 8), "#####║...OK...│.Cancel..║#####");
     assert_eq!(g.get(8, 8).unwrap().widget_id, Some(id(4)));
     assert_eq!(g.get(20, 8).unwrap().widget_id, Some(id(5)));

@@ -6,7 +6,7 @@
 // (at your option) any later version.
 //! Label, separator, button and checkbox.
 
-use super::{Canvas, WidgetContext, cell, centered, owned_blank, text_len};
+use super::{Canvas, WidgetContext, centered, owned_blank, text_len};
 use crate::{
     BorderAxis, BorderLine, CellContent, CellGrid, GridRect, StyleId, WidgetId, WidgetState,
 };
@@ -32,7 +32,12 @@ pub fn draw_separator(
         (BorderAxis::Vertical, BorderLine::Single) => ('│', false),
         (BorderAxis::Vertical, BorderLine::Double) => ('║', false),
     };
-    let sep = cell(CellContent::Glyph(glyph), style, None);
+    let sep = super::cell_with_ink(
+        CellContent::Glyph(glyph),
+        style,
+        None,
+        crate::InkRole::Contour,
+    );
     let mut canvas = Canvas::new(grid, rect);
     if horizontal {
         canvas.fill(0, canvas.width(), 0, sep);
@@ -76,6 +81,7 @@ pub fn draw_checkbox(
     canvas.fill(0, canvas.width(), 0, owned_blank(style, id));
     let glyph = if state.checked { "■ " } else { "□ " };
     let dx = canvas.text(0, 0, glyph, style, Some(id));
+    canvas.ink_at(0, 0, crate::InkRole::Action);
     canvas.text(dx, 0, label, style, Some(id));
 }
 
@@ -299,6 +305,7 @@ mod tests {
         let mut dirty = grid(8, 1);
         for col in 0..8 {
             *dirty.get_mut(col, 0).unwrap() = Cell {
+                ink: crate::InkRole::Text,
                 content: CellContent::Glyph('#'),
                 style: StyleId::new(3),
                 widget_id: Some(id(9)),

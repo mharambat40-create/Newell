@@ -12,4 +12,5 @@ mod theme;
 
 pub use gpu_cell::{EMPTY_GLYPH, GPU_CELL_BYTES, GpuCell, cells_to_bytes};
 pub use pipeline::UiOverlay;
-pub use theme::Theme;
+pub(crate) use theme::target_rgb;
+pub use theme::{Theme, UiPalette};

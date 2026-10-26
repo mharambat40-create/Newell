@@ -255,8 +255,14 @@ fn canonical_set_is_sorted_and_unique() {
 fn canonical_set_is_printable_ascii_plus_ui_symbols() {
     let glyphs = canonical_glyphs();
     assert!((0x20u8..=0x7E).all(|byte| glyphs.contains(&char::from(byte))));
-    // 95 printable ASCII plus 79 UI symbols.
-    assert_eq!(glyphs.len(), 174);
+    // 95 printable ASCII plus 83 reference symbols, including Ø, à, ╸ and ╺.
+    assert_eq!(glyphs.len(), 178);
+    let required: std::collections::BTreeSet<char> = (0x20u8..=0x7E)
+        .map(char::from)
+        .chain(reference_symbols())
+        .chain(std::iter::once('▏'))
+        .collect();
+    assert_eq!(glyphs, required.into_iter().collect::<Vec<_>>());
 }
 
 #[test]
@@ -361,10 +367,10 @@ fn default_cell_is_twenty_by_forty_five() {
 #[test]
 fn atlas_dimensions_cover_exactly_the_packed_region() {
     let atlas = build_atlas(DEFAULT_K);
-    // 174 glyphs in 16 columns: 11 rows of 20 x 45 slots, 320 x 495 used, rounded up to 512 x 512.
-    assert_eq!((atlas.width(), atlas.height()), (512, 512));
+    // 178 glyphs in 16 columns: 12 rows of 20 x 45 slots, 320 x 540 used, rounded up to 512 x 1024.
+    assert_eq!((atlas.width(), atlas.height()), (512, 1024));
     let used_width = 16 * cell_w(&atlas);
-    let used_height = 11 * cell_h(&atlas);
+    let used_height = 12 * cell_h(&atlas);
     for y in 0..atlas.height() {
         for x in 0..atlas.width() {
             if x >= used_width || y >= used_height {

@@ -33,8 +33,6 @@ const SELECT_KEYS: [u32; 3] = [K_TARGET, K_TOOLS, K_FACES];
 /// Mock text of the `Dist` field.
 const DIST: &str = "+|0.0 mm";
 
-const TOP_ROW: &str = "╭─Boolean─┬───────┬───────────╮";
-
 /// The border topology of each operation (`Action_Box_Boolean.txt`): the glyph between `Add`
 /// and `Cut`, the glyph between `Cut` and `Inter`, and the border row under the selector. The
 /// active segment is outlined by solid lines, the others by the dotted `╴` and `┆`.
@@ -91,7 +89,7 @@ impl BooleanUi {
         let v = &self.values;
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_OFFSET, v.offset, "Offset")
                 .end(),
         );
@@ -100,27 +98,31 @@ impl BooleanUi {
         }
         b.push(
             self.row()
-                .text("│ ╰╴")
+                .contour("│")
+                .text(" ╰╴")
                 .check_fill(K_OFFSET_ALL, v.offset_all, "Offset all")
                 .end(),
         );
         if v.offset_all {
             b.push(
                 self.row()
-                    .text("│   ╰╴Dist  ")
+                    .contour("│")
+                    .text("   ╰╴Dist  ")
                     .numeric(K_OFFSET_DIST, DIST)
                     .end(),
             );
         } else {
             b.push(
                 self.row()
-                    .text("│   ╰╴Faces   ")
+                    .contour("│")
+                    .text("   ╰╴Faces   ")
                     .select_or(K_FACES, v.faces.count(), "none")
                     .end(),
             );
             b.push(
                 self.row()
-                    .text("│     Dist  ")
+                    .contour("│")
+                    .text("     Dist  ")
                     .numeric(K_OFFSET_DIST, DIST)
                     .end(),
             );
@@ -140,27 +142,34 @@ impl ActionBoxUi for BooleanUi {
         let v = &self.values;
         let (add_cut, cut_inter, under) = HEAD[v.operation as usize];
         let mut b = ActionBox::default();
-        b.push(self.row().text(TOP_ROW));
         b.push(
             self.row()
-                .text("│")
+                .contour("╭─")
+                .text("Boolean")
+                .contour("─┬───────┬───────────╮"),
+        );
+        b.push(
+            self.row()
+                .contour("│")
                 .button(K_OPERATION, 0, "Add", 9)
                 .divider(add_cut, K_OPERATION, 0, 1)
                 .button(K_OPERATION, 1, "Cut", 7)
                 .divider(cut_inter, K_OPERATION, 1, 2)
                 .button(K_OPERATION, 2, "Inter", 11)
-                .text("│"),
+                .contour("│"),
         );
-        b.push(self.row().text(under));
+        b.push(self.row().contour(under));
         b.push(
             self.row()
-                .text("│ Target      ")
+                .contour("│")
+                .text(" Target      ")
                 .select(K_TARGET, v.target.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ Tools       ")
+                .contour("│")
+                .text(" Tools       ")
                 .select(K_TOOLS, v.tools.count())
                 .end(),
         );
@@ -169,7 +178,7 @@ impl ActionBoxUi for BooleanUi {
         }
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_KEEP_TOOLS, v.keep_tools, "Keep tools")
                 .end(),
         );

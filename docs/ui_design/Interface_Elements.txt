@@ -138,7 +138,7 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ │ ├ ■ Sketch_Hole     ║
 ║ │ ╰╴Extrude_Cut_Center║
 ║ ├ Fillet_Inner        ║
-║ │ ─────────────────── ║
+║ │ ────────────────────║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
 ╠═══════════════════════╣
@@ -150,7 +150,7 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ ├[-] Hub_Features     ║
 ║ │ ├ Extrude_Base      ║
 ║ │ ├ ■ Sketch_Hole     ║
-║ │ │ ───────────────── ║
+║ │ │ ──────────────────║
 ║ │ ╰╴Extrude_Cut_Center║
 ║ ├ Fillet_Inner        ║
 ║ ├ Chamfer_Edges       ║
@@ -161,7 +161,7 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ╠═══════════════════════╦
 ║ [-]Features           ║
 ║ ├ □ Sketch_Profile_Ma…║
-║ ├[+] Hub_Features ─── ║
+║ ├[+] Hub_Features ────║
 ║ ├ Fillet_Inner        ║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
@@ -171,35 +171,35 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ╠═════════════════════╦
 ║ [-]Features         ║
 ║ ├ □ Sketch_Profile_…║
-║ ├[+] Hub_Featu… ─── ║
+║ ├[+] Hub_Featu… ────║
 ║ ├ Fillet_Inner      ║
 ║ ├ Chamfer_Edges     ║
 ║ ╰╴Pattern_Circular  ║
 ╠═════════════════════╣
 
 "Dans dossier, taille de la ligne la plus longue max, ici ├ □ Sketch_Profile_Main"
-╠═════════════════════════════╦
-║ [-]Features                 ║
-║ ├ □ Sketch_Profile_Main     ║
-║ ├[+] Hub_Features ─────     ║
-║ ├ Fillet_Inner              ║
-║ ├ Chamfer_Edges             ║
-║ ╰╴Pattern_Circular          ║
-╠═════════════════════════════╣
+╠══════════════════════════╦
+║ [-]Features              ║
+║ ├ □ Sketch_Profile_Main  ║
+║ ├[+] Hub_Features ───────║
+║ ├ Fillet_Inner           ║
+║ ├ Chamfer_Edges          ║
+║ ╰╴Pattern_Circular       ║
+╠══════════════════════════╣
 
 "Largeur de la treview max = ligne la plus longue, verrouille la taille à la largeur de "Sketch_Profile_Main" dans cet exemple"
-╠═════════════════════════╦
-║ [-]Features             ║
-║ ├ □ Sketch_Profile_Main ║
-║ ├[-] Hub_Features       ║
-║ │ ├ Extrude_Base        ║
-║ │ ├ ■ Sketch_Hole       ║
-║ │ │ ─────────────────── ║
-║ │ ╰╴Extrude_Cut_Center  ║
-║ ├ Fillet_Inner          ║
-║ ├ Chamfer_Edges         ║
-║ ╰╴Pattern_Circular      ║
-╠═════════════════════════╣
+╠══════════════════════════╦
+║ [-]Features              ║
+║ ├ □ Sketch_Profile_Main  ║
+║ ├[-] Hub_Features        ║
+║ │ ├ Extrude_Base         ║
+║ │ ├ ■ Sketch_Hole        ║
+║ │ │ ─────────────────────║
+║ │ ╰╴Extrude_Cut_Center   ║
+║ ├ Fillet_Inner           ║
+║ ├ Chamfer_Edges          ║
+║ ╰╴Pattern_Circular       ║
+╠══════════════════════════╣
 
 "Lignes 4-6 hover exemple"
 ╠═══════════════════════╦
@@ -210,10 +210,10 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ │ ├ ■ Sketch_Hole     ║
 ║ │ ╘╸Extrude_Cut_Center╣
 ║ ├ Fillet_Inner        ║
-║ │ ─────────────────── ║
+║ │ ────────────────────║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
-╠═══════════════════════╣ 
+╠════════════════════════
 
 "Lignes 4-6 selected exemple"
 ╠═══════════════════════╦
@@ -224,7 +224,12 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ │ ├ ■ Sketch_Hole     ║
 ║ ┃ ┗╸Extrude_Cut_Center║
 ║ ├ Fillet_Inner        ║
-║ │ ─────────────────── ║
+║ │ ────────────────────║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
 ╠═══════════════════════╣
+
+Tree geometry: README_UI.md §26.1–§26.5. Natural reference maximum 24 cells;
+maximum interior 26 cells (including two padding), outer width 28 cells.
+Hover examples are alternative single-row states. Selected + hovered retains
+selected hierarchy glyphs and uses right border ╣ (Color checked: ╡).

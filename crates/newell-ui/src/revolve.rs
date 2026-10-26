@@ -134,22 +134,24 @@ impl RevolveUi {
         let base = self.base();
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check(K_FULL, false, "Full Revolve", 14)
-                .text("   ")
+                .contour("   ")
                 .cycle(K_FULL_MODE, v.mode.label(), 9)
                 .end(),
         );
         match v.mode {
             ExtrudeOffsetMode::Blind => b.push(
                 self.row()
-                    .text("│ │ Angle   ")
+                    .contour("│")
+                    .text(" │ Angle   ")
                     .numeric(K_ANGLE, ANGLE)
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => b.push(
                 self.row()
-                    .text("│ │ Target    ")
+                    .contour("│")
+                    .text(" │ Target    ")
                     .select(K_TARGET, v.target.count())
                     .end(),
             ),
@@ -175,7 +177,8 @@ impl RevolveUi {
         } else {
             b.push(
                 self.row()
-                    .text("│ │ ")
+                    .contour("│")
+                    .text(" │ ")
                     .check_fill(K_START, false, "Start Offset")
                     .end(),
             );
@@ -202,7 +205,8 @@ impl RevolveUi {
             } else {
                 b.push(
                     self.row()
-                        .text("│ │ ")
+                        .contour("│")
+                        .text(" │ ")
                         .check_fill(K_END, false, "End Offset")
                         .end(),
                 );
@@ -211,7 +215,8 @@ impl RevolveUi {
         if v.symmetric {
             b.push(
                 self.row()
-                    .text("│ ╰╴")
+                    .contour("│")
+                    .text(" ╰╴")
                     .check_fill(K_SYMMETRIC, true, "Symetric")
                     .end(),
             );
@@ -219,7 +224,8 @@ impl RevolveUi {
         }
         b.push(
             self.row()
-                .text("│ │ ")
+                .contour("│")
+                .text(" │ ")
                 .check_fill(K_SYMMETRIC, false, "Symetric")
                 .end(),
         );
@@ -233,7 +239,8 @@ impl RevolveUi {
         if !v.second_side {
             b.push(
                 self.row()
-                    .text("│ ╰╴")
+                    .contour("│")
+                    .text(" ╰╴")
                     .check_fill(K_SECOND, false, "2nd side")
                     .end(),
             );
@@ -241,23 +248,26 @@ impl RevolveUi {
         }
         b.push(
             self.row()
-                .text("│ ╰╴")
+                .contour("│")
+                .text(" ╰╴")
                 .check(K_SECOND, true, "2nd side", 10)
-                .text("     ")
+                .contour("     ")
                 .cycle(K_SECOND_MODE, v.second_mode.label(), 9)
                 .end(),
         );
         match v.second_mode {
             ExtrudeOffsetMode::Blind => b.push(
                 self.row()
-                    .text("│   ╰╴Angle ")
+                    .contour("│")
+                    .text("   ╰╴Angle ")
                     .numeric(K_SECOND_ANGLE, ANGLE)
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => {
                 b.push(
                     self.row()
-                        .text("│   │ Target  ")
+                        .contour("│")
+                        .text("   │ Target  ")
                         .select(K_SECOND_TARGET, v.second_target.count())
                         .end(),
                 );
@@ -288,20 +298,22 @@ impl ActionBoxUi for RevolveUi {
         push_head(&mut b, self.base(), "Revolve", v.geometry, v.result);
         b.push(
             self.row()
-                .text("│ Profile     ")
+                .contour("│")
+                .text(" Profile     ")
                 .select(K_PROFILE, v.profile.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ Axis        ")
+                .contour("│")
+                .text(" Axis        ")
                 .select(K_AXIS, v.axis.count())
                 .end(),
         );
         if v.full {
             b.push(
                 self.row()
-                    .text("│ ")
+                    .contour("│ ")
                     .check_fill(K_FULL, true, "Full Revolve")
                     .end(),
             );

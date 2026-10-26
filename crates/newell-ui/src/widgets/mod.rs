@@ -17,15 +17,14 @@
 //!   small for a primitive draws nothing (documented per primitive); it never panics and
 //!   never writes outside `rect`.
 //! - **Full overwrite.** A primitive overwrites every cell it owns (content, style,
-//!   `widget_id`, `shared_border`), so output depends only on the arguments, not on what
+//!   `widget_id`, `shared_border`, `ink`), so output depends only on the arguments, not on what
 //!   the grid held before. Blank cells inside an interactive primitive are
 //!   `CellContent::Empty` stamped with the primitive's [`WidgetId`], so the whole control is
 //!   hit-testable.
 //! - **One row.** Except [`draw_button`] (which owns its whole rect), primitives use only
 //!   the first row of `rect`.
-//! - **Styles.** Styles come from [`WidgetStyles`]. The UI is strictly monochrome
-//!   (ARCHITECTURE.md §3.5, §3.6): a style never names a colour and is drawn identically by
-//!   the renderer. Focus, press and selection are logical state only: they have no visual
+//! - **Styles.** Styles come from [`WidgetStyles`]. A style never names a colour;
+//!   semantic ink is independent of interaction state (ARCHITECTURE.md §§3.5–3.6). Focus, press and selection are logical state only: they have no visual
 //!   unless a documented ASCII structure draws them. There is no hover style.
 //! - **Disabled.** A disabled control keeps its [`WidgetId`] (stable identity;
 //!   `InteractionState::press` already refuses it) and uses the disabled style.
@@ -47,13 +46,13 @@ mod tree;
 
 use std::ops::Range;
 
-use crate::{Cell, CellContent, CellGrid, GridRect, InteractionState, StyleId, WidgetId};
+use crate::{Cell, CellContent, CellGrid, GridRect, InkRole, InteractionState, StyleId, WidgetId};
 use crate::{SharedBorder, WidgetState};
 
 pub use button::{draw_button, draw_checkbox, draw_label, draw_separator};
 pub use edit::EditKey;
 pub(crate) use edit::{TextEdit, caret_window};
-pub(crate) use field::draw_numeric_view;
+pub(crate) use field::{FieldKind, draw_numeric_kind, draw_numeric_view, draw_text_kind};
 pub use field::{draw_numeric_field, draw_text_field};
 pub(crate) use hover::hover_row;
 pub(crate) use numeric::NumericFields;
@@ -62,8 +61,7 @@ pub use tree::{TreeNodeKind, TreeRow, TreeRowIds, draw_tree_row, ellipsize};
 
 /// Styles used by the primitives.
 ///
-/// No colours are decided here. The UI is strictly monochrome and `newell-render` draws every
-/// slot identically, so a style only labels a logical state (focus, press, selection,
+/// A style only labels a logical state (focus, press, selection,
 /// disabled); it has no visual of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WidgetStyles {
@@ -222,6 +220,19 @@ impl<'a> Canvas<'a> {
         style: StyleId,
         widget_id: Option<WidgetId>,
     ) -> u32 {
+        self.text_with_ink(dx, dy, text, style, widget_id, InkRole::Text)
+    }
+
+    /// As `text`, with explicit component ink for every written cell.
+    pub(crate) fn text_with_ink(
+        &mut self,
+        dx: u32,
+        dy: u32,
+        text: &str,
+        style: StyleId,
+        widget_id: Option<WidgetId>,
+        ink: InkRole,
+    ) -> u32 {
         let mut x = dx;
         for ch in text.chars() {
             if x >= self.rect.width() {
@@ -232,20 +243,57 @@ impl<'a> Canvas<'a> {
             } else {
                 CellContent::Glyph(ch)
             };
-            self.put(x, dy, cell(content, style, widget_id));
+            self.put(x, dy, cell_with_ink(content, style, widget_id, ink));
             x = x.saturating_add(1);
         }
         dx.saturating_add(text_len(text))
+    }
+
+    /// Writes structural text with Contour ink, using the usual clipping and ownership.
+    pub(crate) fn contour(
+        &mut self,
+        dx: u32,
+        dy: u32,
+        text: &str,
+        style: StyleId,
+        widget_id: Option<WidgetId>,
+    ) -> u32 {
+        self.text_with_ink(dx, dy, text, style, widget_id, InkRole::Contour)
+    }
+
+    /// Changes only ink on an existing visible cell, retaining content and routing.
+    pub(crate) fn ink_at(&mut self, dx: u32, dy: u32, ink: InkRole) {
+        if dx < self.rect.width()
+            && dy < self.rect.height()
+            && let (Some(col), Some(row)) = (
+                self.rect.col().checked_add(dx),
+                self.rect.row().checked_add(dy),
+            )
+            && let Some(cell) = self.grid.get_mut(col, row)
+        {
+            cell.ink = ink;
+        }
     }
 }
 
 /// An ordinary cell (no shared-border routing).
 pub(crate) fn cell(content: CellContent, style: StyleId, widget_id: Option<WidgetId>) -> Cell {
+    cell_with_ink(content, style, widget_id, InkRole::Text)
+}
+
+/// Constructs a complete cell with explicit ink and no shared-border routing.
+pub(crate) fn cell_with_ink(
+    content: CellContent,
+    style: StyleId,
+    widget_id: Option<WidgetId>,
+    ink: InkRole,
+) -> Cell {
     Cell {
         content,
         style,
         widget_id,
         shared_border: None,
+        ink,
     }
 }
 
@@ -261,6 +309,7 @@ pub(crate) fn shared(ch: char, style: StyleId, border: SharedBorder) -> Cell {
         style,
         widget_id: None,
         shared_border: Some(border),
+        ink: InkRole::Contour,
     }
 }
 
@@ -409,6 +458,7 @@ mod tests {
             }),
         ];
         let stale = Cell {
+            ink: crate::InkRole::Text,
             content: CellContent::Glyph('#'),
             style: StyleId::new(3),
             widget_id: Some(id(9)),
@@ -450,5 +500,31 @@ mod tests {
         c.fill(0, u32::MAX, 1, owned_blank(StyleId::DEFAULT, id(2)));
         assert_eq!(owner_row(&g, 1), "2222");
         assert_eq!(owner_row(&g, 0), "----");
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    #[test]
+    fn explicit_ink_is_clipped_and_text_defaults_overwrite_stale_cells() {
+        let mut g = CellGrid::new(5, 2).unwrap();
+        let mut c = Canvas::new(&mut g, GridRect::new(1, 0, 3, 1));
+        c.text_with_ink(
+            0,
+            0,
+            "ABCDE",
+            StyleId::new(3),
+            Some(WidgetId::new(9)),
+            InkRole::Action,
+        );
+        c.text(1, 0, "x ", StyleId::DEFAULT, None);
+        assert_eq!(g.get(0, 0).unwrap(), &Cell::default());
+        assert_eq!(g.get(4, 0).unwrap(), &Cell::default());
+        assert_eq!(g.get(1, 0).unwrap().ink, InkRole::Action);
+        assert_eq!(g.get(2, 0).unwrap().ink, InkRole::Text);
+        assert_eq!(g.get(3, 0).unwrap().content, CellContent::Empty);
+        assert_eq!(g.get(3, 0).unwrap().ink, InkRole::Text);
+        assert_eq!(g.get(2, 1).unwrap(), &Cell::default());
     }
 }

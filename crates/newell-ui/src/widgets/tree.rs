@@ -95,9 +95,29 @@ pub fn draw_tree_row(
     rect: GridRect,
     row: &TreeRow<'_>,
 ) {
+    row.draw_with_inline(grid, ctx, rect, None);
+}
+
+impl TreeRow<'_> {
+    /// Natural untruncated prefix shared by measurement, drawing and inline allocation.
+    pub(crate) fn prefix_width(depth: u32, kind: TreeNodeKind, spaced: bool, check: bool) -> u32 {
+        let hierarchy = if depth == 0 { 0 } else {
+            depth.saturating_mul(2).saturating_add(u32::from(kind == TreeNodeKind::Leaf))
+        };
+        hierarchy.saturating_add(if kind == TreeNodeKind::Branch { 3 + u32::from(spaced) } else { 0 })
+            .saturating_add(if check { 2 } else { 0 })
+    }
+
+    /// Optional inline cursor uses the same prefix/name geometry as ordinary rows.
+    pub(crate) fn draw_with_inline(
+        &self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect,
+        inline: Option<WidgetId>,
+    ) {
+    let row = self;
     let ids = row.ids;
     let style = ctx.style_of(ids.row, row.state);
     let normal = ctx.styles.normal;
+    let hovered = ctx.interaction.hovered == Some(ids.row) && !row.state.disabled;
     let mut canvas = Canvas::new(grid, rect);
     canvas.fill(0, canvas.width(), 0, owned_blank(style, ids.row));
     let mut dx = 0;
@@ -108,29 +128,57 @@ pub fn draw_tree_row(
         let mut guides = String::from(" ");
         for level in 0..levels {
             let open = row.trunk.get(level as usize).copied().unwrap_or(false);
-            guides.push(if open { '│' } else { ' ' });
+            guides.push(if open { if row.state.selected { '┃' } else { '│' } } else { ' ' });
             guides.push(' ');
         }
-        guides.push(if row.last { '╰' } else { '├' });
+        guides.push(match (row.last, row.state.selected, hovered) {
+            (true, true, _) => '┗', (false, true, _) => '┣',
+            (true, false, true) => '╘', (false, false, true) => '╞',
+            (true, false, false) => '╰', (false, false, false) => '├',
+        });
         dx = canvas.text(dx, 0, &guides, normal, Some(ids.row));
         if row.kind == TreeNodeKind::Leaf {
-            let tail = if row.last { "╴" } else { " " };
+            let tail = if row.last { if row.state.selected || hovered { "╸" } else { "╴" } } else { " " };
             dx = canvas.text(dx, 0, tail, normal, Some(ids.row));
         }
     }
     if row.kind == TreeNodeKind::Branch {
         let marker = if row.state.expanded { "[-]" } else { "[+]" };
-        dx = canvas.text(dx, 0, marker, style, Some(ids.marker));
+        dx = canvas.text_with_ink(
+            dx,
+            0,
+            marker,
+            style,
+            Some(ids.marker),
+            crate::InkRole::Action,
+        );
         if row.spaced {
             dx = canvas.text(dx, 0, " ", style, Some(ids.row));
         }
     }
     if let Some(on) = row.check {
-        dx = canvas.text(dx, 0, if on { "■" } else { "□" }, style, Some(ids.check));
+        dx = canvas.text_with_ink(
+            dx,
+            0,
+            if on { "■" } else { "□" },
+            style,
+            Some(ids.check),
+            crate::InkRole::Action,
+        );
         dx = canvas.text(dx, 0, " ", style, Some(ids.row));
     }
-    let room = canvas.width().saturating_sub(dx);
-    canvas.text(dx, 0, &ellipsize(row.label, room), style, Some(ids.name));
+    // Prefix arithmetic remains natural even when depth extends beyond the clipped canvas.
+    dx = dx.max(Self::prefix_width(row.depth, row.kind, row.spaced, row.check.is_some()));
+    let inline = inline.filter(|_| canvas.width() >= dx.saturating_add(5));
+    let room = canvas.width().saturating_sub(dx).saturating_sub(if inline.is_some() { 4 } else { 0 });
+    let label = ellipsize(row.label, room);
+    canvas.text(dx, 0, &label, style, Some(ids.name));
+    if let Some(owner) = inline {
+        let start = dx.saturating_add(text_len(&label)).saturating_add(1);
+        let count = canvas.width().saturating_sub(start).min(canvas.reach());
+        canvas.text(start, 0, &"─".repeat(count as usize), normal, Some(owner));
+    }
+    }
 }
 
 #[cfg(test)]

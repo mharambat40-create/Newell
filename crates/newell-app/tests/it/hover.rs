@@ -21,7 +21,11 @@ const NOTHING: Update = Update { grid: false };
 const REDRAW: Update = Update { grid: true };
 
 fn controller() -> ShellController {
-    ShellController::new(82, 30, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap()
+    ShellController::with_shell(
+        newell_ui::ShellState::new(82, 30),
+        GridMetrics::from_k(DEFAULT_K).unwrap(),
+    )
+    .unwrap()
 }
 
 /// Centre of cell `(col, row)` in pixels, as a pointer position.
@@ -207,7 +211,11 @@ fn a_scale_change_drops_the_hover_because_the_pointer_is_forgotten() {
 
 #[test]
 fn motion_over_widgets_that_are_not_targets_changes_nothing() {
-    let mut c = controller();
+    let mut c = ShellController::with_shell(
+        newell_ui::ShellState::new(82, 30),
+        GridMetrics::from_k(DEFAULT_K).unwrap(),
+    )
+    .unwrap();
     let before = c.grid().clone();
     // MenuBar title, CommandBar label, a tree row, the viewport and the window control.
     let (fc, fr) = cell_of(c.grid(), "File", "File");

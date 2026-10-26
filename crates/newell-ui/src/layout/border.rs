@@ -167,6 +167,7 @@ fn put(grid: &mut CellGrid, col: u32, row: u32, new: Arms, style: StyleId) {
     if let Some(c) = encode(merged) {
         cell.content = CellContent::Glyph(c);
         cell.style = style;
+        cell.ink = crate::InkRole::Contour;
         cell.widget_id = None;
         cell.shared_border = None;
     }
@@ -382,6 +383,7 @@ mod tests {
     #[test]
     fn only_border_cells_change_and_widget_is_cleared() {
         let styled = Cell {
+            ink: crate::InkRole::Text,
             content: CellContent::Glyph('Z'),
             style: StyleId::new(7),
             widget_id: Some(WidgetId::new(3)),
@@ -445,5 +447,40 @@ mod tests {
         assert_eq!(decode('┌').unwrap().0[S], Arm::Single);
         assert_eq!(decode('┌').unwrap().0[N], Arm::None);
         assert_eq!(decode('┌').unwrap().0[W], Arm::None);
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    #[test]
+    fn color_shared_frame_join_and_edges_override_stale_control_ink() {
+        let mut grid = CellGrid::new(7, 4).unwrap();
+        for y in 0..4 {
+            for x in 0..7 {
+                grid.get_mut(x, y).unwrap().ink = crate::InkRole::Action;
+            }
+        }
+        draw_border(
+            &mut grid,
+            GridRect::new(0, 0, 4, 4),
+            BorderLine::Double,
+            StyleId::DEFAULT,
+        );
+        draw_border(
+            &mut grid,
+            GridRect::new(3, 0, 4, 4),
+            BorderLine::Double,
+            StyleId::DEFAULT,
+        );
+        assert_eq!(grid.get(3, 0).unwrap().content, CellContent::Glyph('╦'));
+        assert_eq!(grid.get(3, 3).unwrap().content, CellContent::Glyph('╩'));
+        for y in 0..4 {
+            for x in 0..7 {
+                if x == 0 || x == 3 || x == 6 || y == 0 || y == 3 {
+                    assert_eq!(grid.get(x, y).unwrap().ink, crate::InkRole::Contour);
+                }
+            }
+        }
     }
 }

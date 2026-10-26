@@ -146,6 +146,7 @@ mod tests {
     fn new_cells_are_default() {
         let g = CellGrid::new(3, 3).unwrap();
         assert!(g.cells().iter().all(|c| c.content == CellContent::Empty
+            && c.ink == crate::InkRole::Text
             && c.style == StyleId::DEFAULT
             && c.widget_id.is_none()));
     }

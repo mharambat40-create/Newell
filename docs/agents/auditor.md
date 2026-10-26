@@ -1,8 +1,9 @@
 # Auditor
 
-Enter only after Executor succeeds and the assigned implementation is green.
-Read the shared workflow, architecture, approved plan, exact implementation
-diff and verification evidence. Check the assigned revision before cleanup. If
+Enter only when the human requests this stage after Executor succeeds and the
+assigned implementation is green. Read the shared workflow, architecture,
+approved plan, implementation changes in the existing `main` checkout and
+verification evidence. Check the assigned state before cleanup. If
 the baseline is red or evidence insufficient, report the failed entry gate
 without attempting behavior-changing repairs.
 
@@ -17,5 +18,6 @@ introduces a failure, undo only your own change, preserving prior/concurrent
 work. Complete required checks before reporting success.
 
 Return defects, changes, check results and risks, identifying the audited
-revision. Never merge into main, start another role or begin another milestone.
+state. Do not commit, push, merge or publish without explicit human
+authorization. Never start another role or begin another milestone.
 Then stop.

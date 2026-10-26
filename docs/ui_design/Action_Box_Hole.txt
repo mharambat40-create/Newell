@@ -1,0 +1,35 @@
+╭─Hole────────────────────────╮
+│ Plane       [Select…       ]│
+│─────────────────────────────│
+│ Placement   ◀   Single   ▶  │
+│ Hole Type  ◀ Counterbore ▶  │
+│ │ Diameter      [0.0 mm    ]│
+│ │ Counterbore Ø [0.0 mm    ]│
+│ │ Counterbore L [0.0 mm    ]│
+│ ╰╴Extend   ◀    Blind    ▶  │
+│   ╰╴Depth [+|0.0 mm       ☰]│
+│ □ Tapped                    │
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+
+"Placment variants"
+│ Placment    ◀   Single   ▶  │
+
+│ Placment    ◀  Multiple  ▶  │
+
+"Hole Type Variants"
+│ Hole Type  ◀   Simple    ▶  │
+│ │ Diameter      [0.0 mm    ]│
+
+
+│ Hole Type  ◀ Counterbore ▶  │
+│ │ Diameter      [0.0 mm    ]│
+│ │ Counterbore Ø [0.0 mm    ]│
+│ │ Counterbore L [0.0 mm    ]│
+
+"Tapped Variants"
+│ □ Tapped                    │
+
+│ ■ Tapped                    │
+│ ╰╴Size   ◀    Blind    ▶  │

@@ -157,15 +157,15 @@ fn round_trip_macbook_full_hd_macbook_restores_cells_grid_and_preference() {
     let macbook = MonitorInfo::new(Some("built-in".into()), (0, 0), (2560, 1664), 2.0);
     let full_hd = MonitorInfo::new(Some("external".into()), (1280, 0), (1920, 1080), 1.0);
     let mut scale = ScaleManager::default();
-    scale.start(5);
+    scale.start(4);
     scale.set_desired_grid(120, 34);
-    let mut c = ShellController::new(120, 34, metrics(5)).unwrap();
+    let mut c = ShellController::new(120, 34, metrics(4)).unwrap();
 
-    // Launch on the MacBook: k = 5, no change.
+    // Startup label 100% maps to factor 80: MacBook k = 4, no change.
     let r = scale
         .evaluate(Some(macbook.clone()), ScaleMode::Windowed)
         .unwrap();
-    assert_eq!(r.decision.k, 5);
+    assert_eq!(r.decision.k, 4);
 
     // Move to Full HD.
     let r = scale.evaluate(Some(full_hd), ScaleMode::Windowed).unwrap();
@@ -192,20 +192,20 @@ fn round_trip_macbook_full_hd_macbook_restores_cells_grid_and_preference() {
         (cols * 8, rows * 18),
     )
     .unwrap();
-    assert_eq!(plan.metrics, metrics(5));
-    rescale_to(&mut c, 5, plan.size);
-    assert_eq!(c.metrics(), metrics(5));
+    assert_eq!(plan.metrics, metrics(4));
+    rescale_to(&mut c, 4, plan.size);
+    assert_eq!(c.metrics(), metrics(4));
     assert_eq!((c.grid().cols(), c.grid().rows()), (120, 34));
-    assert_eq!(scale.preferred_percent(), 100);
+    assert_eq!(scale.scale_factor_percent(), 80);
 }
 
 #[test]
-fn full_hd_k2_and_retina_k5_pair_metrics_grid_and_minimum_size() {
-    // The two displays of the M2.17 retest: Full HD 100 % = k 2 (8 × 18), Retina 100 % = k 5
-    // (20 × 45). Cells stay 4:9, the minimum stays 82 × 30, and the pointer maps on both.
+fn startup_scale_factors_pair_metrics_grid_and_minimum_size() {
+    // Startup label 100% uses factor 80: Full HD k2 and Retina k4. Cells stay 4:9, minimum
+    // stays 82 × 30, and pointer mapping remains cell-aligned on both displays.
     for (monitor, k, cell, min) in [
         ((1920, 1080), 2, (8, 18), (656, 540)),
-        ((2560, 1664), 5, (20, 45), (1640, 1350)),
+        ((2560, 1664), 4, (16, 36), (1312, 1080)),
     ] {
         let mon = MonitorInfo::new(None, (0, 0), monitor, 1.0);
         let mut scale = ScaleManager::default();

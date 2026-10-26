@@ -10,8 +10,23 @@
 
 use super::edit::caret_window;
 use super::numeric::NumericView;
-use super::{Canvas, WidgetContext, cell, owned_blank};
+use super::{Canvas, WidgetContext, owned_blank};
 use crate::{CellContent, CellGrid, GridRect, WidgetId, WidgetState};
+
+/// Semantic field purpose, independent of the displayed glyphs or value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FieldKind {
+    Edit,
+    Selection,
+}
+impl FieldKind {
+    fn bracket_ink(self) -> crate::InkRole {
+        match self {
+            Self::Edit => crate::InkRole::Contour,
+            Self::Selection => crate::InkRole::Action,
+        }
+    }
+}
 
 /// `[text      ]` on the first row of `rect`, all owned by `id`. The text is left-aligned
 /// and truncated. Needs a width of at least 2, else nothing is drawn.
@@ -23,6 +38,18 @@ pub fn draw_text_field(
     state: WidgetState,
     text: &str,
 ) {
+    draw_text_kind(grid, ctx, rect, id, state, text, FieldKind::Edit);
+}
+
+pub(crate) fn draw_text_kind(
+    grid: &mut CellGrid,
+    ctx: &WidgetContext<'_>,
+    rect: GridRect,
+    id: WidgetId,
+    state: WidgetState,
+    text: &str,
+    kind: FieldKind,
+) {
     if rect.width() < 2 {
         return;
     }
@@ -33,7 +60,16 @@ pub fn draw_text_field(
     let shown: String = text.chars().take((last - 1) as usize).collect();
     canvas.text(1, 0, &shown, style, Some(id));
     for (dx, glyph) in [(0, '['), (last, ']')] {
-        canvas.put(dx, 0, cell(CellContent::Glyph(glyph), style, Some(id)));
+        canvas.put(
+            dx,
+            0,
+            super::cell_with_ink(
+                CellContent::Glyph(glyph),
+                style,
+                Some(id),
+                kind.bracket_ink(),
+            ),
+        );
     }
 }
 
@@ -49,6 +85,26 @@ pub fn draw_numeric_field(
     state: WidgetState,
     text: &str,
 ) {
+    draw_numeric_kind(
+        grid,
+        ctx,
+        rect,
+        field,
+        formula,
+        state,
+        (text, FieldKind::Edit),
+    );
+}
+
+pub(crate) fn draw_numeric_kind(
+    grid: &mut CellGrid,
+    ctx: &WidgetContext<'_>,
+    rect: GridRect,
+    field: WidgetId,
+    formula: WidgetId,
+    state: WidgetState,
+    (text, kind): (&str, FieldKind),
+) {
     if rect.width() < 3 {
         return;
     }
@@ -60,20 +116,39 @@ pub fn draw_numeric_field(
     canvas.fill(button, 2, 0, owned_blank(button_style, formula));
     let shown: String = text.chars().take((button - 1) as usize).collect();
     canvas.text(1, 0, &shown, field_style, Some(field));
+    if kind == FieldKind::Edit && (text.starts_with("+|") || text.starts_with("-|")) {
+        canvas.ink_at(1, 0, crate::InkRole::Action);
+        canvas.ink_at(2, 0, crate::InkRole::Contour);
+    }
     canvas.put(
         0,
         0,
-        cell(CellContent::Glyph('['), field_style, Some(field)),
+        super::cell_with_ink(
+            CellContent::Glyph('['),
+            field_style,
+            Some(field),
+            kind.bracket_ink(),
+        ),
     );
     canvas.put(
         button,
         0,
-        cell(CellContent::Glyph('☰'), button_style, Some(formula)),
+        super::cell_with_ink(
+            CellContent::Glyph('☰'),
+            button_style,
+            Some(formula),
+            crate::InkRole::Action,
+        ),
     );
     canvas.put(
         button + 1,
         0,
-        cell(CellContent::Glyph(']'), button_style, Some(formula)),
+        super::cell_with_ink(
+            CellContent::Glyph(']'),
+            button_style,
+            Some(formula),
+            kind.bracket_ink(),
+        ),
     );
 }
 
@@ -102,6 +177,10 @@ pub(crate) fn draw_numeric_view(
         return;
     }
     canvas.text(1, 0, view.prefix, style, Some(field));
+    if !view.prefix.is_empty() {
+        canvas.ink_at(1, 0, crate::InkRole::Action);
+        canvas.ink_at(2, 0, crate::InkRole::Contour);
+    }
     let shown = caret_window(&view.body, &view.suffix, view.caret, area as usize);
     canvas.text(1 + prefix, 0, &shown, style, Some(field));
 }

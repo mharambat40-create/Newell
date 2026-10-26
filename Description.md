@@ -213,45 +213,52 @@ or ChatGPT through Codex. Model choice does not determine role authority. Each
 role runs in an ephemeral conversation: no hidden/session state is trusted across
 sessions. Persistent context is carried through reviewed repository files:
 `CLAUDE.md`/`AGENTS.md`, shared `docs/agents/` instructions, `ARCHITECTURE.md`,
-ADRs, plans and the deliberately short `MEMORY.md`. Parallel work follows
-`ARCHITECTURE.md` §2.4 and `docs/agents/README.md`.
+ADRs, plans and the deliberately short `MEMORY.md`. Roles work sequentially in
+the existing Newell directory on `main`, as defined in `ARCHITECTURE.md` §2.4
+and `docs/agents/README.md`.
 
-**Human role:** define the constraints, own the vision, approve plans, and merge pull requests. **Only the human merges into `main`.**
+**Human role:** define the constraints, own the vision, approve plans, control
+role transitions, and authorize integration or external publication.
 
 ### 6.1 The 4 agents
 
 | Agent | Provider | Input | Output | Must not |
 |---|---|---|---|---|
 | **Architect** | Claude or Codex | Issue + `ARCHITECTURE.md` + relevant code | Plan in `docs/plans/<issue>-<slug>.md`: traits, types, files to touch, test list | Write production code |
-| **Challenger** | Claude or Codex | The plan only (one-shot) | Written review: logical flaws, borrow checker conflicts, bottlenecks, missing tests | Rewrite the plan itself |
-| **Executor** | Claude or Codex | Approved plan + targeted files + docs (e.g. BrepKIT) | Code + tests on a branch, PR opened | Modify tests to make them pass, touch files outside the plan, edit `ARCHITECTURE.md` |
-| **Auditor** | Claude or Codex | Diff of the Executor's PR | Cleanup commits: duplication, idioms, Clippy, docs | Change behaviour (tests must stay identical and green) |
+| **Challenger** | Claude or Codex | Human-requested plan review | Advisory review: logical flaws, borrow checker conflicts, bottlenecks, missing tests | Rewrite the plan itself or approve execution |
+| **Executor** | Claude or Codex | Explicitly approved plan and human implementation request + targeted files and docs | Code, tests and verification report in the existing `main` checkout | Modify tests to make them pass, touch files outside the plan, edit `ARCHITECTURE.md` |
+| **Auditor** | Claude or Codex | Human request after a green implementation and its changes | Behavior-preserving cleanup and verification report | Change behaviour (tests must stay identical and green) |
 **Explorer** (optional helper, Claude or Codex): see `ARCHITECTURE.md` §2. It is not a pipeline stage.
 
-The Explorer is a read-only helper, not a pipeline stage. It can be used at any point (for example, to locate code before planning, or to discuss options with the human), and it never appears in the approval chain of §6.2.
+The Explorer is a read-only helper, not an implementation stage. The human may
+request it when needed; it never grants plan approval.
 
-### 6.2 Pipeline
+### 6.2 Human-controlled path
 
 ```
 Issue (human)
   → Architect writes plan
-  → Challenger reviews plan
-  → Architect revises (max 2 rounds, then human decides)
-  → Human approves plan
-  → Executor implements on a branch, opens PR
-  → CI green
-  → Auditor cleans up on the same branch
-  → CI green
-  → Human reviews and merges
+  → Challenger reviews only if the human requests it (advice)
+  → Human explicitly approves the plan and requests implementation
+  → Executor implements and verifies in the existing main checkout
+  → Auditor reviews a green implementation only if the human requests it
+  → Human authorizes integration or external publication
 ```
+
+Each transition requires a human instruction. An uncommitted plan or source
+change does not itself block review or execution; agents preserve existing
+work and report a real conflict if it prevents safe progress. No source
+snapshot, content hash, snapshot archive or snapshot commit is required.
 
 ### 6.3 Guardrails
 
 - **Tests come from the plan.** The Architect lists the tests; the Executor writes them first. A test change not listed in the plan is a red flag in review.
 - **Iteration limit.** If the Executor fails to reach green CI after a fixed number of attempts (defined in `ARCHITECTURE.md`), it stops and writes a report instead of forcing a solution.
 - **Narrow context.** Agents receive only the files they need. Small crates (§3.1) make that possible.
-- **No silent scope creep.** Anything outside the plan goes into a new issue, not into the current PR.
-- **Traceability.** Agent commits carry a `Co-Authored-By` trailer naming the model, and the PR description states which agent role produced it.
+- **No silent scope creep.** Work outside the approved plan needs human direction.
+- **Traceability.** Reports identify the role, plan revision, relevant changes
+  and verification. If the human separately authorizes a commit or PR, record
+  the agent role and plan there too.
 
 ### 6.4 Context files
 
@@ -259,9 +266,9 @@ Issue (human)
 |---|---|---|
 | `CLAUDE.md` / `AGENTS.md` | Provider entry points to shared role instructions | Human |
 | `docs/agents/` | Shared workflow, role boundaries and task prompt template for both providers | Human |
-| `ARCHITECTURE.md` | Binding rules: crate boundaries, lints, budgets, tolerances, iteration limits | Human only (protected by CODEOWNERS) |
+| `ARCHITECTURE.md` | Binding rules: crate boundaries, lints, budgets, tolerances, iteration limits | Human approval required for changes |
 | `docs/adr/NNNN-title.md` | One decision per file: context, options, decision, consequences | Architect drafts, human approves |
-| `docs/plans/` | One plan per feature, kept after merge for history | Architect |
+| `docs/plans/` | One plan per feature, kept after implementation for history | Architect |
 | `MEMORY.md` | Logbook: lessons learned, pitfalls, current state | Agents append; human prunes |
 
 **`MEMORY.md` must stay short.** An ever-growing logbook brings back exactly the context drift that ephemeral sessions are meant to avoid. Lasting lessons are promoted to `ARCHITECTURE.md` or an ADR; obsolete entries are deleted.
@@ -431,8 +438,9 @@ Best practices for workflows:
 
 ### 8.10 Agent access
 
-- Agents use a dedicated identity (a GitHub App or a fine-grained token) limited to this repository, with permissions to push branches and open PRs only.
-- No agent has permission to merge, change rulesets, or edit secrets.
+- Agents work locally in the existing `main` checkout. Commit, push, PR,
+  merge and other external actions require explicit human authorization.
+- No agent changes rulesets or secrets without explicit human authorization.
 
 ### 8.11 Community files
 

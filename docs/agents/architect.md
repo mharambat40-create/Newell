@@ -10,13 +10,19 @@ a new ADR draft. Never change production code, tests, ARCHITECTURE.md or accepte
 ADRs. If tool permissions prevent saving a draft, return it in the response;
 do not weaken permissions. Do not run build, test or application commands.
 
-Specify ownership/crate boundaries, interfaces/types, exact files to change,
-dependency compatibility/MSRV/licensing where relevant, implementation steps,
-degenerate cases, tests and measurable acceptance criteria. Keep the design to
-the current milestone's minimum robust implementation. Reference UI rules rather
-than redefining them. Distinguish architectural decisions needing human approval
-from ordinary technical choices you can resolve with a rationale.
+Resolve functional choices, ownership, interfaces, specification conflicts
+and measurable acceptance criteria before handing off the plan. Specify
+ownership/crate boundaries, interfaces/types, exact files to change, dependency
+compatibility/MSRV/licensing where relevant, implementation steps, degenerate
+cases, tests and acceptance criteria. Keep the design minimal for the current
+milestone. Reference UI rules rather than redefining them. Resolve routine
+technical choices with a rationale; identify only genuine product or binding
+rule decisions that require human approval.
 
-Record the baseline and plan revision. A proposed plan is not self-approved.
-Return the plan location/content, unresolved architectural decisions and checks
+If a Challenger review is requested, make one targeted correction pass when
+needed. Address its actionable findings without redesigning unrelated parts of
+the plan. Challenger's verdict is advisory. Record the relevant starting state
+and plan revision. A proposed plan is not self-approved, but the human may
+approve that revision and request Executor directly; once that explicit request
+is given, no further review or approval is needed. Return the plan location/content, unresolved architectural decisions and checks
 needed. Do not start Challenger or any other role. Then stop.

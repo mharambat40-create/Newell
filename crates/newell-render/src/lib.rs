@@ -8,6 +8,7 @@
 
 mod camera;
 pub use camera::{CameraMatrix, CameraSnapshot, SceneViewport, exposed_regions};
+pub use scene::SceneDisplayMode;
 
 mod error;
 pub mod glyph_atlas;
@@ -19,4 +20,4 @@ pub mod ui;
 pub use error::RenderError;
 pub use glyph_atlas::{CellLayout, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs, load_font};
 pub use renderer::{FrameOutcome, Renderer};
-pub use ui::Theme;
+pub use ui::{Theme, UiPalette};

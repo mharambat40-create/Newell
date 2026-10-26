@@ -325,13 +325,15 @@ impl ExtrudeUi {
         push_head(&mut b, self.base_id, "Extrude", v.geometry, v.result);
         b.push(
             self.row()
-                .text("│ Profile     ")
+                .contour("│")
+                .text(" Profile     ")
                 .select(K_PROFILE, v.profile.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ Extend   ")
+                .contour("│")
+                .text(" Extend   ")
                 .cycle(K_EXTEND, v.termination.label(), 17)
                 .end(),
         );
@@ -342,7 +344,7 @@ impl ExtrudeUi {
         }
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_SYMMETRIC, v.symmetric, "Symetric")
                 .end(),
         );
@@ -360,13 +362,15 @@ impl ExtrudeUi {
         let v = &self.values;
         b.push(
             self.row()
-                .text("│ │ Depth   ")
+                .contour("│")
+                .text(" │ Depth   ")
                 .numeric(K_DEPTH, MOCK_DIST)
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ │ Along     ")
+                .contour("│")
+                .text(" │ Along     ")
                 .select(K_ALONG, v.along.count())
                 .end(),
         );
@@ -391,7 +395,8 @@ impl ExtrudeUi {
         } else {
             b.push(
                 self.row()
-                    .text("│ │ ")
+                    .contour("│")
+                    .text(" │ ")
                     .check_fill(K_START, false, "Starting Offset")
                     .end(),
             );
@@ -417,7 +422,8 @@ impl ExtrudeUi {
         } else {
             b.push(
                 self.row()
-                    .text("│ ╰╴")
+                    .contour("│")
+                    .text(" ╰╴")
                     .check_fill(K_END, false, "End Offset")
                     .end(),
             );
@@ -428,13 +434,15 @@ impl ExtrudeUi {
         let v = &self.values;
         b.push(
             self.row()
-                .text("│ │ Selection ")
+                .contour("│")
+                .text(" │ Selection ")
                 .select(K_SELECTION, v.selection.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ ╰╴")
+                .contour("│")
+                .text(" ╰╴")
                 .check_fill(K_OFFSET, v.offset, "Offset")
                 .end(),
         );
@@ -444,7 +452,8 @@ impl ExtrudeUi {
         let v = &self.values;
         b.push(
             self.row()
-                .text("│ │ ")
+                .contour("│")
+                .text(" │ ")
                 .check_fill(K_INVERT, v.invert, "Invert")
                 .end(),
         );
@@ -469,7 +478,8 @@ impl ExtrudeUi {
         } else {
             b.push(
                 self.row()
-                    .text("│ ╰╴")
+                    .contour("│")
+                    .text(" ╰╴")
                     .check_fill(K_START, false, "Start Offset")
                     .end(),
             );
@@ -482,7 +492,7 @@ impl ExtrudeUi {
         if !v.second_side {
             b.push(
                 self.row()
-                    .text("│ ")
+                    .contour("│ ")
                     .check_fill(K_SECOND, false, "Second end position")
                     .end(),
             );
@@ -490,23 +500,26 @@ impl ExtrudeUi {
         }
         b.push(
             self.row()
-                .text("│ ╰╴")
+                .contour("│")
+                .text(" ╰╴")
                 .check(K_SECOND, true, "2nd side", 10)
-                .text("     ")
+                .contour("     ")
                 .cycle(K_SECOND_MODE, v.second_mode.label(), 9)
                 .end(),
         );
         match v.second_mode {
             ExtrudeOffsetMode::Blind => b.push(
                 self.row()
-                    .text("│   ╰╴Depth ")
+                    .contour("│")
+                    .text("   ╰╴Depth ")
                     .numeric(K_SECOND_DEPTH, MOCK_DIST)
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => {
                 b.push(
                     self.row()
-                        .text("│   │ Target  ")
+                        .contour("│")
+                        .text("   │ Target  ")
                         .select(K_SECOND_TARGET, v.second_target.count())
                         .end(),
                 );

@@ -4,9 +4,10 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-use super::compose::Layout;
+use super::compose::{Layout, TOP_ROWS};
 use super::data::{self, progress_bar, visible_rows};
 use super::*;
+use crate::MenuAction;
 use crate::OverlayKind;
 use crate::{CellContent, CellGrid, GridMetrics, UiPoint, WidgetState, hit_test};
 
@@ -60,13 +61,13 @@ fn hit_at(g: &CellGrid, col: u32, row: u32) -> Option<HitTestResult> {
 
 fn click_at(s: &mut ShellState, col: u32, row: u32) -> bool {
     let g = s.compose().unwrap();
-    s.click(hit_at(&g, col, row))
+    super::tree_tests::published_click(s, hit_at(&g, col, row))
 }
 
 fn click_text(s: &mut ShellState, needle: &str) -> bool {
     let g = s.compose().unwrap();
     let (col, row) = find(&g, needle).expect("text must be on screen");
-    s.click(hit_at(&g, col, row))
+    super::tree_tests::published_click(s, hit_at(&g, col, row))
 }
 
 fn id_of(s: &ShellState, needle: &str) -> WidgetId {
@@ -263,7 +264,7 @@ fn view_menu_rows_cycle_and_toggle_without_closing() {
     let mut s = shell();
     click_text(&mut s, "View");
     let g = s.compose().unwrap();
-    assert!(has(&g, "Perspective") && has(&g, "Shaded") && has(&g, "■ Tree panel"));
+    assert!(has(&g, "Perspective") && has(&g, "Wireframe") && has(&g, "■ Tree panel"));
     assert!(has(&g, "□ Grid Overlay"));
 
     click_text(&mut s, "Grid Overlay");
@@ -279,16 +280,109 @@ fn view_menu_rows_cycle_and_toggle_without_closing() {
 }
 
 #[test]
-fn ui_scale_keeps_both_triangles_at_wrapping_endpoints() {
+fn theme_pointer_and_keyboard_activation_keep_view_open_and_focused() {
     let mut s = shell();
+    assert_eq!(s.theme(), ThemeChoice::Dark);
+    assert_eq!(s.shading(), 2);
     click_text(&mut s, "View");
-    for endpoint in [0, SCALE_PERCENTS.len() - 1] {
+    let theme_id = BAR_IDS.item(2, 3);
+
+    assert!(click_text(&mut s, "Theme [ ◑ Dark  ]"));
+    assert_eq!(s.theme(), ThemeChoice::Light);
+    assert_eq!(s.menu_bar.open_menu(), Some(2));
+    assert_eq!(s.interaction().focused, theme_id);
+    assert!(has(&s.compose().unwrap(), "Theme [ ◐ Light ]"));
+
+    assert!(click_text(&mut s, "Theme [ ◐ Light ]"));
+    assert_eq!(s.theme(), ThemeChoice::Dark);
+    assert_eq!(s.menu_bar.open_menu(), Some(2));
+    assert_eq!(s.interaction().focused, theme_id);
+
+    keys(&mut s, &[ShellKey::Enter]);
+    assert_eq!(s.theme(), ThemeChoice::Light);
+    assert_eq!(s.menu_bar.open_menu(), Some(2));
+    assert_eq!(s.interaction().focused, theme_id);
+    keys(&mut s, &[ShellKey::Enter]);
+    assert_eq!(s.theme(), ThemeChoice::Dark);
+    assert_eq!(s.menu_bar.open_menu(), Some(2));
+    assert_eq!(s.interaction().focused, theme_id);
+}
+
+#[test]
+fn ui_scale_endpoint_arrows_are_blank_inert_and_bounded_for_pointer_input() {
+    for (endpoint, factor, hidden, active, next_factor) in [
+        (
+            0,
+            SCALE_FACTORS_PERCENT[0],
+            BAR_IDS.cycle_prev(2, 2).unwrap(),
+            BAR_IDS.cycle_next(2, 2).unwrap(),
+            SCALE_FACTORS_PERCENT[1],
+        ),
+        (
+            SCALE_FACTORS_PERCENT.len() - 1,
+            SCALE_FACTORS_PERCENT[SCALE_FACTORS_PERCENT.len() - 1],
+            BAR_IDS.cycle_next(2, 2).unwrap(),
+            BAR_IDS.cycle_prev(2, 2).unwrap(),
+            SCALE_FACTORS_PERCENT[SCALE_FACTORS_PERCENT.len() - 2],
+        ),
+    ] {
+        let mut s = shell();
         s.view.scale = endpoint;
+        assert!(click_text(&mut s, "View"));
         let g = s.compose().unwrap();
-        let (_, row) = find(&g, "UI Scale").unwrap();
-        let line = text(&g, row);
-        assert!(line.contains('◀') && line.contains('▶'));
+        let (start, row) = find(&g, "UI Scale").unwrap();
+        let hidden_col = if endpoint == 0 { start + 9 } else { start + 16 };
+        let active_col = if endpoint == 0 { start + 16 } else { start + 9 };
+        assert_eq!(glyph(&g, hidden_col, row), ' ');
+        assert_eq!(
+            hit_at(&g, hidden_col, row).and_then(|hit| hit.widget_id),
+            Some(BAR_IDS.popup()),
+            "masked arrow cell belongs only to the popup surface"
+        );
+        assert_eq!(
+            hit_at(&g, active_col, row).and_then(|hit| hit.widget_id),
+            Some(active)
+        );
+        assert_eq!(
+            glyph(&g, active_col, row),
+            if endpoint == 0 { '▶' } else { '◀' }
+        );
+
+        let (hovered, lit) = s.compose_hovered(Some(hidden)).unwrap();
+        assert!(!lit, "masked arrow has no hover feedback");
+        assert_eq!(hovered.get(hidden_col, row), g.get(hidden_col, row));
+
+        assert!(click_at(&mut s, hidden_col, row));
+        assert_eq!(s.scale_factor_percent(), factor, "hidden arrow is inert");
+        assert_eq!(s.menu_bar.open_menu(), Some(2));
+        assert!(click_at(&mut s, active_col, row));
+        assert_eq!(s.scale_factor_percent(), next_factor);
+        assert_eq!(s.menu_bar.open_menu(), Some(2));
     }
+}
+
+#[test]
+fn ui_scale_keyboard_steps_between_presets_without_wrapping() {
+    let mut s = shell();
+    s.key(ShellKey::Alt('v'));
+    keys(&mut s, &[ShellKey::Down, ShellKey::Down]); // UI Scale row
+
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[1]);
+    s.key(ShellKey::Right);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[2]);
+    s.key(ShellKey::Right);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[3]);
+    s.key(ShellKey::Right);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[3]);
+
+    s.key(ShellKey::Left);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[2]);
+    s.key(ShellKey::Left);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[1]);
+    s.key(ShellKey::Left);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[0]);
+    s.key(ShellKey::Left);
+    assert_eq!(s.scale_factor_percent(), SCALE_FACTORS_PERCENT[0]);
 }
 
 #[test]
@@ -325,8 +419,8 @@ fn keyboard_menu_navigation_mirrors_pointer_state() {
     assert_eq!(s.menu_bar.open_menu(), Some(2));
     s.key(ShellKey::Right);
     assert_eq!(s.view.projection, 1);
-    // Shading, UI Scale and Theme come before the first checkbox (`Tree panel`).
-    keys(&mut s, &[ShellKey::Down; 4]);
+    // Shading, UI Scale, Theme and Color precede Tree panel.
+    keys(&mut s, &[ShellKey::Down; 5]);
     keys(&mut s, &[ShellKey::Enter]);
     assert!(!s.view.checks[0]);
     assert!(s.menu_bar.open_menu().is_some());
@@ -341,6 +435,73 @@ fn keyboard_menu_navigation_mirrors_pointer_state() {
     assert_eq!(s.command_bar.current_menu(), Some(2));
     s.key(ShellKey::Down);
     assert_eq!(s.command_bar.open_menu(), Some(2));
+}
+
+#[test]
+fn task_bar_toggle_reclaims_two_rows_and_restores_the_layout() {
+    let mut s = shell();
+    let shown = s.layout();
+    assert_eq!(shown.viewport.row(), TOP_ROWS);
+    assert_eq!(shown.command.height(), 3);
+
+    assert!(click_text(&mut s, "View"));
+    assert!(click_text(&mut s, "Task bar"));
+    assert!(!s.view_panel_visible(1));
+    let hidden = s.layout();
+    assert_eq!(hidden.command.height(), 0);
+    assert_eq!(shown.menu, hidden.menu);
+    assert_eq!(shown.status, hidden.status);
+    assert_eq!(shown.viewport.row() - hidden.viewport.row(), 2);
+    assert_eq!(shown.features.row() - hidden.features.row(), 2);
+
+    assert!(click_text(&mut s, "Task bar"));
+    assert!(s.view_panel_visible(1));
+    assert_eq!(s.layout(), shown);
+}
+
+#[test]
+fn hidden_task_bar_keeps_the_pane_divider_under_the_pointer() {
+    let mut s = shell();
+    assert!(click_text(&mut s, "View"));
+    assert!(click_text(&mut s, "Task bar"));
+    assert!(s.key(ShellKey::Escape));
+    assert_eq!(s.layout().features.row(), 2);
+
+    assert!(s.drag_separator(Separator::Split, 5, 12));
+    assert_eq!(s.layout().elements.row(), 12);
+    assert_eq!(s.separator_at(5, 12), Some(Separator::Split));
+}
+
+#[test]
+fn hiding_task_bar_closes_its_popup_clears_focus_and_blocks_f6() {
+    let mut s = shell();
+    assert!(s.command_bar.open(&COMMAND_MENUS, 2));
+    s.sync();
+    assert!(s.command_bar.is_active());
+    assert_eq!(s.command_bar.open_menu(), Some(2));
+    assert!(
+        s.interaction()
+            .focused
+            .is_some_and(|id| COMMAND_IDS.decode(id).is_some())
+    );
+    assert!(
+        s.overlays
+            .top()
+            .is_some_and(|overlay| overlay.id == COMMAND_IDS.popup())
+    );
+
+    assert!(s.apply_menu(MenuResult::Toggled(MenuAction::new(ACT_VIEW_CHECK + 1))));
+    s.sync();
+    assert!(!s.command_bar.is_active());
+    assert!(s.overlays.top().is_none());
+    assert!(s.interaction().focused.is_none());
+
+    assert!(s.key(ShellKey::CommandBar));
+    assert!(!s.command_bar.is_active());
+    assert!(s.interaction().focused.is_none());
+    assert!(s.key(ShellKey::Alt('f')));
+    assert!(s.menu_bar.is_active());
+    assert!(has(&s.compose().unwrap(), "╭─File"));
 }
 
 #[test]
@@ -421,7 +582,10 @@ fn navigation_trees_start_as_in_the_reference() {
 #[test]
 fn tree_expand_and_collapse_keep_ids_and_trees_independent() {
     let mut s = shell();
-    let fillet = id_of(&s, "Fillet_Inner");
+    let fillet = s
+        .tree_hit(id_of(&s, "Fillet_Inner"), ProjectionGeneration::new(0))
+        .unwrap()
+        .target;
     let rim = id_of(&s, "Rim_Body");
 
     assert!(click_text(&mut s, "[-] Hub_Features"));
@@ -429,7 +593,13 @@ fn tree_expand_and_collapse_keep_ids_and_trees_independent() {
     assert!(!has(&g, "Extrude_Base") && !has(&g, "Sketch_Hole"));
     assert!(text(&g, 7).contains("├[+] Hub_Features"));
     assert!(has(&g, "Rim_Body"), "the Elements tree is unaffected");
-    assert_eq!(id_of(&s, "Fillet_Inner"), fillet, "ids ignore position");
+    assert_eq!(
+        s.tree_hit(id_of(&s, "Fillet_Inner"), ProjectionGeneration::new(0))
+            .unwrap()
+            .target,
+        fillet,
+        "semantic identity ignores position"
+    );
     assert_eq!(id_of(&s, "Rim_Body"), rim);
 
     click_text(&mut s, "[+] Hub_Features");
@@ -449,17 +619,23 @@ fn tree_expand_and_collapse_keep_ids_and_trees_independent() {
 #[test]
 fn tree_leaf_click_selects_and_focuses_without_changing_the_tree() {
     let mut s = shell();
-    let before = (s.features_open, s.elements_open);
+    let before = s.expanded.clone();
     assert!(click_text(&mut s, "Extrude_Base"));
-    assert_eq!((s.features_open, s.elements_open), before);
+    assert_eq!(s.expanded.clone(), before);
     assert_eq!(s.interaction().focused, Some(tree_id(Tree::Features, 3)));
-    assert_eq!(s.selected, Some((Tree::Features, 3)));
+    assert_eq!(
+        s.selected,
+        Some(
+            s.projection
+                .target(TreeTargetKind::Operation(OpaqueTreeId::new(2)))
+        )
+    );
 }
 
 #[test]
 fn visible_rows_compute_guides_from_the_flat_list() {
     let open = initial_open_features();
-    let rows = visible_rows(&data::FEATURES, &open);
+    let rows = visible_rows(&shell().nodes[0], &open);
     let shape: Vec<(usize, bool, Vec<bool>)> = rows
         .iter()
         .map(|r| (r.index, r.last, r.trunk.clone()))
@@ -480,15 +656,19 @@ fn visible_rows_compute_guides_from_the_flat_list() {
     );
     let mut closed = open;
     closed[2] = false;
-    let hidden: Vec<usize> = visible_rows(&data::FEATURES, &closed)
+    let hidden: Vec<usize> = visible_rows(&shell().nodes[0], &closed)
         .iter()
         .map(|r| r.index)
         .collect();
     assert_eq!(hidden, vec![0, 1, 2, 6, 7, 8]);
 }
 
-fn initial_open_features() -> [bool; data::MAX_NODES] {
-    data::initial_open(&data::FEATURES)
+fn initial_open_features() -> Vec<bool> {
+    let shell = shell();
+    shell.nodes[0]
+        .iter()
+        .map(|node| shell.expanded.contains(&node.target))
+        .collect()
 }
 
 // ---- Extrude integration ----
@@ -670,6 +850,27 @@ fn click_selection_field(s: &mut ShellState) -> bool {
     click_at(s, col + 12, row)
 }
 
+fn click_selection_on_row(s: &mut ShellState, label: &str) -> bool {
+    let g = s.compose().unwrap();
+    let (start, row) = find(&g, label).unwrap();
+    let col = text(&g, row)
+        .chars()
+        .enumerate()
+        .skip(start as usize)
+        .find_map(|(col, ch)| (ch == '[').then_some(col as u32))
+        .unwrap();
+    click_at(s, col, row)
+}
+
+/// Opens the ordered Profile Selection box from the Action Box `Profile` field.
+fn open_profile_selection(s: &mut ShellState) -> WidgetId {
+    let profile = s.extrude().id(crate::extrude::K_PROFILE, 0);
+    let g = s.compose().unwrap();
+    let (col, row) = cell_of(&g, profile);
+    assert!(click_at(s, col, row));
+    profile
+}
+
 #[test]
 fn selection_field_opens_the_selection_panel() {
     let mut s = shell();
@@ -677,32 +878,146 @@ fn selection_field_opens_the_selection_panel() {
     assert!(s.selection().is_open());
     let g = s.compose().unwrap();
     assert!(has(&g, "Flange_Body") && has(&g, "Selection"));
+    assert!(!s.selection().is_profile_picker());
     assert_eq!(s.interaction().focused, s.selection().focus());
     // The Extrude controls are still the real ones underneath, unchanged.
     assert_eq!(s.extrude().values.selection, crate::MockSelection::None);
 }
 
 #[test]
-fn profiles_artwork_uses_a_framed_selected_items_footer() {
+fn axis_tools_and_merge_targets_keep_the_generic_checkbox_modal() {
+    for (operation, label) in [
+        (ActionOperation::Revolve, "Axis"),
+        (ActionOperation::Boolean, "Tools"),
+        (ActionOperation::Revolve, "Targets"),
+    ] {
+        let mut s = shell();
+        s.operation = operation;
+        if label == "Targets" {
+            s.revolve.values.result = crate::ExtrudeResultMode::Add;
+            s.revolve.values.merge_with_all = false;
+        }
+        assert!(
+            click_selection_on_row(&mut s, label),
+            "{operation:?}: {label}"
+        );
+        assert!(s.selection().is_open(), "{operation:?}: {label}");
+        assert!(!s.selection().is_profile_picker());
+        let g = s.compose().unwrap();
+        assert!(has(&g, "Selection") && has(&g, "□ Rim_Body"));
+        assert!(!has(&g, "╭─Profils"));
+    }
+}
+
+#[test]
+fn profile_field_opens_the_exact_profile_selection_box() {
     let mut s = shell();
-    s.selection.open_titled(&mut s.interaction, "Profiles");
-    s.sync();
-    let mut g = s.compose().unwrap();
-    let inter = InteractionState::default();
-    let styles = Default::default();
-    let ctx = crate::WidgetContext {
-        styles: &styles,
-        interaction: &inter,
-    };
-    s.selection
-        .draw_in_action_box(&mut g, &ctx, GridRect::new(30, 5, 31, 11));
-    assert!(has(&g, "╭─Profiles"));
-    assert!(has(&g, "│┌"));
-    assert!(has(&g, "☰ Spline_1"));
-    assert!(has(&g, "☰ Compound_line_1"));
-    assert!(has(&g, "×"));
-    assert!(has(&g, "│────────────────"));
-    assert!(has(&g, "OK") && has(&g, "Cancel"));
+    let field = open_profile_selection(&mut s);
+    assert!(s.selection().is_profile_picker());
+    let overlay = s.overlays.top().expect("Profile Selection modal");
+    assert_eq!(overlay.kind, OverlayKind::Modal);
+    assert_eq!(overlay.rect, s.profile_selection_frame());
+    assert!(
+        s.scene_occlusions()
+            .contains(&overlay.rect.intersection(&s.scene_viewport()))
+    );
+    assert_eq!(s.interaction().focused, s.selection().focus());
+
+    let g = s.compose().unwrap();
+    let (left, top) = find(&g, "╭─Profils─────────────────────╮").unwrap();
+    let rows = [
+        "╭─Profils─────────────────────╮",
+        "│┌───────────────────────────┐│",
+        "││ ☰ Spline_1             × ▲││",
+        "││ ☰ Profil_3             × ┃││",
+        "││ ☰ Profil_4             ×  ││",
+        "││ ☰ Profil_4             ×  ││",
+        "││ ☰ Compound_line_1      × ▼││",
+        "│└───────────────────────────┘│",
+        "│─────────────────────────────│",
+        "│      OK      │    Cancel    │",
+        "╰─────────────────────────────╯",
+    ];
+    for (offset, expected) in rows.into_iter().enumerate() {
+        let actual: String = text(&g, top + offset as u32)
+            .chars()
+            .skip(left as usize)
+            .take(31)
+            .collect();
+        assert_eq!(actual, expected, "Profile Selection row {offset}");
+    }
+    let tree = find(&g, "Hub_Features").unwrap();
+    assert_eq!(hit_at(&g, tree.0, tree.1).unwrap().widget_id, None);
+    assert!(!click_at(&mut s, tree.0, tree.1));
+    assert!(s.selection().is_profile_picker());
+    assert_eq!(s.interaction().focused, s.selection().focus());
+    assert_ne!(s.interaction().focused, Some(field));
+}
+
+#[test]
+fn every_profile_field_opens_the_profile_selection_box() {
+    for operation in [
+        ActionOperation::Extrude,
+        ActionOperation::Revolve,
+        ActionOperation::Loft,
+        ActionOperation::Sweep,
+    ] {
+        let mut s = shell();
+        s.operation = operation;
+        open_profile_selection(&mut s);
+        assert!(s.selection().is_profile_picker(), "{operation:?}");
+        assert!(has(
+            &s.compose().unwrap(),
+            "╭─Profils─────────────────────╮"
+        ));
+    }
+}
+
+#[test]
+fn profile_selection_scroll_escape_ok_and_cancel_keep_selection_semantics() {
+    let mut s = shell();
+    let field = open_profile_selection(&mut s);
+    assert!(s.scroll(-1));
+    let g = s.compose().unwrap();
+    assert!(has(&g, "☰ Profil_3") && !has(&g, "☰ Spline_1"));
+
+    s.key(ShellKey::Char(' '));
+    assert!(
+        !s.selection().profile_applied()[0],
+        "Profile edit is still a draft"
+    );
+    s.key(ShellKey::Escape);
+    assert!(!s.selection().is_open());
+    assert!(
+        !s.selection().profile_applied()[0],
+        "Escape discards the draft"
+    );
+    assert_eq!(s.interaction().focused, Some(field));
+
+    let _ = open_profile_selection(&mut s);
+    s.key(ShellKey::Char(' '));
+    let ok = WidgetId::new(SELECTION_BASE + 3);
+    let g = s.compose().unwrap();
+    let (col, row) = cell_of(&g, ok);
+    assert!(click_at(&mut s, col, row));
+    assert!(s.selection().profile_applied()[0], "OK applies the draft");
+    assert!(
+        !s.selection().applied()[0],
+        "generic checkbox state is unchanged"
+    );
+    assert_eq!(s.interaction().focused, Some(field));
+
+    let _ = open_profile_selection(&mut s);
+    s.key(ShellKey::Char(' '));
+    let cancel = WidgetId::new(SELECTION_BASE + 4);
+    let g = s.compose().unwrap();
+    let (col, row) = cell_of(&g, cancel);
+    assert!(click_at(&mut s, col, row));
+    assert!(
+        s.selection().profile_applied()[0],
+        "Cancel preserves the applied draft"
+    );
+    assert_eq!(s.interaction().focused, Some(field));
 }
 
 #[test]
@@ -757,12 +1072,12 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     for &(needle, (c, r)) in &spots {
         assert_eq!(hit_at(&g, c, r).unwrap().widget_id, None, "{needle}");
     }
-    let base = (s.extrude, s.features_open, s.elements_open);
+    let base = (s.extrude, s.expanded.clone());
     for &(_, (c, r)) in &spots {
         assert!(!click_at(&mut s, c, r));
     }
     assert!(s.formula().is_open());
-    assert_eq!(base, (s.extrude, s.features_open, s.elements_open));
+    assert_eq!(base, (s.extrude, s.expanded.clone()));
 
     // Keys go to the modal: base shortcuts do nothing, text is typed.
     assert!(!s.key(ShellKey::MenuBar) && !s.menu_bar.is_active());
@@ -772,7 +1087,7 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     s.key(ShellKey::Tab);
     assert_eq!(s.interaction().focused, s.formula().focus());
     assert!(s.formula().is_open());
-    assert_eq!(base, (s.extrude, s.features_open, s.elements_open));
+    assert_eq!(base, (s.extrude, s.expanded.clone()));
 }
 
 #[test]
@@ -1137,18 +1452,22 @@ fn id_ranges_are_disjoint_and_trees_fit() {
     const { assert!(FORMULA_BASE + 4 <= RENAME_BASE) };
     const { assert!(RENAME_BASE + 4 <= WINDOW_BASE) };
     const { assert!(PLAYHEAD_ID == TREE_BASE + NODE_IDS && PLAYHEAD_ID < ACTION_BASE) };
-    const { assert!(FEATURES.len() <= MAX_NODES && ELEMENTS.len() <= MAX_NODES) };
+    const { assert!(TREE_SLOT_CAP == crate::MAX_CELLS) };
+    let state = shell();
     for tree in [Tree::Features, Tree::Elements] {
-        for index in 0..tree.nodes().len() {
+        for (slot, index) in state.tree_slots[tree.slot()].iter().enumerate() {
             for part in TreePart::ALL {
                 assert_eq!(
-                    tree_decode(tree_part_id(tree, index, part)),
-                    Some((tree, index, part))
+                    state.decode_tree(tree_part_id(tree, slot, part)),
+                    Some((tree, *index, part))
                 );
             }
         }
+        assert_eq!(
+            state.decode_tree(tree_id(tree, state.tree_slots[tree.slot()].len())),
+            None
+        );
     }
-    assert_eq!(tree_decode(tree_id(Tree::Features, FEATURES.len())), None);
     assert_eq!(tree_decode(WidgetId::new(PLAYHEAD_ID)), None);
     assert_eq!(tree_decode(WidgetId::new(0)), None);
 }
@@ -1197,7 +1516,7 @@ fn tiny_and_degenerate_grids_are_safe() {
 fn huge_grids_do_not_overflow() {
     let s = ShellState::new(u32::MAX, u32::MAX);
     assert!(s.compose().is_err());
-    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default(), true, true);
+    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default(), u32::MAX, true, true, true);
     assert!(layout.viewport.width() > 0);
     let _ = layout.action_panel(usize::MAX);
 }
@@ -1401,4 +1720,226 @@ fn scene_viewport_uses_the_full_interior_and_stays_stable_under_the_action_box()
     assert_eq!(scene.row(), viewport.row());
     assert_eq!(scene.right(), viewport.right());
     assert_eq!(scene.bottom(), viewport.bottom());
+}
+
+#[test]
+fn color_checkbox_dedicated_action_keeps_popup_focus_and_visibility_ids() {
+    let mut s = shell();
+    let sibling = shell();
+    let original = s.view.checks;
+    assert!(!s.color_enabled());
+    assert!(click_text(&mut s, "View"));
+    assert!(click_text(&mut s, "Color"));
+    for (key, enabled) in [
+        (None, true),
+        (Some(ShellKey::Enter), false),
+        (Some(ShellKey::Char(' ')), true),
+    ] {
+        if let Some(key) = key {
+            assert!(s.key(key));
+        }
+        assert_eq!(s.color_enabled(), enabled);
+        assert_eq!(s.view.checks, original);
+        assert_eq!(s.menu_bar.open_menu(), Some(2));
+        assert_eq!(s.interaction().focused, BAR_IDS.item(2, 4));
+        assert!(has(
+            &s.compose().unwrap(),
+            if enabled { "■ Color" } else { "□ Color" }
+        ));
+    }
+    assert!(!sibling.color_enabled());
+    assert_eq!(sibling.theme(), ThemeChoice::Dark);
+    for i in 0..5 {
+        let before = s.view.checks;
+        s.apply_menu(MenuResult::Toggled(MenuAction::new(210 + i)));
+        for (j, previous) in before.iter().enumerate() {
+            assert_eq!(s.view.checks[j], *previous ^ (j == i as usize));
+        }
+        assert!(s.color_enabled());
+    }
+}
+
+#[test]
+fn color_theme_spans_and_popup_title_have_exact_semantic_ownership() {
+    use crate::InkRole::{Action, Contour, Text};
+    for enabled in [false, true] {
+        let mut s = shell();
+        s.view.color_enabled = enabled;
+        s.key(ShellKey::Alt('v'));
+        for (choice, label) in [
+            (ThemeChoice::Dark, "Theme [ ◑ Dark  ]"),
+            (ThemeChoice::Light, "Theme [ ◐ Light ]"),
+        ] {
+            s.view.theme = choice;
+            let grid = s.compose().unwrap();
+            let (x, y) = find(&grid, label).unwrap();
+            for (offset, ch) in label.chars().enumerate() {
+                let cell = grid.get(x + offset as u32, y).unwrap();
+                assert_eq!(
+                    cell.ink,
+                    if [6, 8, 16].contains(&offset) {
+                        Action
+                    } else {
+                        Text
+                    }
+                );
+                assert_eq!(
+                    cell.content,
+                    if ch == ' ' {
+                        CellContent::Empty
+                    } else {
+                        CellContent::Glyph(ch)
+                    }
+                );
+                assert_eq!(cell.widget_id, BAR_IDS.item(2, 3));
+            }
+            assert_eq!(grid.get(x - 2, y).unwrap().ink, Contour);
+            assert_eq!(grid.get(x + 17, y).unwrap().ink, Text); // row padding
+            let (tx, ty) = find(&grid, "╭─View").unwrap();
+            for col in [tx, tx + 1, tx + 6, tx + 20] {
+                assert_eq!(grid.get(col, ty).unwrap().ink, Contour);
+            }
+            for col in tx + 2..tx + 6 {
+                assert_eq!(grid.get(col, ty).unwrap().ink, Text);
+            }
+            let (hovered, lit) = s.compose_hovered(BAR_IDS.item(2, 3)).unwrap();
+            assert!(lit);
+            for (plain, over) in grid.cells().iter().zip(hovered.cells()) {
+                assert_eq!(
+                    (plain.ink, plain.style, plain.widget_id, plain.shared_border),
+                    (over.ink, over.style, over.widget_id, over.shared_border)
+                );
+            }
+            click_text(&mut s, label);
+            assert_ne!(s.theme(), choice);
+            assert_eq!(s.color_enabled(), enabled);
+            assert_eq!(s.interaction().focused, BAR_IDS.item(2, 3));
+        }
+    }
+}
+
+#[test]
+fn color_mixed_action_box_values_and_guides_keep_roles_and_geometry() {
+    use crate::InkRole::{Action, Contour, Text};
+    let mut s = shell();
+    let off = s.compose().unwrap();
+    s.view.color_enabled = true;
+    let on = s.compose().unwrap();
+    for (a, b) in off.cells().iter().zip(on.cells()) {
+        assert_eq!(
+            (a.ink, a.style, a.widget_id, a.shared_border),
+            (b.ink, b.style, b.widget_id, b.shared_border)
+        );
+        if a.ink != Contour {
+            assert_eq!(a.content, b.content);
+        }
+    }
+    let (x, y) = find(&on, "Depth").unwrap();
+    assert_eq!(on.get(x - 4, y).unwrap().ink, Contour);
+    assert_eq!(on.get(x - 2, y).unwrap().ink, Text);
+    let (sign, row) = find(&on, "+|").unwrap();
+    assert_eq!(on.get(sign, row).unwrap().ink, Action);
+    assert_eq!(on.get(sign + 1, row).unwrap().ink, Contour);
+    assert_eq!(on.get(sign + 2, row).unwrap().ink, Text);
+    let (p, r) = find(&on, "[Select…").unwrap();
+    assert_eq!(on.get(p, r).unwrap().ink, Action);
+    assert_eq!(on.get(p + 1, r).unwrap().ink, Text);
+    let (tx, ty) = find(&on, "╭─Extrude").unwrap();
+    assert_eq!(on.get(tx, ty).unwrap().ink, Contour);
+    assert_eq!(on.get(tx + 2, ty).unwrap().ink, Text);
+    s.view.color_enabled = false;
+    assert_eq!(s.compose().unwrap(), off);
+}
+
+#[test]
+fn color_modal_title_hover_and_underlying_ink_survive_routing_mask() {
+    use crate::InkRole::{Action, Contour, Text};
+    for enabled in [false, true] {
+        for rename in [false, true] {
+            let mut s = ShellState::new(82, 30);
+            s.view.color_enabled = enabled;
+            let before = s.compose().unwrap();
+            assert_eq!(before.get(1, 5).unwrap().ink, Action);
+            let title = if rename {
+                let id = id_of(&s, "Hub_Body");
+                assert!(s.begin_rename(id));
+                "Rename"
+            } else {
+                click_text(&mut s, "☰");
+                "Formula"
+            };
+            let plain = s.compose().unwrap();
+            assert_eq!(plain.get(1, 5).unwrap().ink, Action);
+            assert_eq!(
+                plain.get(1, 5).unwrap().widget_id,
+                None,
+                "modal masks routing, not ink"
+            );
+            let (x, y) = find(&plain, &format!("╭─{title}")).unwrap();
+            assert_eq!(plain.get(x, y).unwrap().ink, Contour);
+            assert_eq!(plain.get(x + 1, y).unwrap().ink, Contour);
+            for dx in 0..title.len() {
+                assert_eq!(plain.get(x + 2 + dx as u32, y).unwrap().ink, Text);
+            }
+            assert_eq!(
+                plain.get(x + 2 + title.len() as u32, y).unwrap().ink,
+                Contour
+            );
+            let id = id_of(&s, "OK");
+            let (hovered, lit) = s.compose_hovered(Some(id)).unwrap();
+            assert!(lit);
+            for (a, b) in plain.cells().iter().zip(hovered.cells()) {
+                assert_eq!(
+                    (a.ink, a.style, a.widget_id, a.shared_border),
+                    (b.ink, b.style, b.widget_id, b.shared_border)
+                );
+                if a.content != b.content {
+                    assert_eq!(b.ink, Contour);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn selection_scrollbars_keep_semantic_ink_and_glyphs_in_every_theme_and_color_mode() {
+    use crate::InkRole::{Action, Text};
+    for profiles in [false, true] {
+        for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
+            for color in [false, true] {
+                let mut s = shell();
+                s.view.theme = theme;
+                s.view.color_enabled = color;
+                if profiles {
+                    open_profile_selection(&mut s);
+                } else {
+                    open_selection(&mut s);
+                }
+                let grid = s.compose().unwrap();
+                let (x, y) = find(&grid, "▲").unwrap();
+                assert_eq!(glyph(&grid, x, y + 1), '┃');
+                assert_eq!(glyph(&grid, x, y + 2), ' ');
+                assert_eq!(glyph(&grid, x, y + 3), ' ');
+                assert_eq!(glyph(&grid, x, y + 4), '▼');
+                for dy in [0, 1, 4] {
+                    assert_eq!(grid.get(x, y + dy).unwrap().ink, Action);
+                }
+                for dy in [2, 3] {
+                    assert_eq!(grid.get(x, y + dy).unwrap().ink, Text);
+                    assert!(grid.get(x, y + dy).unwrap().widget_id.is_none());
+                }
+                let thumb = grid.get(x, y + 1).unwrap().widget_id.unwrap();
+                let (hovered, lit) = s.compose_hovered(Some(thumb)).unwrap();
+                assert!(!lit);
+                assert_eq!(hovered, grid);
+                let draft_focus = s.selection.focus();
+                assert!(s.scroll(i32::MIN));
+                assert_eq!(s.selection.focus(), draft_focus);
+                let bottom = s.compose().unwrap();
+                assert_eq!(glyph(&bottom, x, y + 3), '┃');
+                assert!(s.scroll(i32::MAX));
+                assert_eq!(s.compose().unwrap(), grid);
+            }
+        }
+    }
 }

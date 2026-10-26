@@ -7,15 +7,21 @@
 
 #![allow(clippy::unwrap_used)]
 
-use newell_app::controller::{ShellController, Update};
-use newell_ui::{CellContent, CellGrid, DEFAULT_K, GridMetrics, ShellKey, UiPoint};
+use newell_app::controller::{CursorHint, ShellController, Update};
+use newell_ui::{CellContent, CellGrid, DEFAULT_K, GridMetrics, ShellKey, ShellState, UiPoint};
 
 // The 4:9 cell of `k = 5`: 20 x 45 physical pixels.
 const W: u32 = 4 * DEFAULT_K;
 const H: u32 = 9 * DEFAULT_K;
 
 fn controller() -> ShellController {
-    ShellController::new(82, 25, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap()
+    let mut c = ShellController::with_shell(
+        ShellState::new(82, 25),
+        GridMetrics::from_k(DEFAULT_K).unwrap(),
+    )
+    .unwrap();
+    open_extrude(&mut c);
+    c
 }
 
 /// Centre of cell `(col, row)` in pixels.
@@ -31,6 +37,29 @@ fn glyph(g: &CellGrid, col: u32, row: u32) -> Option<char> {
         CellContent::Glyph(c) => Some(c),
         CellContent::Empty => None,
     }
+}
+
+fn click_text(c: &mut ShellController, text: &str) {
+    let chars: Vec<_> = text.chars().collect();
+    let (col, row) = (0..c.grid().rows())
+        .find_map(|row| {
+            (0..c.grid().cols()).find_map(|col| {
+                chars
+                    .iter()
+                    .enumerate()
+                    .all(|(i, ch)| glyph(c.grid(), col + i as u32, row) == Some(*ch))
+                    .then_some((col, row))
+            })
+        })
+        .unwrap();
+    c.pointer_moved(at(col, row));
+    c.pointer_pressed();
+    c.pointer_released();
+}
+
+fn open_extrude(c: &mut ShellController) {
+    click_text(c, "Create");
+    click_text(c, "[E]xtrude");
 }
 
 fn find_glyph(g: &CellGrid, ch: char) -> (u32, u32) {
@@ -54,11 +83,71 @@ fn default_cell_is_exactly_twenty_by_forty_five() {
 }
 
 #[test]
-fn starts_with_the_composed_reference_shell() {
-    let c = controller();
+fn starts_with_the_actual_shell_without_an_action_box() {
+    let c = ShellController::new(82, 25, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap();
     assert_eq!((c.grid().cols(), c.grid().rows()), (82, 25));
     assert_eq!(glyph(c.grid(), 0, 0), Some('╔'));
     assert_eq!(c.grid(), &c.shell().compose().unwrap());
+    assert!(!c.shell().extrude().is_open());
+}
+
+#[test]
+fn cursor_hints_match_resize_and_panel_drag_targets() {
+    let mut c = controller();
+    c.pointer_moved(Some(UiPoint {
+        x: 1,
+        y: 10 * H + H / 2,
+    }));
+    assert_eq!(
+        c.cursor_hint((82 * W, 25 * H), true),
+        CursorHint::Resize(newell_ui::ResizeZone::West)
+    );
+
+    let divider = c.shell().nav_width() - 1;
+    c.pointer_moved(at(divider, 10));
+    assert_eq!(
+        c.cursor_hint((82 * W, 25 * H), true),
+        CursorHint::HorizontalResize
+    );
+
+    c.pointer_pressed();
+    assert_eq!(c.cursor_hint((82 * W, 25 * H), true), CursorHint::Grabbing);
+    c.pointer_released();
+
+    let (col, row) = (0..c.grid().rows())
+        .flat_map(|row| (0..c.grid().cols()).map(move |col| (col, row)))
+        .find(|&(col, row)| {
+            c.grid().get(col, row).is_some_and(|cell| {
+                cell.content == CellContent::Glyph('─') && cell.widget_id.is_some()
+            })
+        })
+        .expect("the Features tree playhead is composed as a drag target");
+    c.pointer_moved(at(col, row));
+    assert_eq!(c.cursor_hint((82 * W, 25 * H), true), CursorHint::Grab);
+    c.pointer_pressed();
+    assert_eq!(c.cursor_hint((82 * W, 25 * H), true), CursorHint::Grabbing);
+    c.pointer_released();
+}
+
+#[test]
+fn selection_scrollbar_thumb_uses_grab_cursors() {
+    let mut c = controller();
+    click_text(&mut c, "Select…");
+    assert!(c.shell().selection().is_open());
+    let (col, row) = (0..c.grid().rows())
+        .flat_map(|row| (0..c.grid().cols()).map(move |col| (col, row)))
+        .find(|&(col, row)| {
+            c.grid().get(col, row).is_some_and(|cell| {
+                matches!(cell.content, CellContent::Glyph('┃' | '╻' | '╹'))
+                    && cell.widget_id.is_some()
+            })
+        })
+        .expect("the selection scrollbar thumb owns its hit cells");
+    c.pointer_moved(at(col, row));
+    assert_eq!(c.cursor_hint((82 * W, 25 * H), true), CursorHint::Grab);
+    c.pointer_pressed();
+    assert_eq!(c.cursor_hint((82 * W, 25 * H), true), CursorHint::Grabbing);
+    c.pointer_released();
 }
 
 /// Moving the pointer over widgets that are not hover targets (M2.25), without a press, changes
@@ -256,9 +345,11 @@ fn dragging_outside_the_window_clamps() {
     c.pointer_pressed();
     assert!(c.pointer_moved(Some(UiPoint { x: u32::MAX, y: 0 })).grid);
     assert_eq!(c.shell().nav_width(), 41);
-    // Leaving the window keeps the capture.
+    // Revision 3 explicitly cancels capture when the pointer exits the window.
     c.pointer_moved(None);
-    assert!(c.dragging());
+    assert!(!c.dragging());
+    c.pointer_moved(at(30, 10));
+    assert_eq!(c.shell().nav_width(), 41);
     c.pointer_released();
 }
 
@@ -283,12 +374,17 @@ fn pressing_elsewhere_starts_no_drag() {
 }
 
 #[test]
-fn a_drag_survives_a_resize() {
+fn external_resize_cancels_owned_drag() {
     let mut c = controller();
     c.pointer_moved(at(24, 10));
     c.pointer_pressed();
     c.resize(120 * W, 40 * H);
-    assert!(c.dragging());
+    assert!(!c.dragging());
+    let width = c.shell().nav_width();
+    c.pointer_moved(at(50, 10));
+    assert_eq!(c.shell().nav_width(), width);
+    c.pointer_moved(at(width - 1, 10));
+    c.pointer_pressed();
     assert!(c.pointer_moved(at(50, 10)).grid);
     assert_eq!(c.shell().nav_width(), 51);
 }
@@ -303,7 +399,9 @@ const ROWS: u32 = 30;
 const SURFACE: (u32, u32) = (COLS * W, ROWS * H);
 
 fn window_controller() -> ShellController {
-    ShellController::new(COLS, ROWS, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap()
+    let mut c = ShellController::new(COLS, ROWS, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap();
+    open_extrude(&mut c);
+    c
 }
 
 fn press_at(c: &mut ShellController, col: u32, row: u32) -> Press {
@@ -593,4 +691,232 @@ fn opening_and_closing_action_box_does_not_reframe_scene() {
     click_text(&mut c, "[E]xtrude");
     assert_eq!(c.scene_viewport(), viewport);
     assert_eq!(c.scene_occlusions(), occlusions);
+}
+
+#[test]
+fn primary_orbit_admission_preserves_shell_press_priority() {
+    use newell_app::camera::Camera;
+    use newell_app::controller::Press;
+    use newell_app::navigation::{DragKind, Navigation};
+    use newell_render::SceneViewport;
+
+    fn admit(c: &mut ShellController) -> (Navigation, Press) {
+        let rect = c.scene_viewport();
+        let mut nav = Navigation::new(Camera::look_at(
+            [3.4, 3.0, 3.2],
+            [0.5; 3],
+            SceneViewport::new(
+                rect.col() * W,
+                rect.row() * H,
+                rect.width() * W,
+                rect.height() * H,
+            ),
+        ));
+        let point = c.cursor().unwrap();
+        let eligible = c.scene_input_enabled(); // App samples this before shell routing.
+        let surface = (c.grid().cols() * W, c.grid().rows() * H);
+        let press = c.press(surface, true);
+        if matches!(press, Press::Shell(_)) {
+            nav.begin_primary_orbit((f64::from(point.x), f64::from(point.y)), 1.0, eligible);
+        }
+        (nav, press)
+    }
+    fn no_orbit(c: &mut ShellController) {
+        let rect = c.scene_viewport();
+        let point = c.cursor().unwrap();
+        let mut secondary = Navigation::new(Camera::look_at(
+            [3.4, 3.0, 3.2],
+            [0.5; 3],
+            SceneViewport::new(
+                rect.col() * W,
+                rect.row() * H,
+                rect.width() * W,
+                rect.height() * H,
+            ),
+        ));
+        assert!(!secondary.begin_secondary_pan(
+            (f64::from(point.x), f64::from(point.y)),
+            1.0,
+            c.scene_input_enabled(),
+        ));
+        assert!(!secondary.advance_secondary_pan((800.0, 500.0)));
+        let (mut nav, _) = admit(c);
+        let before = nav.camera();
+        assert!(!nav.primary_orbit_pending());
+        assert!(!nav.advance_primary_orbit((800.0, 500.0)));
+        assert_eq!(nav.camera(), before);
+        c.pointer_released();
+    }
+
+    let mut c = window_controller();
+    let rect = c.scene_viewport();
+    let scene_point = at(rect.col() + 2, rect.row() + 4);
+    c.pointer_moved(scene_point);
+    let (mut nav, press) = admit(&mut c);
+    assert!(matches!(press, Press::Shell(_)));
+    assert!(nav.primary_orbit_pending());
+    let p = c.cursor().unwrap();
+    assert!(nav.advance_primary_orbit((f64::from(p.x) + 20.0, f64::from(p.y))));
+    nav.release(DragKind::PrimaryOrbit);
+    c.pointer_released();
+    assert!(c.scene_input_enabled());
+
+    // Resize ring, tree row, and navigation-panel divider keep their own routing.
+    for point in [at(0, 0), at(4, 7), at(24, 10)] {
+        c.pointer_moved(point);
+        no_orbit(&mut c);
+    }
+    // Includes Action Box labels and padding, not just cells with widget IDs.
+    for rect in c.scene_occlusions() {
+        c.pointer_moved(at(rect.col() + 1, rect.row() + 1));
+        no_orbit(&mut c);
+    }
+    // A menu-dismissal press must not click through into a potential orbit.
+    c.key(ShellKey::MenuBar);
+    c.pointer_moved(scene_point);
+    no_orbit(&mut c);
+    c.key(ShellKey::Escape);
+    // Modal ownership blocks the background scene even outside the modal footprint.
+    let (col, row) = find_glyph(c.grid(), '☰');
+    press_at(&mut c, col, row);
+    c.pointer_released();
+    c.pointer_moved(scene_point);
+    no_orbit(&mut c);
+}
+
+/// Use the existing public pointer route for both selection presentations.
+fn open_scroll_selection(c: &mut ShellController, profiles: bool) {
+    if profiles {
+        click_text(c, "Select…");
+    } else {
+        let (col, row) = find_glyph(c.grid(), '▶');
+        c.pointer_moved(at(col, row));
+        c.pointer_pressed();
+        c.pointer_released();
+        let row = (0..c.grid().rows())
+            .find(|&y| {
+                let line: String = (0..c.grid().cols())
+                    .map(|x| glyph(c.grid(), x, y).unwrap_or(' '))
+                    .collect();
+                line.contains("Selection ")
+            })
+            .unwrap();
+        let col = (0..c.grid().cols())
+            .find(|&x| glyph(c.grid(), x, row) == Some('['))
+            .unwrap();
+        c.pointer_moved(at(col, row));
+        c.pointer_pressed();
+        c.pointer_released();
+    }
+    assert!(c.shell().selection().is_open());
+    assert_eq!(c.shell().selection().is_profile_picker(), profiles);
+}
+
+fn selection_thumb_cell(c: &ShellController) -> (u32, u32) {
+    (0..c.grid().rows())
+        .find_map(|row| {
+            (0..c.grid().cols()).find_map(|col| {
+                let cell = c.grid().get(col, row).unwrap();
+                (matches!(cell.content, CellContent::Glyph('┃' | '╹' | '╻'))
+                    && cell.widget_id.is_some()
+                    && c.shell()
+                        .selection_thumb_grab(
+                            &newell_ui::hit_test(at(col, row).unwrap(), c.metrics(), c.grid())
+                                .unwrap(),
+                        )
+                        .is_some())
+                .then_some((col, row))
+            })
+        })
+        .unwrap()
+}
+
+#[test]
+fn selection_drag_survives_repeated_publications_and_preserves_wheel_and_key_routing() {
+    for profiles in [false, true] {
+        let mut c = ShellController::with_shell(
+            ShellState::new(82, 40),
+            GridMetrics::from_k(DEFAULT_K).unwrap(),
+        )
+        .unwrap();
+        open_extrude(&mut c);
+        open_scroll_selection(&mut c, profiles);
+        let (col, row) = selection_thumb_cell(&c);
+        c.pointer_moved(at(col, row));
+        c.pointer_pressed();
+        assert!(c.dragging());
+        let grid = c.grid().clone();
+        let wheel = c.scroll_panel(i32::MIN);
+        assert!(wheel.handled);
+        assert!(!wheel.update.grid);
+        assert_eq!(c.grid(), &grid);
+        assert!(c.dragging());
+        let applied = c.shell().selection().applied().to_vec();
+        let profile_applied = c.shell().selection().profile_applied().to_vec();
+        c.key(ShellKey::Char(' '));
+        assert!(c.dragging(), "checkbox draft-only change retains capture");
+        c.key(ShellKey::Down);
+        assert!(c.dragging(), "focus movement inside window retains capture");
+        assert!(c.pointer_moved(at(col, row + 1)).grid);
+        assert!(c.dragging(), "first own scroll retains capture");
+        assert!(c.pointer_moved(at(col, row + 2)).grid);
+        assert!(c.dragging(), "second own scroll retains capture");
+        assert_eq!(c.cursor_hint((82 * W, 30 * H), true), CursorHint::Grabbing);
+        assert_eq!(c.shell().selection().applied(), applied);
+        assert_eq!(c.shell().selection().profile_applied(), profile_applied);
+        c.pointer_released();
+        assert!(!c.dragging());
+        c.key(ShellKey::Escape);
+        assert!(!c.shell().selection().is_open());
+        assert_eq!(c.shell().selection().applied(), applied);
+        assert_eq!(c.shell().selection().profile_applied(), profile_applied);
+    }
+}
+
+#[test]
+fn selection_keyboard_scrolling_and_external_lifecycle_cancel_old_grabs() {
+    for profiles in [false, true] {
+        for event in 0..4 {
+            let mut c = ShellController::with_shell(
+                ShellState::new(82, 40),
+                GridMetrics::from_k(DEFAULT_K).unwrap(),
+            )
+            .unwrap();
+            open_extrude(&mut c);
+            open_scroll_selection(&mut c, profiles);
+            let (col, row) = selection_thumb_cell(&c);
+            c.pointer_moved(at(col, row));
+            c.pointer_pressed();
+            assert!(c.dragging());
+            match event {
+                0 => {
+                    for _ in 0..5 {
+                        c.key(ShellKey::Down);
+                    }
+                }
+                1 => {
+                    c.key(ShellKey::Escape);
+                }
+                2 => {
+                    c.pointer_moved(None);
+                }
+                _ => {
+                    c.resize(100 * W, 35 * H);
+                }
+            }
+            assert!(!c.dragging(), "event {event}, profiles={profiles}");
+            let grid = c.grid().clone();
+            c.pointer_moved(at(col, row + 2));
+            assert!(
+                c.grid()
+                    .cells()
+                    .iter()
+                    .zip(grid.cells())
+                    .all(|(after, before)| (after.widget_id, after.shared_border)
+                        == (before.widget_id, before.shared_border)),
+                "old pointer movement must not reuse the grab (event {event}, profiles={profiles})"
+            );
+            assert_ne!(c.cursor_hint((100 * W, 35 * H), true), CursorHint::Grabbing);
+        }
+    }
 }

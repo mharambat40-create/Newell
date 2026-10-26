@@ -222,3 +222,41 @@ fn command_bar_matches_the_corrected_reference_header() {
     let row: String = row_chars(&g, 3).into_iter().collect();
     assert_eq!(row.trim_matches('║').trim(), reference.trim());
 }
+
+#[test]
+fn hidden_command_bar_has_no_pointer_targets_and_view_menu_stays_available() {
+    let mut s = shell();
+    let shown = s.compose().unwrap();
+    let (row, col) = find(&shown, "Workbench").unwrap();
+    let old_hit = hit_test(
+        UiPoint {
+            x: col * 6 + 3,
+            y: row * 10 + 5,
+        },
+        GridMetrics::new(6, 10).unwrap(),
+        &shown,
+    )
+    .unwrap();
+    assert!(old_hit.widget_id.is_some());
+
+    s.key(ShellKey::Alt('v'));
+    assert!(click(&mut s, "Task bar"));
+    let hidden = s.compose().unwrap();
+    assert!(find(&hidden, "Workbench").is_none());
+    let hidden_hit = hit_test(
+        UiPoint {
+            x: col * 6 + 3,
+            y: row * 10 + 5,
+        },
+        GridMetrics::new(6, 10).unwrap(),
+        &hidden,
+    )
+    .unwrap();
+    assert_ne!(hidden_hit.widget_id, old_hit.widget_id);
+    s.click(Some(hidden_hit));
+    assert!(find(&s.compose().unwrap(), "╭─Create").is_none());
+
+    s.key(ShellKey::Escape);
+    s.key(ShellKey::Alt('f'));
+    assert!(find(&s.compose().unwrap(), "╭─File").is_some());
+}

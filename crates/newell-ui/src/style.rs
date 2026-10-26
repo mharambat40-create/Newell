@@ -6,9 +6,10 @@
 // (at your option) any later version.
 //! Style identifier.
 
-/// Opaque style identifier; resolved to concrete values by a later theme layer.
+/// Opaque logical interaction-state identifier; it does not select a colour.
 ///
-/// Stored as `u16`: 65 536 styles is ample for a semantic UI palette and keeps
+/// Ink is carried separately by `Cell::ink`; styles do not select colours.
+/// Stored as `u16`: 65 536 logical styles are ample and keep
 /// [`crate::Cell`] compact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StyleId(u16);

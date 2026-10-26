@@ -10,8 +10,8 @@
 //! `Command_Bar.txt`, `Interface_Exemple.txt`). No entry refers to the model.
 
 use crate::{
-    DEFAULT_SCALE_PERCENT, MenuAction, MenuCheckbox, MenuCycle, MenuDef, MenuEntry, MenuItem,
-    Mnemonic, SCALE_PERCENTS,
+    DEFAULT_SCALE_FACTOR_PERCENT, MenuAction, MenuCheckbox, MenuCycle, MenuDef, MenuEntry,
+    MenuItem, Mnemonic, SCALE_FACTORS_PERCENT,
 };
 
 // Semantic action ids returned by the menus (`MenuAction`). Only the ones below the
@@ -22,6 +22,7 @@ pub(super) const ACT_VIEW_SHADING: u32 = 201;
 pub(super) const ACT_VIEW_SCALE: u32 = 202;
 pub(super) const ACT_VIEW_CHECK: u32 = 210;
 pub(super) const ACT_VIEW_THEME: u32 = 223;
+pub(super) const ACT_VIEW_COLOR: u32 = 224;
 pub(super) const ACT_VIEW_FULLSCREEN: u32 = 222;
 pub(super) const ACT_EXTRUDE: u32 = 300;
 pub(super) const ACT_REVOLVE: u32 = 301;
@@ -39,6 +40,7 @@ const fn mn(text: &'static str) -> Option<Mnemonic> {
 
 const fn item(action: u32, label: &'static str, mnemonic: &'static str) -> MenuEntry<'static> {
     MenuEntry::Item(MenuItem {
+        action_offsets: &[],
         action: MenuAction::new(action),
         label,
         mnemonic: mn(mnemonic),
@@ -181,37 +183,38 @@ pub(super) const PROJECTION: [&str; 2] = ["Perspective", "Orthographic"];
 // `Wireframe ` carries a trailing space: the reference row `◀  Wireframe    ▶` sits two cells
 // from `◀` and four from `▶`, one cell left of where centring would put it (an irregularity
 // of `Application_Menu_Bar.txt`, reproduced as written).
-pub(super) const SHADING: [&str; 6] = [
+pub(super) const SHADING: [&str; 7] = [
     "Points",
+    "Line",
     "Wireframe ",
-    "Hidden line",
+    "Hidden Line",
     "No shading",
     "Shaded",
-    "Flat line",
+    "Default",
 ];
-/// The UI Scale values as the menu shows them: right-aligned to four cells (` 60%`, `100%`).
-pub(super) const SCALE_LABELS: [&str; 5] = [" 60%", " 80%", "100%", "120%", "140%"];
-const _: () = assert!(SCALE_PERCENTS.len() == SCALE_LABELS.len());
+/// UI Scale labels, paired by index with the legacy rendering multipliers.
+pub(super) const SCALE_LABELS: [&str; 4] = [" 80%", "100%", "120%", "140%"];
+const _: () = assert!(SCALE_FACTORS_PERCENT.len() == SCALE_LABELS.len());
 
-/// Index of `percent` in [`SCALE_PERCENTS`]; the default for an unknown value.
-fn scale_index(percent: u32) -> usize {
-    SCALE_PERCENTS
+/// Index of the rendering multiplier in [`SCALE_FACTORS_PERCENT`]; default if unknown.
+fn scale_index(scale_factor_percent: u32) -> usize {
+    SCALE_FACTORS_PERCENT
         .iter()
-        .position(|&p| p == percent)
+        .position(|&p| p == scale_factor_percent)
         .or_else(|| {
-            SCALE_PERCENTS
+            SCALE_FACTORS_PERCENT
                 .iter()
-                .position(|&p| p == DEFAULT_SCALE_PERCENT)
+                .position(|&p| p == DEFAULT_SCALE_FACTOR_PERCENT)
         })
         .unwrap_or(0)
 }
 
-/// The two UI themes as the user sees them (`ARCHITECTURE.md` §3.6): Light is black on
-/// white, Dark is white on black. The renderer maps this to its colour pair.
+/// Per-window Theme choice, independent of Color (`ARCHITECTURE.md` §3.6).
+/// Unchecked Color uses black on white in Light and white on black in Dark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeChoice {
-    #[default]
     Light,
+    #[default]
     Dark,
 }
 
@@ -225,7 +228,7 @@ impl ThemeChoice {
         }
     }
 
-    /// The View menu row: `Theme [ ◐ Light ]` / `Theme [ ◑ Dark  ]`.
+    /// The View menu row: `Theme [ ◑ Dark  ]` / `Theme [ ◐ Light ]`.
     const fn row(self) -> &'static str {
         match self {
             Self::Light => "Theme [ ◐ Light ]",
@@ -243,25 +246,25 @@ const VIEW_CHECK_LABELS: [&str; VIEW_CHECKS] = [
     "Grid Overlay",
 ];
 
-/// The mutable rows of the View menu: the projection and shading mocks, the five visibility
-/// checkboxes, and the user's UI Scale preference and theme. The mocks change only what the
-/// menu shows (README §7.4); the preference and theme are read by the application.
+/// Window-local View choices. Color is separate from the five visibility checkboxes;
+/// the application synchronizes these presentation choices without editing document data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ViewMock {
     pub projection: usize,
     pub shading: usize,
-    /// Index into [`SCALE_PERCENTS`]: the stored `preferred_scale_percent`.
+    /// Index pairing the displayed label with its rendering multiplier.
     pub scale: usize,
     pub theme: ThemeChoice,
+    pub color_enabled: bool,
     pub checks: [bool; VIEW_CHECKS],
 }
 
 impl ViewMock {
-    pub(super) fn scale_percent(&self) -> u32 {
-        SCALE_PERCENTS
+    pub(super) fn scale_factor_percent(&self) -> u32 {
+        SCALE_FACTORS_PERCENT
             .get(self.scale)
             .copied()
-            .unwrap_or(DEFAULT_SCALE_PERCENT)
+            .unwrap_or(DEFAULT_SCALE_FACTOR_PERCENT)
     }
 }
 
@@ -269,15 +272,16 @@ impl Default for ViewMock {
     fn default() -> Self {
         Self {
             projection: 0,
-            shading: 4,
-            scale: scale_index(DEFAULT_SCALE_PERCENT),
-            theme: ThemeChoice::Light,
+            shading: 2,
+            scale: scale_index(DEFAULT_SCALE_FACTOR_PERCENT),
+            theme: ThemeChoice::Dark,
+            color_enabled: false,
             checks: [true, true, true, true, false],
         }
     }
 }
 
-fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 12] {
+fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 13] {
     let cycle =
         |action: u32, label: &'static str, values: &'static [&'static str], current: usize| {
             MenuEntry::Cyclic(MenuCycle {
@@ -285,6 +289,7 @@ fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 12] {
                 label,
                 values,
                 current,
+                bounded: action == ACT_VIEW_SCALE,
                 enabled: true,
             })
         };
@@ -301,7 +306,20 @@ fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 12] {
         cycle(ACT_VIEW_PROJECTION, "", &PROJECTION, v.projection),
         cycle(ACT_VIEW_SHADING, "", &SHADING, v.shading),
         cycle(ACT_VIEW_SCALE, "UI Scale", &SCALE_LABELS, v.scale),
-        item(ACT_VIEW_THEME, v.theme.row(), ""),
+        MenuEntry::Item(MenuItem {
+            action: MenuAction::new(ACT_VIEW_THEME),
+            label: v.theme.row(),
+            mnemonic: None,
+            enabled: true,
+            action_offsets: &[6, 8, 16],
+        }),
+        MenuEntry::Checkbox(MenuCheckbox {
+            action: MenuAction::new(ACT_VIEW_COLOR),
+            label: "Color",
+            checked: v.color_enabled,
+            mnemonic: None,
+            enabled: true,
+        }),
         check(0),
         check(1),
         check(2),
@@ -329,98 +347,158 @@ pub(super) fn with_bar_menus<R>(view: &ViewMock, f: impl FnOnce(&[MenuDef<'_>]) 
     f(&menus)
 }
 
-/// What a tree row is. A category header (`Features`, `Solid Bodies(2)`, ...) is structure:
-/// it is not renamed and sits directly after its marker. A named row is a user-named Feature or
-/// Element (`README_UI.md` §23, §26).
+/// A derived rendering row. Identity and values come from the published projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NodeKind {
-    /// `counted`: the label is followed by `(N)`, N being the number of its children.
-    Category {
-        counted: bool,
-    },
+    Category { counted: bool },
     Named,
 }
-
-/// One node of a mock tree, in a flat pre-order list: nesting is the `depth` field, not
-/// a pointer structure. Whether a node is a branch follows from the list: it is one when the
-/// next node is deeper ([`has_children`]).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Node {
-    pub label: &'static str,
+    pub label: String,
     pub depth: u32,
     pub kind: NodeKind,
-    /// Initial visibility checkbox (`■` shown / `□` hidden); `None`: the row has no checkbox.
     pub check: Option<bool>,
-    /// Initial expansion of a branch.
-    pub open: bool,
+    pub target: super::TreeTarget,
 }
-
-const fn category(label: &'static str, depth: u32, counted: bool, open: bool) -> Node {
-    Node {
+pub(super) fn projection_nodes(projection: &super::ModelTreeProjection) -> [Vec<Node>; 2] {
+    use super::{ElementGroup, FeatureNodeId, TreeTargetKind as K};
+    let node = |label: String, depth, kind, check, target| Node {
         label,
         depth,
-        kind: NodeKind::Category { counted },
-        check: None,
-        open,
-    }
-}
-
-const fn named(label: &'static str, depth: u32, check: Option<bool>, open: bool) -> Node {
-    Node {
-        label,
-        depth,
-        kind: NodeKind::Named,
+        kind,
         check,
-        open,
+        target: projection.target(target),
+    };
+    let category = |counted| NodeKind::Category { counted };
+    let mut features = vec![node(
+        "Features".into(),
+        0,
+        category(false),
+        None,
+        K::FeaturesRoot,
+    )];
+    features.extend(projection.features.iter().map(|item| {
+        node(
+            item.name.clone(),
+            item.depth,
+            NodeKind::Named,
+            item.visibility,
+            match item.id {
+                FeatureNodeId::Operation(id) => K::Operation(id),
+                FeatureNodeId::Folder(id) => K::Folder(id),
+            },
+        )
+    }));
+    let mut elements = vec![node(
+        "Elements".into(),
+        0,
+        category(false),
+        None,
+        K::ElementsRoot,
+    )];
+    for (group, label, counted) in [
+        (ElementGroup::Bodies, &projection.labels.bodies, true),
+        (ElementGroup::Surfaces, &projection.labels.surfaces, true),
+        (ElementGroup::Construct, &projection.labels.construct, false),
+    ] {
+        elements.push(node(
+            label.clone(),
+            1,
+            category(counted),
+            None,
+            K::Group(group),
+        ));
+        elements.extend(
+            projection
+                .elements
+                .iter()
+                .filter(|item| item.group == group)
+                .map(|item| {
+                    node(
+                        item.name.clone(),
+                        2,
+                        NodeKind::Named,
+                        Some(item.visible),
+                        K::Entity(item.id),
+                    )
+                }),
+        );
     }
+    [features, elements]
 }
 
-/// Maximum nodes per tree: the id range reserved for each tree.
-pub(super) const MAX_NODES: usize = 64;
-
-pub(super) const FEATURES: [Node; 9] = [
-    category("Features", 0, false, true),
-    named("Sketch_Profile_Main", 1, Some(false), false),
-    named("Hub_Features", 1, None, true),
-    named("Extrude_Base", 2, None, false),
-    named("Sketch_Hole", 2, Some(true), false),
-    named("Extrude_Cut_Center", 2, None, false),
-    named("Fillet_Inner", 1, None, false),
-    named("Chamfer_Edges", 1, None, false),
-    named("Pattern_Circular", 1, None, false),
-];
-
-pub(super) const ELEMENTS: [Node; 7] = [
-    category("Elements", 0, false, true),
-    category("Solid Bodies", 1, true, true),
-    named("Rim_Body", 2, Some(true), false),
-    named("Hub_Body", 2, Some(false), false),
-    category("Surfaces", 1, true, false),
-    category("Construct", 1, false, false),
-    named("Plane_XY", 2, Some(false), false),
-];
-
-/// Top-level features before the reference playhead (after Fillet_Inner).
-pub(super) const DEFAULT_PLAYHEAD: usize = 3;
-
-/// Initial expansion flags of a tree.
-pub(super) fn initial_open(nodes: &[Node]) -> [bool; MAX_NODES] {
-    let mut open = [false; MAX_NODES];
-    for (slot, n) in open.iter_mut().zip(nodes) {
-        *slot = n.open;
+/// Historical reference artwork, represented through the same contract as live documents.
+pub(super) fn reference_trees() -> (super::ModelTreeProjection, super::TreeInitialState) {
+    use super::*;
+    let operation = |id| FeatureNodeId::Operation(OpaqueTreeId::new(id));
+    let folder = FeatureNodeId::Folder(OpaqueTreeId::new(1));
+    let mut features = Vec::new();
+    for (id, name, depth, visibility) in [
+        (1, "Sketch_Profile_Main", 1, Some(false)),
+        (2, "Extrude_Base", 2, None),
+        (3, "Sketch_Hole", 2, Some(true)),
+        (4, "Extrude_Cut_Center", 2, None),
+        (5, "Fillet_Inner", 1, None),
+        (6, "Chamfer_Edges", 1, None),
+        (7, "Pattern_Circular", 1, None),
+    ] {
+        if id == 2 {
+            features.push(FeatureTreeItem {
+                id: folder,
+                name: "Hub_Features".into(),
+                depth: 1,
+                visibility: None,
+            });
+        }
+        features.push(FeatureTreeItem {
+            id: operation(id),
+            name: name.into(),
+            depth,
+            visibility,
+        });
     }
-    open
+    let elements = [
+        (1, 2, ElementGroup::Bodies, "Rim_Body", true),
+        (2, 4, ElementGroup::Bodies, "Hub_Body", false),
+        (3, 1, ElementGroup::Construct, "Plane_XY", false),
+    ]
+    .into_iter()
+    .map(|(id, source, group, name, visible)| ElementTreeItem {
+        id: OpaqueTreeId::new(id),
+        source_feature: OpaqueTreeId::new(source),
+        output_ordinal: 0,
+        group,
+        name: name.into(),
+        visible,
+    })
+    .collect();
+    let projection = ModelTreeProjection {
+        document: TreeDocumentId::new(0),
+        features,
+        elements,
+        labels: TreeLabels {
+            bodies: "Solid Bodies".into(),
+            ..TreeLabels::default()
+        },
+    };
+    let mut initial = projection.initial_state();
+    initial
+        .expanded
+        .insert(projection.target(TreeTargetKind::Folder(OpaqueTreeId::new(1))));
+    let gap = |id, display| PlacedHistoryGap {
+        insertion: HistoryGap::Before(OpaqueTreeId::new(id)),
+        display,
+    };
+    initial.playhead = gap(6, GapDisplayLocation::BeforeNode(operation(6)));
+    initial.gap_policy = HistoryGapPolicy::ExplicitGaps(vec![
+        gap(2, GapDisplayLocation::BeforeNode(folder)),
+        gap(5, GapDisplayLocation::BeforeNode(operation(5))),
+        gap(6, GapDisplayLocation::BeforeNode(operation(6))),
+        gap(7, GapDisplayLocation::BeforeNode(operation(7))),
+    ]);
+    (projection, initial)
 }
-
-/// Initial visibility checkboxes of a tree (`false` for rows without one).
-pub(super) fn initial_checks(nodes: &[Node]) -> [bool; MAX_NODES] {
-    let mut checks = [false; MAX_NODES];
-    for (slot, n) in checks.iter_mut().zip(nodes) {
-        *slot = n.check.unwrap_or(false);
-    }
-    checks
-}
-
 /// `true` if node `index` has children: the next node is deeper.
 pub(super) fn has_children(nodes: &[Node], index: usize) -> bool {
     match (nodes.get(index), nodes.get(index + 1)) {
@@ -514,35 +592,6 @@ pub(super) fn visible_rows(nodes: &[Node], open: &[bool]) -> Vec<Row> {
 pub(super) enum Line {
     Node(Row),
     Playhead,
-}
-
-/// Number of top-level nodes (depth 1) of a tree.
-pub(super) fn top_level_count(nodes: &[Node]) -> usize {
-    nodes.iter().filter(|n| n.depth == 1).count()
-}
-
-/// Brings a wished playhead position into the valid range `1..=top - 1`: the separator sits
-/// between two top-level features, as in the reference. `None` if there are fewer than two.
-pub(super) fn clamp_playhead(gap: usize, top: usize) -> Option<usize> {
-    (top >= 2).then(|| gap.clamp(1, top - 1))
-}
-
-/// The lines currently shown. With `playhead = Some(g)` the separator line is inserted
-/// directly before the top-level node that has `g` top-level nodes (and their subtrees) before
-/// it. Nesting is untouched: the separator is a line, never a node.
-pub(super) fn visible_lines(nodes: &[Node], open: &[bool], playhead: Option<usize>) -> Vec<Line> {
-    let mut lines = Vec::new();
-    let mut top_seen = 0;
-    for row in visible_rows(nodes, open) {
-        if nodes.get(row.index).is_some_and(|n| n.depth == 1) {
-            if playhead == Some(top_seen) {
-                lines.push(Line::Playhead);
-            }
-            top_seen += 1;
-        }
-        lines.push(Line::Node(row));
-    }
-    lines
 }
 
 /// Mock StatusBar values (deterministic: no live frame rate).

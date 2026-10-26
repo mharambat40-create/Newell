@@ -76,7 +76,16 @@ pub fn draw_cyclic(
     }
     for (dx, glyph, id) in [(0, '◀', selector.prev), (last, '▶', selector.next)] {
         let style = ctx.style_of(id, selector.state);
-        canvas.put(dx, 0, cell(CellContent::Glyph(glyph), style, Some(id)));
+        canvas.put(
+            dx,
+            0,
+            super::cell_with_ink(
+                CellContent::Glyph(glyph),
+                style,
+                Some(id),
+                crate::InkRole::Action,
+            ),
+        );
     }
 }
 

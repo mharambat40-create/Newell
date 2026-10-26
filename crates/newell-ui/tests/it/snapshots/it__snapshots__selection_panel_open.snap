@@ -15,12 +15,12 @@ expression: snapshot(&s)
 ║ │ ╰╴Extrude_Cut_Center║ ║Selection                   ║olid    │    Surface    │║
 ║ ├ Fillet_Inner        ║ ║□ Rim_Body                 ▲║──┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ │ ─────────────────── ║ ║■ Hub_Body                 ┃║  │   Add   │  Remove   │║
-║ ├ Chamfer_Edges       ║ ║□ Inner_Surface            ┃║╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤║
-║ ╰╴Pattern_Circular    ║ ║□ Flange_Body              ┃║ile     [Select…       ]│║
-║                       ║ ║□ Shaft_Body               ┃║nd   ◀     Blind     ▶  │║
-╠═══════════════════════╣ ║□ Cover_Surface            ┃║pth   [+|0.0 mm       ☰]│║
-║[-]Elements            ║ ║□ Boss_Body                 ║ong     [Select…       ]│║
-║ ├[-]Solid Bodies(2)   ║ ║□ Rib_Surface              ▼║Starting Offset         │║
+║ ├ Chamfer_Edges       ║ ║□ Inner_Surface             ║╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤║
+║ ╰╴Pattern_Circular    ║ ║□ Flange_Body               ║ile     [Select…       ]│║
+║                       ║ ║□ Shaft_Body               ▼║nd   ◀     Blind     ▶  │║
+╠═══════════════════════╣ ║                            ║pth   [+|0.0 mm       ☰]│║
+║[-]Elements            ║ ║                            ║ong     [Select…       ]│║
+║ ├[-]Solid Bodies(2)   ║ ║                            ║Starting Offset         │║
 ║ │ ├ ■ Rim_Body        ║ ║     OK      │    Cancel    ║End Offset              │║
 ║ │ ╰╴□ Hub_Body        ║ ╚════════════════════════════╝metric                  │║
 ║ ├ Surfaces(0)         ║                         │ □ Second end position       │║

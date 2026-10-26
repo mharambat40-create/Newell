@@ -86,25 +86,27 @@ impl ActionBoxUi for SweepUi {
         push_head(&mut b, self.base(), "Sweep", v.geometry, v.result);
         b.push(
             self.row()
-                .text("│ Profile     ")
+                .contour("│")
+                .text(" Profile     ")
                 .select(K_PROFILE, v.profile.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ Path        ")
+                .contour("│")
+                .text(" Path        ")
                 .select(K_PATH, v.path.count())
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_FULL_PATH, v.full_path, "Full path")
                 .end(),
         );
         b.push(
             self.row()
-                .text("│ ")
+                .contour("│ ")
                 .check_fill(K_KEEP, v.keep_orientation, "Keep orientation")
                 .end(),
         );
@@ -112,16 +114,18 @@ impl ActionBoxUi for SweepUi {
             if v.twist {
                 b.push(
                     self.row()
-                        .text("│ ╰╴")
+                        .contour("│")
+                        .text(" ╰╴")
                         .check(K_TWIST, true, "Twist", 7)
-                        .text(" ")
+                        .contour(" ")
                         .numeric(K_TWIST_ANGLE, TWIST)
                         .end(),
                 );
             } else {
                 b.push(
                     self.row()
-                        .text("│ ╰╴")
+                        .contour("│")
+                        .text(" ╰╴")
                         .check_fill(K_TWIST, false, "Twist")
                         .end(),
                 );
@@ -130,16 +134,16 @@ impl ActionBoxUi for SweepUi {
         if v.scale {
             b.push(
                 self.row()
-                    .text("│ ")
+                    .contour("│ ")
                     .check(K_SCALE, true, "Scale", 7)
-                    .text("     ")
+                    .contour("     ")
                     .numeric(K_SCALE_VALUE, SCALE)
                     .end(),
             );
         } else {
             b.push(
                 self.row()
-                    .text("│ ")
+                    .contour("│ ")
                     .check_fill(K_SCALE, false, "Scale")
                     .end(),
             );

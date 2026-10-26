@@ -33,7 +33,7 @@ mod window;
 mod operations_tests;
 
 pub use boolean::{BooleanOperation, BooleanUi, BooleanValues};
-pub use cell::{Cell, CellContent};
+pub use cell::{Cell, CellContent, InkRole};
 pub use create_box::ActionState;
 pub use demo::demo_grid;
 pub use error::UiError;
@@ -54,11 +54,17 @@ pub use menu::{
 pub use metrics::{DEFAULT_K, GridMetrics};
 pub use overlays::{
     FormulaEditor, ListItem, ModalKey, ModalLayout, ModalStatus, Overlay, OverlayKind,
-    OverlayStack, RenameModal, ScrollList, ScrollState, SelectionPanel, center_modal,
-    compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
+    OverlayStack, RenameModal, ScrollList, ScrollState, SelectionPanel, SelectionThumbGrab,
+    center_modal, compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
 };
 pub use revolve::{RevolveUi, RevolveValues};
 pub use shell::{ActionOperation, Separator, ShellKey, ShellState, ThemeChoice};
+pub use shell::{
+    ElementGroup, ElementTreeItem, FeatureNodeId, FeatureTreeItem, GapDisplayLocation, HistoryGap,
+    HistoryGapPolicy, ModelTreeProjection, OpaqueTreeId, PlacedHistoryGap, ProjectionGeneration,
+    TreeDocumentId, TreeHitToken, TreeInitialState, TreeIntent, TreeIntentKind, TreeLabels,
+    TreePart, TreeTarget, TreeTargetKind,
+};
 pub use style::StyleId;
 pub use sweep::{SweepUi, SweepValues};
 pub use widget_id::WidgetId;
@@ -68,8 +74,9 @@ pub use widgets::{
     draw_separator, draw_text_field, draw_tree_row, ellipsize,
 };
 pub use window::{
-    DEFAULT_SCALE_PERCENT, MAX_K, MAX_REFERENCE_K, MIN_COLS, MIN_K, MIN_ROWS, ResizeSnapshot,
-    ResizeTarget, ResizeZone, SCALE_PERCENTS, ScaleDecision, ScaleMode, ScreenRect, WindowAction,
-    WindowFit, available_height, composed_grid_size, effective_scale, fit_window, k_fit,
-    min_window_size, monitor_reference_scale, resize_target, resize_zone, usable_rect,
+    DEFAULT_SCALE_FACTOR_PERCENT, MAX_K, MAX_REFERENCE_K, MIN_COLS, MIN_K, MIN_ROWS,
+    ResizeSnapshot, ResizeTarget, ResizeZone, SCALE_FACTORS_PERCENT, ScaleDecision, ScaleMode,
+    ScreenRect, WindowAction, WindowFit, available_height, composed_grid_size, effective_scale,
+    fit_window, k_fit, min_window_size, monitor_reference_scale, resize_target, resize_zone,
+    usable_rect,
 };

@@ -13,14 +13,15 @@ use std::time::{Duration, Instant};
 
 use newell_kernel::NewellSolid;
 use newell_model::{
-    CommandController, CommandState, Document, EntityId, ExtrudeGeometry, ExtrudeResult,
-    ExtrudeSpec, ExtrudeTermination, Feature, ParameterValue, Selection,
+    CommandController, CommandState, EntityId, ExtrudeGeometry, ExtrudeResult, ExtrudeSpec,
+    ExtrudeTermination, ParameterValue, Selection,
 };
-use newell_render::{FrameOutcome, Renderer, SceneViewport, Theme};
+use newell_render::{FrameOutcome, Renderer, SceneDisplayMode, SceneViewport, Theme};
 use newell_ui::{
-    DEFAULT_SCALE_PERCENT, ExtrudeGeometryType, ExtrudeResultMode, ExtrudeStatus,
-    ExtrudeTermination as UiExtrudeTermination, GridMetrics, ResizeSnapshot, ResizeZone, ScaleMode,
-    ThemeChoice, WindowAction, composed_grid_size, effective_scale, fit_window, k_fit,
+    ActionOperation, DEFAULT_SCALE_FACTOR_PERCENT, ExtrudeGeometryType, ExtrudeResultMode,
+    ExtrudeStatus, ExtrudeTermination as UiExtrudeTermination, FeatureNodeId, GapDisplayLocation,
+    GridMetrics, HistoryGap, OpaqueTreeId, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
+    TreeDocumentId, WindowAction, composed_grid_size, effective_scale, fit_window, k_fit,
     min_window_size,
 };
 use winit::application::ApplicationHandler;
@@ -30,14 +31,16 @@ use winit::event::{ElementState, InnerSizeWriter, MouseButton, MouseScrollDelta,
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::monitor::MonitorHandle;
-use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::AppError;
-use crate::controller::{Press, ShellController, Update};
+use crate::controller::{CursorHint, Press, ShellController, Update};
+use crate::document::{DocumentNotification, DocumentSession, ProjectionSync, ProjectionTrigger};
 use crate::input::{pinch_steps, translate_key, ui_point, zoom_steps};
 use crate::navigation::{DragKind, Navigation, ZoomSource};
 use crate::scale::{MonitorInfo, Rescale, ScaleManager, plan_rescale, rect_in_window_space};
 use crate::window::{CancelReason, ControlArm, ResizeManager, check_fit, screen_pointer};
+use std::sync::mpsc::Receiver;
 
 const TITLE: &str = "Newell";
 /// A monitor change seen while the window is still being moved is applied once the window has
@@ -80,6 +83,19 @@ fn scene_occlusions(shell: &ShellController) -> Vec<SceneViewport> {
             )
         })
         .collect()
+}
+
+fn scene_display_mode(shading: usize) -> SceneDisplayMode {
+    match shading {
+        0 => SceneDisplayMode::Points,
+        1 => SceneDisplayMode::Line,
+        2 => SceneDisplayMode::Wireframe,
+        3 => SceneDisplayMode::HiddenLine,
+        4 => SceneDisplayMode::NoShading,
+        5 => SceneDisplayMode::Shaded,
+        6 => SceneDisplayMode::Default,
+        _ => SceneDisplayMode::Wireframe,
+    }
 }
 
 const fn direction(zone: ResizeZone) -> ResizeDirection {
@@ -143,13 +159,34 @@ struct PresentGate {
     deadline: Instant,
 }
 
+#[derive(Debug, Default)]
+struct ExtrudeCommitLatch {
+    armed: bool,
+    insertion: Option<(TreeDocumentId, HistoryGap)>,
+}
+
+fn ui_palette(shell: &newell_ui::ShellState) -> newell_render::UiPalette {
+    let theme = match shell.theme() {
+        ThemeChoice::Light => Theme::Light,
+        ThemeChoice::Dark => Theme::Dark,
+    };
+    newell_render::UiPalette::new(theme, shell.color_enabled())
+}
+
 pub(crate) struct App {
     // Field order is drop order: the renderer (surface) is dropped before the window.
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     shell: Option<ShellController>,
     /// Persistent CAD state. The UI projects commands from this model; it never owns geometry.
-    document: Document,
+    document: DocumentSession,
+    document_events: Receiver<DocumentNotification>,
+    projection_sync: ProjectionSync,
+    extrude_latch: ExtrudeCommitLatch,
+    committed_cursor: Option<(TreeDocumentId, OpaqueTreeId)>,
+    layout_retry_rearm_pending: bool,
+    #[cfg(test)]
+    last_ui_publication: Option<newell_ui::CellGrid>,
     selection: Selection,
     commands: CommandController,
     /// Entity represented by the initial viewport solid.
@@ -192,11 +229,20 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new() -> Self {
+        let mut document = DocumentSession::default();
+        let document_events = document.subscribe();
         Self {
             renderer: None,
             window: None,
             shell: None,
-            document: Document::default(),
+            document,
+            document_events,
+            projection_sync: ProjectionSync::default(),
+            extrude_latch: ExtrudeCommitLatch::default(),
+            committed_cursor: None,
+            layout_retry_rearm_pending: false,
+            #[cfg(test)]
+            last_ui_publication: None,
             selection: Selection::default(),
             commands: CommandController::default(),
             scene_entity: None,
@@ -237,6 +283,15 @@ impl App {
     /// other. A valid draft immediately replaces the viewport mesh as a preview.
     fn sync_extrude_command(&mut self) {
         let Some(shell) = &self.shell else { return };
+        if shell.shell().operation() != ActionOperation::Extrude {
+            self.extrude_latch = ExtrudeCommitLatch::default();
+            self.commands.cancel();
+            return;
+        }
+        if self.projection_sync.acknowledged_document() != Some(self.document.identity().tree()) {
+            self.extrude_latch = ExtrudeCommitLatch::default();
+            return;
+        }
         let ui = shell.shell().extrude();
         let depth = shell.shell().extrude_depth_source();
         let geometry = match ui.values.geometry {
@@ -282,22 +337,61 @@ impl App {
         };
         match ui.status {
             ExtrudeStatus::Editing => {
+                if !self.extrude_latch.armed {
+                    self.extrude_latch = ExtrudeCommitLatch {
+                        armed: true,
+                        insertion: Some((
+                            self.document.identity().tree(),
+                            shell.shell().playhead().insertion,
+                        )),
+                    };
+                }
                 if matches!(self.commands.state(), CommandState::Idle) {
                     self.commands.begin_extrude(&self.selection);
                 }
-                if self.commands.edit_extrude(spec, &self.document).is_ok()
+                if self
+                    .commands
+                    .edit_extrude(spec, self.document.document())
+                    .is_ok()
                     && let Some(preview) = self.commands.preview()
-                    && let Ok(depth) = preview.depth.evaluate(self.document.parameters())
+                    && let Ok(depth) = preview
+                        .depth
+                        .evaluate(self.document.document().parameters())
                 {
                     self.set_preview_depth(depth.as_millimetres());
                 }
             }
             ExtrudeStatus::Confirmed => {
-                if self.commands.edit_extrude(spec, &self.document).is_ok() {
-                    let _ = self.commands.confirm(&mut self.document);
+                let latch = std::mem::take(&mut self.extrude_latch);
+                let Some((document, gap)) = latch.insertion.filter(|_| latch.armed) else {
+                    return;
+                };
+                if document != self.document.identity().tree() {
+                    return;
+                }
+                let before = match gap {
+                    HistoryGap::End => None,
+                    HistoryGap::Before(id) => {
+                        let Some(feature) = self.document.feature_id(id) else {
+                            self.commands.cancel();
+                            return;
+                        };
+                        Some(feature)
+                    }
+                };
+                match self
+                    .document
+                    .confirm_before(&mut self.commands, spec, before)
+                {
+                    Ok(Some(id)) => {
+                        self.committed_cursor = Some((document, OpaqueTreeId::new(id.get())));
+                    }
+                    Ok(None) => {}
+                    Err(error) => log(&error.to_string()),
                 }
             }
             ExtrudeStatus::Cancelled => {
+                self.extrude_latch = ExtrudeCommitLatch::default();
                 self.commands.cancel();
                 self.set_preview_depth(10.0);
             }
@@ -329,19 +423,16 @@ impl App {
     /// `effective_k` changes), and a Fullscreen request to the window.
     fn sync_view_choices(&mut self) {
         let Some(shell) = &mut self.shell else { return };
-        let theme = match shell.shell().theme() {
-            ThemeChoice::Light => Theme::Light,
-            ThemeChoice::Dark => Theme::Dark,
-        };
+        let palette = ui_palette(shell.shell());
         let shading = shell.shell().shading();
         let perspective = shell.shell().perspective();
-        let percent = shell.shell().preferred_scale_percent();
+        let scale_factor_percent = shell.shell().scale_factor_percent();
         let fullscreen = shell.take_fullscreen_request();
         let reset_camera = shell.take_camera_reset();
         let normal_view = shell.take_normal_view();
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_theme(theme);
-            renderer.set_scene_shading(shading);
+            renderer.set_palette(palette);
+            renderer.set_scene_display_mode(scene_display_mode(shading));
             self.navigation.set_perspective(perspective);
             if reset_camera {
                 self.navigation.fit();
@@ -353,8 +444,8 @@ impl App {
                 renderer.set_scene_camera(camera);
             }
         }
-        if percent != self.scale.preferred_percent() {
-            self.scale.set_preferred_percent(percent);
+        if scale_factor_percent != self.scale.scale_factor_percent() {
+            self.scale.set_scale_factor_percent(scale_factor_percent);
             // A preference whose `k` is unchanged only stores the preference.
             self.reconcile_with("preference", None, true);
         }
@@ -392,27 +483,133 @@ impl App {
         self.reconcile("fullscreen", None);
     }
 
+    fn poll_document_projection(&mut self, now: Instant, trigger: ProjectionTrigger) -> Update {
+        if self
+            .projection_sync
+            .acknowledged_document()
+            .is_some_and(|id| id != self.document.identity().tree())
+        {
+            self.extrude_latch = ExtrudeCommitLatch::default();
+            self.committed_cursor = None;
+            self.commands.cancel();
+            if let Some(shell) = &mut self.shell {
+                shell.invalidate_document_interactions();
+            }
+        }
+        let Some(shell) = &mut self.shell else {
+            return Update::default();
+        };
+        let mut update = match self.projection_sync.poll(
+            &self.document,
+            &self.document_events,
+            now,
+            trigger,
+            |projection| {
+                shell
+                    .set_tree_projection(projection)
+                    .map_err(AppError::from)
+            },
+        ) {
+            Ok(update) => update.unwrap_or_default(),
+            Err(error) => {
+                log(&format!("tree refresh pending: {error}"));
+                Update::default()
+            }
+        };
+        if let Some((document, operation)) = self.committed_cursor
+            && shell.shell().tree_projection().document == document
+            && self.projection_sync.acknowledged_document() == Some(document)
+        {
+            let display = GapDisplayLocation::AfterSubtree(FeatureNodeId::Operation(operation));
+            if let Ok(gap) = shell.shell().tree_projection().placed_gap(display) {
+                match shell.set_playhead(gap) {
+                    Ok(cursor) => {
+                        update = update.merge(cursor);
+                        self.committed_cursor = None;
+                    }
+                    Err(error) => log(&error.to_string()),
+                }
+            }
+        }
+        update
+    }
+    fn next_document_retry_deadline(&self) -> Option<Instant> {
+        self.projection_sync.deadline()
+    }
+    fn finish_shell_input(&mut self, update: Update) {
+        if let Some(shell) = &mut self.shell
+            && let Some(intent) = shell.take_tree_intent()
+            && intent.generation() == shell.generation()
+            && intent.target().document == self.document.identity().tree()
+            && let Err(error) = self
+                .document
+                .apply_tree_edit(intent.target(), intent.kind())
+        {
+            log(&error.to_string());
+        }
+        self.sync_extrude_command();
+        let projection =
+            self.poll_document_projection(Instant::now(), ProjectionTrigger::UserActivation);
+        self.apply(update.merge(projection));
+    }
+    fn scroll_shell_panel(&mut self, steps: i32) -> bool {
+        let Some(shell) = &mut self.shell else {
+            return false;
+        };
+        let result = shell.scroll_panel(steps);
+        if result.handled {
+            self.navigation.cancel();
+            self.apply(result.update);
+        }
+        result.handled
+    }
+
     /// Uploads what `update` says changed and asks for a redraw.
     fn apply(&mut self, update: Update) {
         self.sync_view_choices();
+        self.update_os_cursor();
         if !update.any() {
             return;
         }
-        if let (Some(renderer), Some(shell)) = (&mut self.renderer, &self.shell)
+        if let Some(shell) = &self.shell
             && update.grid
         {
-            renderer.set_ui_grid(shell.grid());
-            renderer.set_scene_viewport(scene_viewport(shell));
-            renderer.set_scene_occlusions(scene_occlusions(shell));
-            self.navigation
-                .set_layout(scene_viewport(shell), scene_occlusions(shell));
-            if let Some(camera) = self.navigation.snapshot() {
-                renderer.set_scene_camera(camera);
+            #[cfg(test)]
+            {
+                self.last_ui_publication = Some(shell.grid().clone());
+            }
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_ui_grid(shell.grid());
+                renderer.set_scene_viewport(scene_viewport(shell));
+                renderer.set_scene_occlusions(scene_occlusions(shell));
+                self.navigation
+                    .set_layout(scene_viewport(shell), scene_occlusions(shell));
+                if let Some(camera) = self.navigation.snapshot() {
+                    renderer.set_scene_camera(camera);
+                }
             }
         }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
+    }
+
+    /// Updates the native cursor from the shell's O(1) hit target and press precedence.
+    fn update_os_cursor(&self) {
+        let (Some(window), Some(shell)) = (&self.window, &self.shell) else {
+            return;
+        };
+        let size = window.inner_size();
+        let icon = match shell.cursor_hint((size.width, size.height), self.resizable()) {
+            CursorHint::Default => CursorIcon::Default,
+            CursorHint::Resize(zone) => direction(zone).into(),
+            CursorHint::HorizontalResize => CursorIcon::EwResize,
+            CursorHint::VerticalResize => CursorIcon::NsResize,
+            CursorHint::Move => CursorIcon::Move,
+            CursorHint::Grab => CursorIcon::Grab,
+            CursorHint::Grabbing => CursorIcon::Grabbing,
+        };
+        window.set_cursor(icon);
     }
 
     fn resize_to_window(&mut self) {
@@ -427,6 +624,7 @@ impl App {
     fn resize_shell(&mut self, width: u32, height: u32) {
         if let Some(shell) = &mut self.shell {
             let update = shell.resize(width, height);
+            self.layout_retry_rearm_pending |= update.grid;
             self.apply(update);
         }
     }
@@ -493,7 +691,7 @@ impl App {
         let cell = metrics.map_or((0, 0), |m| (m.cell_width_px(), m.cell_height_px()));
         // `inner`/`outer` are read before the new size is applied: the OS reports it later.
         log(&format!(
-            "scale[{reason}] monitor {monitor} | window outer_pos={:?} inner={}x{} outer={}x{} scale_factor={} mode={:?} | preferred={}% reference={} requested={} effective_k={} previous_k={:?} fits={} | cell_before={}x{} desired_grid={:?}",
+            "scale[{reason}] monitor {monitor} | window outer_pos={:?} inner={}x{} outer={}x{} scale_factor={} mode={:?} | scale_factor={}% reference={} requested={} effective_k={} previous_k={:?} fits={} | cell_before={}x{} desired_grid={:?}",
             window.outer_position().ok().map(|p| (p.x, p.y)),
             inner.width,
             inner.height,
@@ -501,7 +699,7 @@ impl App {
             outer.height,
             window.scale_factor(),
             rescale.mode,
-            self.scale.preferred_percent(),
+            self.scale.scale_factor_percent(),
             rescale.decision.reference,
             rescale.decision.requested,
             rescale.decision.k,
@@ -625,7 +823,8 @@ impl App {
             && let (Some(renderer), Some(shell)) = (self.renderer.as_mut(), self.shell.as_mut())
         {
             renderer.set_metrics(prepared.metrics(), prepared.grid())?;
-            let _ = shell.commit_metrics(prepared);
+            let update = shell.commit_metrics(prepared);
+            self.layout_retry_rearm_pending |= update.grid;
             renderer.set_scene_viewport(scene_viewport(shell));
             renderer.set_scene_occlusions(scene_occlusions(shell));
             self.navigation
@@ -778,28 +977,39 @@ impl App {
         };
         match press {
             Press::Shell(update) => {
-                self.apply(update);
-                self.sync_extrude_command();
-                if scene_input
-                    && let Some(cursor) = cursor
-                    && let Some(hit) = self
-                        .navigation
-                        .pick((f64::from(cursor.x), f64::from(cursor.y)))
-                {
-                    if let Some(entity) = self.scene_entity {
-                        self.selection.replace([entity]);
+                self.finish_shell_input(update);
+                if scene_input && let Some(cursor) = cursor {
+                    let point = (f64::from(cursor.x), f64::from(cursor.y));
+                    if !self.native_resizing
+                        && let Some(pointer) = self.scene_pointer
+                    {
+                        self.navigation.begin_primary_orbit(
+                            (pointer.x, pointer.y),
+                            window.scale_factor(),
+                            true,
+                        );
                     }
-                    log(&format!(
-                        "picked viewport face {} at {:.3}; {} entity selected",
-                        hit.face_index,
-                        hit.distance,
-                        self.selection.entities().len()
-                    ));
+                    if let Some(hit) = self.navigation.pick(point) {
+                        if let Some(entity) = self.scene_entity {
+                            self.selection.replace([entity]);
+                        }
+                        log(&format!(
+                            "picked viewport face {} at {:.3}; {} entity selected",
+                            hit.face_index,
+                            hit.distance,
+                            self.selection.entities().len()
+                        ));
+                    }
                 }
             }
             Press::Window(action) => self.control.arm(action),
             Press::Drag => self.start_drag(&window),
             Press::Resize(zone) => self.start_resize(&window, zone),
+        }
+        if !matches!(press, Press::Shell(_)) {
+            let update =
+                self.poll_document_projection(Instant::now(), ProjectionTrigger::UserActivation);
+            self.apply(update);
         }
     }
 
@@ -925,7 +1135,7 @@ impl ApplicationHandler for App {
             .primary_monitor()
             .or_else(|| event_loop.available_monitors().next())
             .map(|m| (m.size().width, m.size().height));
-        let k = effective_scale(primary, ScaleMode::Windowed, DEFAULT_SCALE_PERCENT).k;
+        let k = effective_scale(primary, ScaleMode::Windowed, DEFAULT_SCALE_FACTOR_PERCENT).k;
         self.scale.start(k);
         // One metrics value for the atlas, layout and hit-testing.
         let metrics = match GridMetrics::from_k(k) {
@@ -955,7 +1165,7 @@ impl ApplicationHandler for App {
             Err(error) => return self.fail(event_loop, error),
         }
         let (cols, rows) = composed_grid_size(metrics, size.width, size.height);
-        let mut shell = match ShellController::new(cols, rows, metrics) {
+        let shell = match ShellController::new(cols, rows, metrics) {
             Ok(shell) => shell,
             Err(error) => return self.fail(event_loop, error),
         };
@@ -979,21 +1189,19 @@ impl ApplicationHandler for App {
                 renderer.set_scene_camera(camera);
             }
         }
-        let base = self.document.add_base_solid("Base Solid");
-        self.scene_entity = self.document.feature(base).map(Feature::entity);
-        let feature_labels = self
+        let base = match self.document.add_base_solid("Base Solid") {
+            Ok(base) => base,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        self.scene_entity = self
             .document
-            .features()
-            .iter()
-            .map(|(_, feature)| feature.name().to_owned())
-            .collect::<Vec<_>>();
-        let element_labels = self
-            .scene_entity
-            .map(|entity| vec![format!("Solid {}", entity.get())])
-            .unwrap_or_default();
-        let _ = shell.set_model_tree_labels(&feature_labels, &element_labels);
+            .document()
+            .feature(base)
+            .and_then(|feature| feature.outputs().first().copied());
         self.shell = Some(shell);
         self.window = Some(window.clone());
+        let update = self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        self.apply(update);
         self.log_monitors(&window);
         // Derive the scale of the monitor that really hosts the window, before it is shown.
         let hosted = window.current_monitor().is_some();
@@ -1016,7 +1224,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(window) = &self.window else { return };
+        let Some(window) = self.window.clone() else {
+            return;
+        };
         if window.id() != id {
             return;
         }
@@ -1031,14 +1241,20 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Focused(false) => {
+                window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.navigation.cancel();
                 self.native_resizing = false;
                 self.cancel_resize(CancelReason::FocusLost);
                 self.control.cancel();
-                if let Some(shell) = &mut self.shell {
+                let update = if let Some(shell) = &mut self.shell {
+                    let update = shell.pointer_moved(None);
                     shell.pointer_released();
-                }
+                    update
+                } else {
+                    Update::default()
+                };
+                self.apply(update);
             }
             WindowEvent::Moved(_) => {
                 // A move may be the middle of a drag across monitors: the hosting monitor is
@@ -1121,8 +1337,9 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.scene_pointer = Some(position);
                 let point = ui_point(position.x, position.y);
+                let camera_changed = self.navigation.advance_pointer((position.x, position.y));
                 if self.navigation.is_dragging() {
-                    if self.navigation.navigate((position.x, position.y)) {
+                    if camera_changed {
                         window.request_redraw();
                         if let (Some(renderer), Some(camera)) =
                             (&mut self.renderer, self.navigation.snapshot())
@@ -1147,6 +1364,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.navigation.cancel();
                 if let Some(shell) = &mut self.shell {
@@ -1165,6 +1383,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 self.native_resizing = false;
+                self.navigation.release(DragKind::PrimaryOrbit);
                 // The release that ends a managed resize is consumed.
                 if !self.resize.release() {
                     let under = self
@@ -1193,17 +1412,22 @@ impl ApplicationHandler for App {
                             .shell
                             .as_ref()
                             .is_some_and(ShellController::scene_input_enabled);
-                    let kind = if button == MouseButton::Right {
-                        DragKind::Orbit
-                    } else {
-                        DragKind::Pan
-                    };
-                    self.navigation.begin(
-                        kind,
-                        (cursor.x, cursor.y),
-                        window.scale_factor(),
-                        eligible,
-                    );
+                    if let Some(kind) = DragKind::from_auxiliary_button(button) {
+                        if kind == DragKind::SecondaryPan {
+                            self.navigation.begin_secondary_pan(
+                                (cursor.x, cursor.y),
+                                window.scale_factor(),
+                                eligible,
+                            );
+                        } else {
+                            self.navigation.begin(
+                                kind,
+                                (cursor.x, cursor.y),
+                                window.scale_factor(),
+                                eligible,
+                            );
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1211,24 +1435,41 @@ impl ApplicationHandler for App {
                 button: button @ (MouseButton::Right | MouseButton::Middle),
                 ..
             } => {
-                self.navigation.release(if button == MouseButton::Right {
-                    DragKind::Orbit
-                } else {
-                    DragKind::Pan
-                });
+                if let Some(kind) = DragKind::from_auxiliary_button(button) {
+                    self.navigation.release(kind);
+                }
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
+                if self.resize.is_active() || self.native_resizing {
+                    return;
+                }
+                if let MouseScrollDelta::PixelDelta(pixels) = delta {
+                    let point = self
+                        .scene_pointer
+                        .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
+                    if let Some(changed) = self.navigation.advance_secondary_pan_scroll(
+                        (pixels.x, pixels.y),
+                        phase,
+                        point,
+                    ) {
+                        if changed {
+                            if let (Some(renderer), Some(camera)) =
+                                (&mut self.renderer, self.navigation.snapshot())
+                            {
+                                renderer.set_scene_camera(camera);
+                            }
+                            window.request_redraw();
+                        }
+                        return;
+                    }
+                }
                 let steps = zoom_steps(delta, window.scale_factor());
                 // Panel scrolling keeps its existing convention, independently of camera sensitivity.
                 let panel_steps = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(delta) => (delta.y / 40.0) as f32,
                 };
-                if let Some(shell) = &mut self.shell
-                    && shell.scroll(panel_steps.round() as i32).any()
-                {
-                    self.navigation.cancel();
-                    window.request_redraw();
+                if self.scroll_shell_panel(panel_steps.round() as i32) {
                     return;
                 }
                 let eligible = !self.resize.is_active()
@@ -1298,6 +1539,11 @@ impl ApplicationHandler for App {
                     }
                     self.view_fullscreen = false;
                     self.reconcile("fullscreen", None);
+                    let update = self.poll_document_projection(
+                        Instant::now(),
+                        ProjectionTrigger::UserActivation,
+                    );
+                    self.apply(update);
                     return;
                 }
                 // Home fits only when the pointer is on unobstructed scene pixels.
@@ -1316,12 +1562,22 @@ impl ApplicationHandler for App {
                         renderer.set_scene_camera(camera);
                     }
                     window.request_redraw();
+                    let update = self.poll_document_projection(
+                        Instant::now(),
+                        ProjectionTrigger::UserActivation,
+                    );
+                    self.apply(update);
                     return;
                 }
                 // Escape cancels a managed resize and is not seen by the shell.
                 if event.logical_key == Key::Named(NamedKey::Escape)
                     && self.resize.cancel(CancelReason::Escape)
                 {
+                    let update = self.poll_document_projection(
+                        Instant::now(),
+                        ProjectionTrigger::UserActivation,
+                    );
+                    self.apply(update);
                     return;
                 }
                 let keys = translate_key(
@@ -1330,13 +1586,19 @@ impl ApplicationHandler for App {
                     event.text.as_deref(),
                     self.modifiers,
                 );
-                if let Some(shell) = &mut self.shell {
-                    let update = keys
-                        .into_iter()
-                        .fold(Update::default(), |acc, key| acc.merge(shell.key(key)));
+                if keys.is_empty() {
+                    let update = self.poll_document_projection(
+                        Instant::now(),
+                        ProjectionTrigger::UserActivation,
+                    );
                     self.apply(update);
                 }
-                self.sync_extrude_command();
+                for key in keys {
+                    if let Some(shell) = &mut self.shell {
+                        let update = shell.key(key);
+                        self.finish_shell_input(update);
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(gate) = self.gate {
@@ -1397,6 +1659,16 @@ impl ApplicationHandler for App {
         // No continuous redraw loop. Hidden windows wait for input instead of spinning
         // on expired status deadlines; the monotonic animation catches up when restored.
         if !hidden {
+            let trigger = if std::mem::take(&mut self.layout_retry_rearm_pending) {
+                ProjectionTrigger::LayoutPublished
+            } else {
+                ProjectionTrigger::RetryDeadline
+            };
+            let update = self.poll_document_projection(now, trigger);
+            self.apply(update);
+            if let Some(deadline) = self.next_document_retry_deadline() {
+                wake = Some(wake.map_or(deadline, |other: Instant| other.min(deadline)));
+            }
             let elapsed = self.epoch.elapsed();
             if let Some(shell) = &mut self.shell {
                 let update = shell.tick(elapsed);
@@ -1421,5 +1693,495 @@ impl ApplicationHandler for App {
         }
 
         event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use newell_ui::{CellContent, GridMetrics, ShellKey, ShellState, UiPoint};
+
+    pub(super) fn live_app() -> App {
+        let mut app = App::new();
+        app.shell = Some(
+            ShellController::with_shell(ShellState::new(82, 40), GridMetrics::new(4, 9).unwrap())
+                .unwrap(),
+        );
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        app
+    }
+    pub(super) fn click(app: &mut App, needle: &str) {
+        let shell = app.shell.as_mut().unwrap();
+        let pattern: Vec<_> = needle.chars().collect();
+        let point = (0..shell.grid().rows())
+            .find_map(|row| {
+                let text: Vec<_> = (0..shell.grid().cols())
+                    .map(|col| match shell.grid().get(col, row).unwrap().content {
+                        CellContent::Glyph(c) => c,
+                        CellContent::Empty => ' ',
+                    })
+                    .collect();
+                text.windows(pattern.len())
+                    .position(|window| window == pattern)
+                    .map(|col| UiPoint {
+                        x: col as u32 * 4 + 2,
+                        y: row * 9 + 4,
+                    })
+            })
+            .expect("requested control is visible");
+        shell.pointer_moved(Some(point));
+        let update = shell.pointer_pressed();
+        shell.pointer_released();
+        app.finish_shell_input(update);
+    }
+    pub(super) fn key(app: &mut App, key: ShellKey) {
+        let update = app.shell.as_mut().unwrap().key(key);
+        app.finish_shell_input(update);
+    }
+    fn depth(app: &mut App) {
+        click(app, "0.0 mm");
+        key(app, ShellKey::Edit(newell_ui::EditKey::SelectAll));
+        key(app, ShellKey::Char('1'));
+        key(app, ShellKey::Char('0'));
+        key(app, ShellKey::Enter);
+        let source = app.shell.as_ref().unwrap().shell().extrude_depth_source();
+        assert_eq!(
+            ParameterValue::Literal(source)
+                .evaluate(app.document.document().parameters())
+                .unwrap()
+                .as_millimetres(),
+            10.0
+        );
+    }
+
+    #[test]
+    fn startup_command_controller_is_idle_without_preview() {
+        let app = App::new();
+        assert_eq!(app.commands.state(), &CommandState::Idle);
+        assert!(app.commands.preview().is_none());
+    }
+
+    #[test]
+    fn one_confirmation_is_consumed_before_subsequent_tree_and_keyboard_events() {
+        for enabled in [false, true] {
+            let mut app = live_app();
+            if enabled {
+                click(&mut app, "View");
+                click(&mut app, "Color");
+                key(&mut app, ShellKey::Escape);
+            }
+            let events = app.document.subscribe();
+            app.finish_shell_input(Update::default());
+            depth(&mut app);
+            click(&mut app, "OK");
+            assert_eq!(app.document.document().features().len(), 1);
+            assert_eq!(events.try_iter().count(), 1);
+            assert!(!app.extrude_latch.armed);
+            click(&mut app, "Features");
+            for input in [
+                ShellKey::Tab,
+                ShellKey::Enter,
+                ShellKey::Char('x'),
+                ShellKey::Escape,
+            ] {
+                key(&mut app, input);
+            }
+            assert_eq!(app.document.document().features().len(), 1);
+            assert!(events.try_recv().is_err());
+            click(&mut app, "Create");
+            click(&mut app, "[E]xtrude");
+            depth(&mut app);
+            click(&mut app, "OK");
+            assert_eq!(app.document.document().features().len(), 2);
+            assert_eq!(events.try_iter().count(), 1);
+        }
+    }
+
+    #[test]
+    fn invalid_insert_consumes_latch_without_changing_command_document_or_revision() {
+        for enabled in [false, true] {
+            let mut app = live_app();
+            let base = app.document.add_base_solid("base").unwrap();
+            let update =
+                app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+            app.apply(update);
+            let id = app.document.document().feature(base).unwrap().outputs()[0];
+            app.selection.replace([id]);
+            let shell = app.shell.as_mut().unwrap();
+            let gap = shell
+                .shell()
+                .tree_projection()
+                .placed_gap(GapDisplayLocation::BeforeNode(FeatureNodeId::Operation(
+                    OpaqueTreeId::new(base.get()),
+                )))
+                .unwrap();
+            shell.set_playhead(gap).unwrap();
+            // First user activation captures the already selected insertion anchor.
+            if enabled {
+                click(&mut app, "View");
+                click(&mut app, "Color");
+                key(&mut app, ShellKey::Escape);
+            }
+            app.finish_shell_input(Update::default());
+            depth(&mut app);
+            let document = app.document.document().clone();
+            let revision = app.document.revision();
+            let state = app.commands.state().clone();
+            let preview = app.commands.preview().cloned();
+            let events = app.document.subscribe();
+            click(&mut app, "OK");
+            assert_eq!(app.document.document(), &document);
+            assert_eq!(app.document.revision(), revision);
+            assert_eq!(app.commands.state(), &state);
+            assert_eq!(app.commands.preview(), preview.as_ref());
+            assert!(events.try_recv().is_err());
+            assert!(!app.extrude_latch.armed);
+            click(&mut app, "Features");
+            key(&mut app, ShellKey::Tab);
+            assert_eq!(app.commands.state(), &state);
+            assert_eq!(app.document.document(), &document);
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn tree_scroll_publishes_the_same_grid_the_controller_hit_tests() {
+        let mut app = live_app();
+        for index in 0..40 {
+            app.document
+                .add_base_solid(&format!("operation_{index}"))
+                .unwrap();
+        }
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let before = app.shell.as_ref().unwrap().grid().clone();
+        app.shell
+            .as_mut()
+            .unwrap()
+            .pointer_moved(Some(UiPoint { x: 20, y: 72 }));
+        assert!(app.scroll_shell_panel(-5));
+        let shell = app.shell.as_ref().unwrap();
+        assert_ne!(shell.grid(), &before);
+        assert_eq!(app.last_ui_publication.as_ref(), Some(shell.grid()));
+        assert!(app.scroll_shell_panel(i32::MIN));
+        app.last_ui_publication = None;
+        assert!(app.scroll_shell_panel(-1));
+        assert!(
+            app.last_ui_publication.is_none(),
+            "a tree owns the wheel at its limit without another publication"
+        );
+    }
+
+    #[test]
+    fn replacement_cancels_old_frame_authorization_even_if_publication_fails() {
+        let mut app = live_app();
+        app.document.add_base_solid("old").unwrap();
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let shell = app.shell.as_mut().unwrap();
+        shell.pointer_moved(Some(UiPoint {
+            x: 24 * 4 + 2,
+            y: 10 * 9 + 4,
+        }));
+        shell.pointer_pressed();
+        assert!(shell.dragging());
+        let old = shell.grid().clone();
+        app.document
+            .replace(newell_model::Document::default())
+            .unwrap();
+        app.projection_sync.fail_next_projection = 1;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        assert!(!update.grid);
+        assert!(!app.shell.as_ref().unwrap().dragging());
+        assert_eq!(app.shell.as_ref().unwrap().grid(), &old);
+        assert!(!app.extrude_latch.armed);
+    }
+
+    #[test]
+    fn extrude_uses_captured_insertion_anchor_even_if_cursor_moves_while_editing() {
+        let mut app = live_app();
+        let base = app.document.add_base_solid("base").unwrap();
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let shell = app.shell.as_mut().unwrap();
+        let gap = shell
+            .shell()
+            .tree_projection()
+            .placed_gap(GapDisplayLocation::BeforeNode(FeatureNodeId::Operation(
+                OpaqueTreeId::new(base.get()),
+            )))
+            .unwrap();
+        shell.set_playhead(gap).unwrap();
+        app.finish_shell_input(Update::default());
+        depth(&mut app);
+        app.shell
+            .as_mut()
+            .unwrap()
+            .set_playhead(newell_ui::PlacedHistoryGap::default())
+            .unwrap();
+        click(&mut app, "OK");
+        let operations = app.document.document().features();
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[0].0.get(), 1);
+        assert_eq!(operations[1].0, base);
+        assert_eq!(
+            app.shell.as_ref().unwrap().shell().playhead().insertion,
+            HistoryGap::Before(OpaqueTreeId::new(base.get()))
+        );
+    }
+
+    #[test]
+    fn long_real_entity_name_round_trips_through_confirm_without_a_notification() {
+        let mut app = live_app();
+        let name = format!("{} ", "long_name".repeat(15));
+        let feature = app.document.add_base_solid(&name).unwrap();
+        let entity = app.document.document().feature(feature).unwrap().outputs()[0];
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let shell = app.shell.as_ref().unwrap();
+        let row = (0..shell.grid().rows())
+            .find(|row| {
+                let text: String = (0..shell.grid().cols())
+                    .map(|col| match shell.grid().get(col, *row).unwrap().content {
+                        CellContent::Glyph(c) => c,
+                        CellContent::Empty => ' ',
+                    })
+                    .collect();
+                text.contains("■ long_name")
+            })
+            .unwrap();
+        let shell = app.shell.as_mut().unwrap();
+        shell.pointer_moved(Some(UiPoint {
+            x: 8 * 4 + 2,
+            y: row * 9 + 4,
+        }));
+        shell.pointer_pressed();
+        shell.set_time(Duration::from_millis(100));
+        shell.pointer_pressed();
+        assert!(shell.shell().rename().is_open());
+        assert_eq!(shell.shell().rename().draft(), name);
+        let events = app.document.subscribe();
+        key(&mut app, ShellKey::Enter);
+        assert_eq!(app.document.document().entity(entity).unwrap().name(), name);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn real_tree_edits_publish_once_and_reproject_without_shared_selection() {
+        let mut app = live_app();
+        let feature = app.document.add_base_solid("base").unwrap();
+        let entity = app.document.document().feature(feature).unwrap().outputs()[0];
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let events = app.document.subscribe();
+        click(&mut app, "■ base");
+        assert!(!app.document.document().entity(entity).unwrap().visible());
+        assert_eq!(events.try_iter().count(), 1);
+        assert_eq!(
+            app.last_ui_publication.as_ref(),
+            Some(app.shell.as_ref().unwrap().grid())
+        );
+        let projection = app.shell.as_ref().unwrap().shell().tree_projection();
+        assert_eq!(projection.labels.bodies, "Bodies");
+        assert_eq!(
+            projection.elements.len(),
+            1,
+            "hidden bodies remain in the group count"
+        );
+        key(&mut app, ShellKey::Enter);
+        assert!(
+            events.try_recv().is_err(),
+            "keyboard leaf activation does not toggle visibility"
+        );
+        assert!(app.selection.entities().is_empty());
+        click(&mut app, "base");
+        click(&mut app, "base");
+        assert!(app.shell.as_ref().unwrap().shell().rename().is_open());
+        for c in "_renamed".chars() {
+            key(&mut app, ShellKey::Char(c));
+        }
+        key(&mut app, ShellKey::Enter);
+        assert_eq!(
+            app.document.document().feature(feature).unwrap().name(),
+            "base_renamed"
+        );
+        assert_eq!(
+            app.document.document().entity(entity).unwrap().name(),
+            "base",
+            "entity names are independent"
+        );
+        assert_eq!(events.try_iter().count(), 1);
+        assert_eq!(
+            app.last_ui_publication.as_ref(),
+            Some(app.shell.as_ref().unwrap().grid())
+        );
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .tree_projection()
+                .features[0]
+                .name,
+            "base_renamed"
+        );
+        assert!(app.selection.entities().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod display_mode_tests {
+    use super::scene_display_mode;
+    use newell_render::SceneDisplayMode;
+    use newell_ui::{ShellKey, ShellState};
+
+    #[test]
+    fn the_shell_cycle_maps_to_all_renderer_modes_without_changing_startup() {
+        let mut shell = ShellState::new(82, 30);
+        assert_eq!(
+            scene_display_mode(shell.shading()),
+            SceneDisplayMode::Wireframe
+        );
+        shell.key(ShellKey::Alt('v'));
+        shell.key(ShellKey::Down);
+        for expected in [
+            SceneDisplayMode::HiddenLine,
+            SceneDisplayMode::NoShading,
+            SceneDisplayMode::Shaded,
+            SceneDisplayMode::Default,
+            SceneDisplayMode::Points,
+            SceneDisplayMode::Line,
+            SceneDisplayMode::Wireframe,
+        ] {
+            shell.key(ShellKey::Right);
+            assert_eq!(scene_display_mode(shell.shading()), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::tests::{click, key, live_app};
+    use super::*;
+    use newell_ui::ShellKey;
+    #[test]
+    fn color_and_both_theme_directions_publish_visible_rows_without_document_mutation() {
+        let mut app = live_app();
+        app.finish_shell_input(Update::default());
+        let events = app.document.subscribe();
+        let revision = app.document.revision();
+        let identity = app.document.identity();
+        let shading = app.shell.as_ref().unwrap().shell().shading();
+        click(&mut app, "View");
+        for enabled in [false, true] {
+            if enabled {
+                click(&mut app, "Color");
+            }
+            for theme in [Theme::Light, Theme::Dark] {
+                app.last_ui_publication = None;
+                click(&mut app, "Theme");
+                let shell = app.shell.as_ref().unwrap();
+                assert_eq!(
+                    ui_palette(shell.shell()),
+                    newell_render::UiPalette::new(theme, enabled)
+                );
+                assert_eq!(app.last_ui_publication.as_ref(), Some(shell.grid()));
+                let text: String = shell
+                    .grid()
+                    .cells()
+                    .iter()
+                    .map(|c| match c.content {
+                        newell_ui::CellContent::Glyph(c) => c,
+                        _ => ' ',
+                    })
+                    .collect();
+                assert!(text.contains(if theme == Theme::Light {
+                    "Theme [ ◐ Light ]"
+                } else {
+                    "Theme [ ◑ Dark  ]"
+                }));
+            }
+        }
+        for (input, enabled) in [
+            (Some(ShellKey::Enter), false),
+            (Some(ShellKey::Char(' ')), true),
+        ] {
+            // Select Color without activating it: the previous Theme row stays at index 3.
+            key(&mut app, ShellKey::Down);
+            if let Some(input) = input {
+                key(&mut app, input);
+            }
+            assert_eq!(app.shell.as_ref().unwrap().shell().color_enabled(), enabled);
+            assert_eq!(
+                app.last_ui_publication.as_ref(),
+                Some(app.shell.as_ref().unwrap().grid())
+            );
+            // Return focus to Theme so the next iteration selects Color again.
+            key(&mut app, ShellKey::Up);
+        }
+        assert_eq!(app.document.identity(), identity);
+        assert_eq!(app.document.revision(), revision);
+        assert!(events.try_recv().is_err());
+        assert_eq!(app.shell.as_ref().unwrap().shell().shading(), shading);
+        assert!(app.shell.as_mut().unwrap().take_tree_intent().is_none());
+    }
+
+    #[test]
+    fn color_survives_real_projection_refresh_retry_and_document_replacement() {
+        let mut app = live_app();
+        click(&mut app, "View");
+        click(&mut app, "Color");
+        key(&mut app, ShellKey::Escape);
+        let palette = ui_palette(app.shell.as_ref().unwrap().shell());
+        let base = app.document.add_base_solid("old").unwrap();
+        app.projection_sync.fail_next_projection = 1;
+        let now = Instant::now();
+        let old = app.shell.as_ref().unwrap().grid().clone();
+        assert!(
+            !app.poll_document_projection(now, ProjectionTrigger::Notification)
+                .grid
+        );
+        assert_eq!(app.shell.as_ref().unwrap().grid(), &old);
+        assert!(app.next_document_retry_deadline().is_some());
+        let update = app.poll_document_projection(
+            now + Duration::from_millis(100),
+            ProjectionTrigger::RetryDeadline,
+        );
+        assert!(update.grid);
+        app.apply(update);
+        app.document
+            .rename_feature(base, "renamed │[+]☰".into())
+            .unwrap();
+        let entity = app.document.document().feature(base).unwrap().outputs()[0];
+        app.document.set_entity_visibility(entity, false).unwrap();
+        let update = app.poll_document_projection(
+            now + Duration::from_secs(1),
+            ProjectionTrigger::Notification,
+        );
+        app.apply(update);
+        assert_eq!(ui_palette(app.shell.as_ref().unwrap().shell()), palette);
+        assert_eq!(
+            app.last_ui_publication.as_ref(),
+            Some(app.shell.as_ref().unwrap().grid())
+        );
+        app.document
+            .replace(newell_model::Document::default())
+            .unwrap();
+        let update = app.poll_document_projection(
+            now + Duration::from_secs(2),
+            ProjectionTrigger::Notification,
+        );
+        app.apply(update);
+        assert_eq!(ui_palette(app.shell.as_ref().unwrap().shell()), palette);
+        assert!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .tree_projection()
+                .features
+                .is_empty()
+        );
     }
 }

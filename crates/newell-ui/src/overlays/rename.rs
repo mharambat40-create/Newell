@@ -36,8 +36,6 @@ use crate::{BorderAxis, CellGrid, GridRect, InteractionState, SharedBorder, Widg
 const SIZE: (u32, u32) = (27, 5);
 /// Cells of the text between the field's `[` and `]`.
 const FIELD_CELLS: usize = 23;
-/// Longest name the modal holds, in characters. Keeps edits bounded.
-const MAX_LEN: usize = 64;
 /// The text-editing caret (`README_UI.md` §5.11).
 const CARET: char = '▏';
 const TITLE: &str = "Rename";
@@ -124,7 +122,7 @@ impl RenameModal {
         WidgetId::new(self.base_id)
     }
 
-    /// Opens the modal on `name` (the full stored name, cut to the length limit) and focuses
+    /// Opens the modal on the complete stored `name` and focuses
     /// the field. Focus held by `inter` is remembered and restored when the modal closes;
     /// opening an open modal, or one whose focus has not been synced away yet, keeps the
     /// earlier memory.
@@ -133,7 +131,7 @@ impl RenameModal {
         if !self.is_open() && !stale {
             self.return_focus = inter.focused;
         }
-        self.applied = name.chars().take(MAX_LEN).collect();
+        self.applied = name.to_owned();
         self.draft.clone_from(&self.applied);
         self.status = ModalStatus::Open;
         self.focus = Some(self.id(TEXT));
@@ -259,14 +257,18 @@ impl RenameModal {
         let mut canvas = Canvas::new(grid, rect);
 
         let fill = "─".repeat(inner - TITLE.chars().count() - 1);
-        canvas.text(0, 0, &format!("╭─{TITLE}{fill}╮"), style, surface);
+        let title_end = canvas.contour(0, 0, "╭─", style, surface);
+        let title_end = canvas.text(title_end, 0, TITLE, style, surface);
+        canvas.contour(title_end, 0, &format!("{fill}╮"), style, surface);
 
-        canvas.text(0, FIELD_ROW, "│", style, surface);
+        canvas.contour(0, FIELD_ROW, "│", style, surface);
         let shown = field_window(&self.draft, self.on_text());
-        canvas.text(1, FIELD_ROW, &format!("[{shown}]"), style, field);
-        canvas.text(SIZE.0 - 1, FIELD_ROW, "│", style, surface);
+        canvas.contour(1, FIELD_ROW, "[", style, field);
+        let end = canvas.text(2, FIELD_ROW, &shown, style, field);
+        canvas.contour(end, FIELD_ROW, "]", style, field);
+        canvas.contour(SIZE.0 - 1, FIELD_ROW, "│", style, surface);
 
-        canvas.text(
+        canvas.contour(
             0,
             SEPARATOR_ROW,
             &format!("│{}│", "─".repeat(inner)),
@@ -274,7 +276,7 @@ impl RenameModal {
             surface,
         );
 
-        canvas.text(0, BUTTON_ROW, "│", style, surface);
+        canvas.contour(0, BUTTON_ROW, "│", style, surface);
         canvas.text(1, BUTTON_ROW, "     OK     ", style, Some(ok));
         let border = SharedBorder {
             axis: BorderAxis::Vertical,
@@ -283,9 +285,9 @@ impl RenameModal {
         };
         canvas.put(13, BUTTON_ROW, shared('│', style, border));
         canvas.text(14, BUTTON_ROW, "   Cancel   ", style, Some(cancel));
-        canvas.text(SIZE.0 - 1, BUTTON_ROW, "│", style, surface);
+        canvas.contour(SIZE.0 - 1, BUTTON_ROW, "│", style, surface);
 
-        canvas.text(
+        canvas.contour(
             0,
             SIZE.1 - 1,
             &format!("╰{}╯", "─".repeat(inner)),
@@ -304,11 +306,8 @@ impl RenameModal {
         self.focus.is_some_and(|id| self.activate(id))
     }
 
-    /// Appends `c` to the draft unless it is at the length limit.
+    /// Appends a character; clipping belongs to the field's visible window only.
     fn push(&mut self, c: char) -> bool {
-        if self.draft.chars().count() >= MAX_LEN {
-            return false;
-        }
         self.draft.push(c);
         true
     }
@@ -317,18 +316,18 @@ impl RenameModal {
         self.focus == Some(self.id(TEXT))
     }
 
-    /// Applies the trimmed draft. A name that is empty after trimming is refused: the modal
+    /// Applies the complete draft. A name that is empty after trimming is refused: the modal
     /// stays open.
     fn confirm(&mut self) {
         let name = self.draft.trim();
         if name.is_empty() {
             return;
         }
-        self.applied = name.to_owned();
+        self.applied.clone_from(&self.draft);
         self.status = ModalStatus::Confirmed;
     }
 
-    fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         self.draft.clone_from(&self.applied);
         self.status = ModalStatus::Cancelled;
     }
@@ -513,7 +512,7 @@ mod tests {
         m.activate(m.id(TEXT));
         typed(&mut m, " b ");
         m.key(ModalKey::Enter);
-        assert_eq!((m.status(), m.text()), (ModalStatus::Confirmed, "b"));
+        assert_eq!((m.status(), m.text()), (ModalStatus::Confirmed, "   b "));
     }
 
     #[test]
@@ -532,10 +531,15 @@ mod tests {
     }
 
     #[test]
-    fn length_is_bounded_and_reopening_keeps_the_focus_memory() {
-        let (mut m, mut inter) = open_modal(&"x".repeat(200));
-        assert_eq!(m.draft().chars().count(), MAX_LEN);
-        assert!(!m.key(ModalKey::Char('y')));
+    fn long_names_round_trip_and_reopening_keeps_the_focus_memory() {
+        let name = format!(" {} ", "x".repeat(200));
+        let (mut m, mut inter) = open_modal(&name);
+        assert_eq!(m.draft(), name);
+        assert!(m.key(ModalKey::Enter));
+        assert_eq!(m.text(), name);
+        m.open(&mut inter, &name);
+        assert!(m.key(ModalKey::Char('y')));
+        assert_eq!(m.draft(), format!("{name}y"));
         m.open(&mut inter, "again");
         m.key(ModalKey::Escape);
         m.sync_focus(&mut inter);
@@ -575,6 +579,56 @@ mod tests {
             m.sync_overlay(&mut stack, b);
             let mut g = CellGrid::new(w.max(1), h.max(1)).unwrap();
             m.draw(&mut g, &ctx, &stack, b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{InkRole, InteractionState, WidgetStyles};
+    #[test]
+    fn title_edges_fields_and_hover_boundaries_have_separate_ink() {
+        let mut modal = RenameModal::new(2000);
+        let mut inter = InteractionState::default();
+        modal.open(&mut inter, "label with │ [+] ☰");
+        let styles = WidgetStyles::default();
+        let frame = GridRect::new(1, 1, SIZE.0, SIZE.1);
+        let mut grid = CellGrid::new(SIZE.0 + 2, SIZE.1 + 2).unwrap();
+        modal.draw_art(
+            &mut grid,
+            &WidgetContext {
+                styles: &styles,
+                interaction: &inter,
+            },
+            frame,
+        );
+        for dx in 0..SIZE.0 {
+            let c = grid.get(1 + dx, 1).unwrap();
+            assert_eq!(
+                c.ink,
+                if (2..2 + TITLE.len() as u32).contains(&dx) {
+                    InkRole::Text
+                } else {
+                    InkRole::Contour
+                }
+            );
+            assert_eq!(c.widget_id, Some(modal.surface()));
+        }
+        assert_eq!(grid.get(0, 1).unwrap(), &crate::Cell::default());
+        let mut cropped = CellGrid::new(8, SIZE.1 + 2).unwrap();
+        modal.draw_art(
+            &mut cropped,
+            &WidgetContext {
+                styles: &styles,
+                interaction: &inter,
+            },
+            frame,
+        );
+        for y in 0..cropped.rows() {
+            for x in 0..cropped.cols() {
+                assert_eq!(cropped.get(x, y), grid.get(x, y));
+            }
         }
     }
 }

@@ -10,7 +10,7 @@
 //! renderer, or geometric-kernel implementation. The application adapts command values to the
 //! UI and asks `newell-kernel` to build the preview/committed shape.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
@@ -85,22 +85,25 @@ impl ParameterValue {
 /// One real document feature.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Feature {
-    BaseSolid { name: String, entity: EntityId },
+    Base {
+        name: String,
+        outputs: Vec<EntityId>,
+    },
     Extrude(ExtrudeFeature),
 }
 impl Feature {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::BaseSolid { name, .. } => name,
+            Self::Base { name, .. } => name,
             Self::Extrude(feature) => &feature.name,
         }
     }
     #[must_use]
-    pub const fn entity(&self) -> EntityId {
+    pub fn outputs(&self) -> &[EntityId] {
         match self {
-            Self::BaseSolid { entity, .. } => *entity,
-            Self::Extrude(feature) => feature.entity,
+            Self::Base { outputs, .. } => outputs,
+            Self::Extrude(feature) => &feature.outputs,
         }
     }
 }
@@ -165,17 +168,106 @@ impl Default for ExtrudeSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeFeature {
     pub name: String,
-    pub entity: EntityId,
+    pub outputs: Vec<EntityId>,
     pub spec: ExtrudeSpec,
 }
 
 /// Persisted parametric document.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
     features: Vec<(FeatureId, Feature)>,
     parameters: BTreeMap<String, Length>,
     next_feature: u64,
     next_entity: u64,
+    next_folder: u64,
+    entities: BTreeMap<EntityId, Entity>,
+    folders: BTreeMap<FolderId, FeatureFolder>,
+    layout: Vec<HistoryLayoutRow>,
+}
+
+/// Stable identity of a history folder; independent of names and operation ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FolderId(u64);
+impl FolderId {
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructionKind {
+    Plane,
+    Axis,
+    Curve,
+    Point,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityKind {
+    Body,
+    Surface,
+    Construction(ConstructionKind),
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entity {
+    id: EntityId,
+    name: String,
+    kind: EntityKind,
+    visible: bool,
+}
+impl Entity {
+    #[must_use]
+    pub const fn id(&self) -> EntityId {
+        self.id
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    #[must_use]
+    pub const fn kind(&self) -> EntityKind {
+        self.kind
+    }
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEntity {
+    pub name: String,
+    pub kind: EntityKind,
+    pub visible: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HistoryNodeId {
+    Operation(FeatureId),
+    Folder(FolderId),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryLayoutRow {
+    pub node: HistoryNodeId,
+    pub depth: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureFolder {
+    id: FolderId,
+    name: String,
+}
+impl FeatureFolder {
+    #[must_use]
+    pub const fn id(&self) -> FolderId {
+        self.id
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtrudeReference {
+    Profile,
+    MergeScope { index: usize },
 }
 impl Document {
     #[must_use]
@@ -197,31 +289,278 @@ impl Document {
     pub fn set_parameter(&mut self, name: impl Into<String>, value: Length) {
         self.parameters.insert(name.into(), value);
     }
-    pub fn add_base_solid(&mut self, name: impl Into<String>) -> FeatureId {
-        let entity = self.allocate_entity();
-        self.push(Feature::BaseSolid {
-            name: name.into(),
-            entity,
-        })
+    #[must_use]
+    pub fn entity(&self, id: EntityId) -> Option<&Entity> {
+        self.entities.get(&id)
+    }
+    #[must_use]
+    pub fn folder(&self, id: FolderId) -> Option<&FeatureFolder> {
+        self.folders.get(&id)
+    }
+    #[must_use]
+    pub fn history_layout(&self) -> &[HistoryLayoutRow] {
+        &self.layout
+    }
+
+    pub fn add_base_solid(&mut self, name: impl Into<String>) -> Result<FeatureId, ModelError> {
+        let name = name.into();
+        self.add_base_feature(
+            name.clone(),
+            vec![NewEntity {
+                name,
+                kind: EntityKind::Body,
+                visible: true,
+            }],
+        )
+    }
+    pub fn add_base_feature(
+        &mut self,
+        name: String,
+        outputs: Vec<NewEntity>,
+    ) -> Result<FeatureId, ModelError> {
+        valid_name(&name)?;
+        for output in &outputs {
+            valid_name(&output.name)?;
+        }
+        self.capacity(outputs.len())?;
+        let outputs = self.insert_outputs(outputs);
+        let id = self.insert_feature(self.features.len(), Feature::Base { name, outputs });
+        self.layout.push(HistoryLayoutRow {
+            node: HistoryNodeId::Operation(id),
+            depth: 0,
+        });
+        Ok(id)
+    }
+    pub fn create_folder(&mut self, name: String) -> Result<FolderId, ModelError> {
+        valid_name(&name)?;
+        let next = self
+            .next_folder
+            .checked_add(1)
+            .ok_or(ModelError::IdentityExhausted)?;
+        let id = FolderId(self.next_folder);
+        self.folders.insert(id, FeatureFolder { id, name });
+        self.layout.push(HistoryLayoutRow {
+            node: HistoryNodeId::Folder(id),
+            depth: 0,
+        });
+        self.next_folder = next;
+        Ok(id)
+    }
+    pub fn set_history_layout(&mut self, rows: Vec<HistoryLayoutRow>) -> Result<bool, ModelError> {
+        let mut seen = BTreeSet::new();
+        let mut operations = Vec::new();
+        let mut previous: Option<HistoryLayoutRow> = None;
+        for row in &rows {
+            if !seen.insert(row.node) || previous.is_none() && row.depth != 0 {
+                return Err(ModelError::InvalidHistoryLayout);
+            }
+            if let Some(prev) = previous
+                && row.depth > prev.depth
+                && (row.depth.checked_sub(prev.depth) != Some(1)
+                    || !matches!(prev.node, HistoryNodeId::Folder(_)))
+            {
+                return Err(ModelError::InvalidHistoryLayout);
+            }
+            match row.node {
+                HistoryNodeId::Operation(id) if self.feature(id).is_some() => operations.push(id),
+                HistoryNodeId::Folder(id) if self.folder(id).is_some() => {}
+                _ => return Err(ModelError::InvalidHistoryLayout),
+            }
+            previous = Some(*row);
+        }
+        if seen.len() != self.features.len() + self.folders.len()
+            || !operations
+                .iter()
+                .copied()
+                .eq(self.features.iter().map(|(id, _)| *id))
+        {
+            return Err(ModelError::InvalidHistoryLayout);
+        }
+        if rows == self.layout {
+            return Ok(false);
+        }
+        self.layout = rows;
+        Ok(true)
+    }
+    pub fn rename_feature(&mut self, id: FeatureId, name: String) -> Result<bool, ModelError> {
+        let feature = self
+            .features
+            .iter_mut()
+            .find_map(|(current, value)| (*current == id).then_some(value))
+            .ok_or(ModelError::UnknownFeature(id))?;
+        let old = match feature {
+            Feature::Base { name, .. } => name,
+            Feature::Extrude(value) => &mut value.name,
+        };
+        rename(old, name)
+    }
+    pub fn rename_folder(&mut self, id: FolderId, name: String) -> Result<bool, ModelError> {
+        rename(
+            &mut self
+                .folders
+                .get_mut(&id)
+                .ok_or(ModelError::UnknownFolder(id))?
+                .name,
+            name,
+        )
+    }
+    pub fn rename_entity(&mut self, id: EntityId, name: String) -> Result<bool, ModelError> {
+        rename(
+            &mut self
+                .entities
+                .get_mut(&id)
+                .ok_or(ModelError::UnknownEntity(id))?
+                .name,
+            name,
+        )
+    }
+    pub fn set_entity_visibility(
+        &mut self,
+        id: EntityId,
+        visible: bool,
+    ) -> Result<bool, ModelError> {
+        let entity = self
+            .entities
+            .get_mut(&id)
+            .ok_or(ModelError::UnknownEntity(id))?;
+        let changed = entity.visible != visible;
+        entity.visible = visible;
+        Ok(changed)
     }
     pub fn commit_extrude(&mut self, spec: ExtrudeSpec) -> Result<FeatureId, ModelError> {
-        validate_extrude(&spec, &self.parameters)?;
-        let entity = self.allocate_entity();
-        Ok(self.push(Feature::Extrude(ExtrudeFeature {
+        self.commit_extrude_before(spec, None)
+    }
+    fn insertion_index(&self, before: Option<FeatureId>) -> Result<usize, ModelError> {
+        before.map_or(Ok(self.features.len()), |id| {
+            self.features
+                .iter()
+                .position(|(current, _)| *current == id)
+                .ok_or(ModelError::UnknownFeature(id))
+        })
+    }
+    fn capacity(&self, outputs: usize) -> Result<(), ModelError> {
+        self.next_feature
+            .checked_add(1)
+            .ok_or(ModelError::IdentityExhausted)?;
+        self.next_entity
+            .checked_add(u64::try_from(outputs).map_err(|_| ModelError::IdentityExhausted)?)
+            .ok_or(ModelError::IdentityExhausted)?;
+        Ok(())
+    }
+    pub fn validate_extrude_insertion(
+        &self,
+        spec: &ExtrudeSpec,
+        before: Option<FeatureId>,
+    ) -> Result<(), ModelError> {
+        let insertion_index = self.insertion_index(before)?;
+        let references = spec
+            .profile
+            .map(|id| (id, ExtrudeReference::Profile))
+            .into_iter()
+            .chain(
+                spec.merge_scope
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| (*id, ExtrudeReference::MergeScope { index })),
+            );
+        for (entity, reference) in references {
+            if !self.entities.contains_key(&entity) {
+                return Err(ModelError::UnknownReferencedEntity { entity, reference });
+            }
+            let mut producers =
+                self.features
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(index, (id, feature))| {
+                        feature
+                            .outputs()
+                            .iter()
+                            .filter(move |output| **output == entity)
+                            .map(move |_| (index, *id))
+                    });
+            let Some((index, producer)) = producers.next() else {
+                return Err(ModelError::InvalidEntityProducer { entity });
+            };
+            if producers.next().is_some() {
+                return Err(ModelError::InvalidEntityProducer { entity });
+            }
+            if index >= insertion_index {
+                return Err(ModelError::ReferenceNotBeforeInsertion {
+                    entity,
+                    producer,
+                    reference,
+                    insertion_index,
+                });
+            }
+        }
+        validate_extrude(spec, &self.parameters)?;
+        self.capacity(1)
+    }
+    pub fn commit_extrude_before(
+        &mut self,
+        spec: ExtrudeSpec,
+        before: Option<FeatureId>,
+    ) -> Result<FeatureId, ModelError> {
+        self.validate_extrude_insertion(&spec, before)?;
+        let index = self.insertion_index(before)?;
+        let layout_index = before
+            .and_then(|id| {
+                self.layout
+                    .iter()
+                    .position(|row| row.node == HistoryNodeId::Operation(id))
+            })
+            .unwrap_or(self.layout.len());
+        let depth = self.layout.get(layout_index).map_or(0, |row| row.depth);
+        let kind = match spec.geometry {
+            ExtrudeGeometry::Solid => EntityKind::Body,
+            ExtrudeGeometry::Surface => EntityKind::Surface,
+        };
+        let outputs = self.insert_outputs(vec![NewEntity {
             name: "Extrude".to_owned(),
-            entity,
-            spec,
-        })))
+            kind,
+            visible: true,
+        }]);
+        let id = self.insert_feature(
+            index,
+            Feature::Extrude(ExtrudeFeature {
+                name: "Extrude".to_owned(),
+                outputs,
+                spec,
+            }),
+        );
+        self.layout.insert(
+            layout_index,
+            HistoryLayoutRow {
+                node: HistoryNodeId::Operation(id),
+                depth,
+            },
+        );
+        Ok(id)
     }
-    fn allocate_entity(&mut self) -> EntityId {
-        let id = EntityId(self.next_entity);
-        self.next_entity = self.next_entity.saturating_add(1);
-        id
+    // Capacity and names have been validated before either infallible mutation helper.
+    fn insert_outputs(&mut self, outputs: Vec<NewEntity>) -> Vec<EntityId> {
+        outputs
+            .into_iter()
+            .map(|output| {
+                let id = EntityId(self.next_entity);
+                self.next_entity += 1;
+                self.entities.insert(
+                    id,
+                    Entity {
+                        id,
+                        name: output.name,
+                        kind: output.kind,
+                        visible: output.visible,
+                    },
+                );
+                id
+            })
+            .collect()
     }
-    fn push(&mut self, feature: Feature) -> FeatureId {
+    fn insert_feature(&mut self, index: usize, feature: Feature) -> FeatureId {
         let id = FeatureId(self.next_feature);
-        self.next_feature = self.next_feature.saturating_add(1);
-        self.features.push((id, feature));
+        self.next_feature += 1;
+        self.features.insert(index, (id, feature));
         id
     }
 }
@@ -297,10 +636,17 @@ impl CommandController {
         Ok(())
     }
     pub fn confirm(&mut self, document: &mut Document) -> Result<Option<FeatureId>, ModelError> {
+        self.confirm_before(document, None)
+    }
+    pub fn confirm_before(
+        &mut self,
+        document: &mut Document,
+        before: Option<FeatureId>,
+    ) -> Result<Option<FeatureId>, ModelError> {
         let CommandState::Extrude { draft } = &self.state else {
             return Ok(None);
         };
-        let feature = document.commit_extrude(draft.clone())?;
+        let feature = document.commit_extrude_before(draft.clone(), before)?;
         self.cancel();
         Ok(Some(feature))
     }
@@ -312,6 +658,34 @@ impl CommandController {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelError {
+    #[error("document identity capacity exhausted")]
+    IdentityExhausted,
+    #[error("unknown feature {0:?}")]
+    UnknownFeature(FeatureId),
+    #[error("unknown folder {0:?}")]
+    UnknownFolder(FolderId),
+    #[error("unknown entity {0:?}")]
+    UnknownEntity(EntityId),
+    #[error("name must not be empty")]
+    EmptyName,
+    #[error("invalid history layout")]
+    InvalidHistoryLayout,
+    #[error("unknown entity {entity:?} referenced by {reference:?}")]
+    UnknownReferencedEntity {
+        entity: EntityId,
+        reference: ExtrudeReference,
+    },
+    #[error("entity {entity:?} has no unique producer")]
+    InvalidEntityProducer { entity: EntityId },
+    #[error(
+        "entity {entity:?} from {producer:?} referenced by {reference:?} is not before insertion {insertion_index}"
+    )]
+    ReferenceNotBeforeInsertion {
+        entity: EntityId,
+        producer: FeatureId,
+        reference: ExtrudeReference,
+        insertion_index: usize,
+    },
     #[error("a length must be finite")]
     NonFiniteLength,
     #[error("invalid length expression: {0}")]
@@ -322,6 +696,22 @@ pub enum ModelError {
     MissingTarget(&'static str),
     #[error("Add or Remove requires a merge target when Merge with all is disabled")]
     MissingMergeTarget,
+}
+
+fn valid_name(name: &str) -> Result<(), ModelError> {
+    if name.trim().is_empty() {
+        Err(ModelError::EmptyName)
+    } else {
+        Ok(())
+    }
+}
+fn rename(old: &mut String, name: String) -> Result<bool, ModelError> {
+    valid_name(&name)?;
+    if *old == name {
+        return Ok(false);
+    }
+    *old = name;
+    Ok(true)
 }
 
 fn validate_extrude(
@@ -381,6 +771,224 @@ fn evaluate_length(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn draft() -> ExtrudeSpec {
+        ExtrudeSpec {
+            depth: ParameterValue::Literal("10 mm".to_owned()),
+            ..ExtrudeSpec::default()
+        }
+    }
+    #[test]
+    fn insertion_preflights_all_explicit_references_atomically() {
+        let mut document = Document::default();
+        let first = document.add_base_solid("first").unwrap();
+        let second = document.add_base_solid("second").unwrap();
+        let earlier = document.feature(first).unwrap().outputs()[0];
+        let later = document.feature(second).unwrap().outputs()[0];
+        let unknown = EntityId::from_raw(999);
+        let unchanged = document.clone();
+        assert_eq!(
+            document.commit_extrude_before(
+                ExtrudeSpec {
+                    profile: Some(unknown),
+                    ..draft()
+                },
+                Some(FeatureId(999))
+            ),
+            Err(ModelError::UnknownFeature(FeatureId(999)))
+        );
+        assert_eq!(
+            document, unchanged,
+            "boundary validation precedes even missing references"
+        );
+        assert_eq!(
+            document.commit_extrude_before(
+                ExtrudeSpec {
+                    merge_scope: vec![later],
+                    merge_with_all: true,
+                    ..draft()
+                },
+                Some(first)
+            ),
+            Err(ModelError::ReferenceNotBeforeInsertion {
+                entity: later,
+                producer: second,
+                reference: ExtrudeReference::MergeScope { index: 0 },
+                insertion_index: 0
+            })
+        );
+        assert_eq!(
+            document, unchanged,
+            "a strictly later producer is a forward reference too"
+        );
+        let cases = [
+            (
+                Some(unknown),
+                vec![later],
+                ModelError::UnknownReferencedEntity {
+                    entity: unknown,
+                    reference: ExtrudeReference::Profile,
+                },
+            ),
+            (
+                Some(later),
+                vec![],
+                ModelError::ReferenceNotBeforeInsertion {
+                    entity: later,
+                    producer: second,
+                    reference: ExtrudeReference::Profile,
+                    insertion_index: 1,
+                },
+            ),
+            (
+                Some(earlier),
+                vec![earlier, later],
+                ModelError::ReferenceNotBeforeInsertion {
+                    entity: later,
+                    producer: second,
+                    reference: ExtrudeReference::MergeScope { index: 1 },
+                    insertion_index: 1,
+                },
+            ),
+            (
+                None,
+                vec![earlier, unknown],
+                ModelError::UnknownReferencedEntity {
+                    entity: unknown,
+                    reference: ExtrudeReference::MergeScope { index: 1 },
+                },
+            ),
+        ];
+        for (profile, merge_scope, error) in cases {
+            let spec = ExtrudeSpec {
+                profile,
+                merge_scope,
+                ..draft()
+            };
+            let mut command = CommandController::default();
+            command.edit_extrude(spec.clone(), &document).unwrap();
+            let original = document.clone();
+            let state = command.state().clone();
+            let preview = command.preview().cloned();
+            assert_eq!(
+                document.validate_extrude_insertion(&spec, Some(second)),
+                Err(error)
+            );
+            assert!(command.confirm_before(&mut document, Some(second)).is_err());
+            assert_eq!(document, original);
+            assert_eq!(command.state(), &state);
+            assert_eq!(command.preview(), preview.as_ref());
+        }
+        let id = document
+            .commit_extrude_before(
+                ExtrudeSpec {
+                    profile: Some(earlier),
+                    merge_scope: vec![earlier, earlier],
+                    ..draft()
+                },
+                Some(second),
+            )
+            .unwrap();
+        assert_eq!(id.get(), 2);
+        assert_eq!(
+            document
+                .features()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![first, id, second]
+        );
+        assert_eq!(document.feature(id).unwrap().outputs()[0].get(), 2);
+    }
+    #[test]
+    fn folders_preserve_history_and_insertion_parent() {
+        let mut document = Document::default();
+        let first = document
+            .add_base_feature("empty operation".into(), vec![])
+            .unwrap();
+        let second = document
+            .add_base_feature(
+                "multiple".into(),
+                vec![
+                    NewEntity {
+                        name: "surface".into(),
+                        kind: EntityKind::Surface,
+                        visible: false,
+                    },
+                    NewEntity {
+                        name: "plane".into(),
+                        kind: EntityKind::Construction(ConstructionKind::Plane),
+                        visible: true,
+                    },
+                ],
+            )
+            .unwrap();
+        let a = document.create_folder("A".into()).unwrap();
+        let b = document.create_folder("B".into()).unwrap();
+        let rows = vec![
+            HistoryLayoutRow {
+                node: HistoryNodeId::Folder(a),
+                depth: 0,
+            },
+            HistoryLayoutRow {
+                node: HistoryNodeId::Operation(first),
+                depth: 1,
+            },
+            HistoryLayoutRow {
+                node: HistoryNodeId::Folder(b),
+                depth: 0,
+            },
+            HistoryLayoutRow {
+                node: HistoryNodeId::Operation(second),
+                depth: 1,
+            },
+        ];
+        assert!(document.set_history_layout(rows.clone()).unwrap());
+        assert!(!document.set_history_layout(rows).unwrap());
+        let original = document.clone();
+        assert!(document.set_history_layout(vec![]).is_err());
+        assert_eq!(document, original);
+        let inserted = document
+            .commit_extrude_before(draft(), Some(second))
+            .unwrap();
+        assert_eq!(
+            document.history_layout()[3],
+            HistoryLayoutRow {
+                node: HistoryNodeId::Operation(inserted),
+                depth: 1
+            }
+        );
+        assert_eq!(document.history_layout()[2].node, HistoryNodeId::Folder(b));
+        assert_eq!(document.feature(second).unwrap().outputs().len(), 2);
+    }
+    #[test]
+    fn allocation_exhaustion_and_names_are_atomic() {
+        let mut document = Document {
+            next_entity: u64::MAX,
+            ..Document::default()
+        };
+        let original = document.clone();
+        assert_eq!(
+            document.add_base_solid("body"),
+            Err(ModelError::IdentityExhausted)
+        );
+        assert_eq!(
+            document.commit_extrude(draft()),
+            Err(ModelError::IdentityExhausted)
+        );
+        assert_eq!(document, original);
+        document.next_entity = 0;
+        let id = document.add_base_solid("body").unwrap();
+        let name = format!(" {} ", "long".repeat(40));
+        assert!(document.rename_feature(id, name.clone()).unwrap());
+        assert_eq!(document.feature(id).unwrap().name(), name);
+        assert!(!document.rename_feature(id, name).unwrap());
+        assert_eq!(
+            document.rename_feature(id, "  ".into()),
+            Err(ModelError::EmptyName)
+        );
+        let entity = document.feature(id).unwrap().outputs()[0];
+        assert_eq!(document.entity(entity).unwrap().name(), "body");
+    }
     #[test]
     fn expression_parameter_drives_a_committed_feature() {
         let mut document = Document::default();

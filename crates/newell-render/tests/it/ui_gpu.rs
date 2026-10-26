@@ -8,7 +8,7 @@
 // Test helpers call `unwrap` for clear failure messages. The `clippy.toml` allowance only covers `#[test]` bodies.
 #![allow(clippy::unwrap_used)]
 
-use newell_render::ui::{Theme, UiOverlay};
+use newell_render::ui::{Theme, UiOverlay, UiPalette};
 use newell_render::{GlyphAtlas, load_font};
 use newell_ui::{Cell, CellContent, CellGrid, DEFAULT_K, GridMetrics, StyleId, demo_grid};
 
@@ -80,6 +80,20 @@ fn render(grid: &CellGrid, themes: &[Theme]) -> Vec<Frame> {
 /// As [`render`], into a `surface` of `(width, height)` pixels instead of the grid's own size
 /// (a smaller one crops the grid).
 fn render_in(grid: &CellGrid, themes: &[Theme], surface: Option<(u32, u32)>) -> Vec<Frame> {
+    let palettes: Vec<_> = themes
+        .iter()
+        .map(|&theme| UiPalette::new(theme, false))
+        .collect();
+    render_palettes(&[grid], &palettes, surface, wgpu::TextureFormat::Rgba8Unorm)
+}
+
+fn render_palettes(
+    grids: &[&CellGrid],
+    palettes: &[UiPalette],
+    surface: Option<(u32, u32)>,
+    format: wgpu::TextureFormat,
+) -> Vec<Frame> {
+    let grid = grids[0];
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter =
         block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
@@ -89,17 +103,22 @@ fn render_in(grid: &CellGrid, themes: &[Theme], surface: Option<(u32, u32)>) -> 
     let font = load_font(std::fs::read(FONT_PATH).unwrap()).unwrap();
     let (cell_w, cell_h) = cell_size();
     let (width, height) = surface.unwrap_or((grid.cols() * cell_w, grid.rows() * cell_h));
-    let format = wgpu::TextureFormat::Rgba8Unorm;
 
     let atlas = GlyphAtlas::build(&font, metrics()).unwrap();
     let mut overlay = UiOverlay::new(&device, &queue, format, atlas);
     overlay.set_grid(&device, &queue, grid);
     overlay.set_viewport(&queue, width, height);
 
-    themes
+    palettes
         .iter()
-        .map(|&theme| {
-            overlay.set_theme(&queue, theme);
+        .enumerate()
+        .map(|(index, &palette)| {
+            if grids.len() > 1 {
+                overlay.set_grid(&device, &queue, grids[index]);
+            }
+            overlay.set_palette(&queue, palette.with_theme(palette.theme().inverted()));
+            overlay.set_theme(&queue, palette.theme());
+            assert_eq!(overlay.atlas_count(), 1);
             let target = device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
@@ -126,7 +145,14 @@ fn render_in(grid: &CellGrid, themes: &[Theme], surface: Option<(u32, u32)>) -> 
 
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            let [r, g, b, a] = background(theme).map(|c| f64::from(c) / 255.0);
+            let [r, g, b] = palette.background().map(|v| {
+                f64::from(if format.is_srgb() {
+                    srgb_to_linear(v)
+                } else {
+                    v
+                })
+            });
+            let a = 1.0;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -277,6 +303,7 @@ fn style_grid() -> CellGrid {
         (7, Some('Y'), u16::MAX),
     ] {
         *grid.get_mut(col, 0).unwrap() = Cell {
+            ink: newell_ui::InkRole::Text,
             content: ch.map_or(CellContent::Empty, CellContent::Glyph),
             style: StyleId::new(style),
             widget_id: None,
@@ -376,8 +403,8 @@ fn exact_colours_in_both_themes() {
         assert_eq!(inside(cell_w / 2, cell_h / 2), fg);
         assert!(cell_pixels(frame, 1).iter().all(|p| *p == bg));
     }
-    assert_eq!(background(Theme::default()), [255; 4]);
-    assert_eq!(foreground(Theme::default()), [0, 0, 0, 255]);
+    assert_eq!(background(Theme::default()), [0, 0, 0, 255]);
+    assert_eq!(foreground(Theme::default()), [255; 4]);
 }
 
 /// Manual: `cargo test -p newell-render --test it cropped -- --ignored`.
@@ -465,6 +492,7 @@ fn overlay_switches_cell_size_at_run_time_and_reuses_atlases() {
         wgpu::TextureFormat::Rgba8Unorm,
         GlyphAtlas::build(&font, m5).unwrap(),
     );
+    overlay.set_palette(&queue, UiPalette::new(Theme::Dark, true));
     overlay.set_grid(&device, &queue, &grid);
     overlay.set_viewport(&queue, grid.cols() * 20, grid.rows() * 45);
     assert_eq!(overlay.cell_size(), (20, 45));
@@ -490,5 +518,187 @@ fn overlay_switches_cell_size_at_run_time_and_reuses_atlases() {
         assert_eq!(overlay.atlas_count(), 2);
         assert_eq!(overlay.cell_size(), size);
         assert_eq!(draw_calls(&device, &overlay, 64, 64), 1);
+    }
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.0031308 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn assert_palette_frame(
+    grid: &CellGrid,
+    palette: UiPalette,
+    format: wgpu::TextureFormat,
+    frame: &Frame,
+) {
+    let font = load_font(std::fs::read(FONT_PATH).unwrap()).unwrap();
+    let atlas = GlyphAtlas::build(&font, metrics()).unwrap();
+    let (cw, ch) = cell_size();
+    let srgb = format.is_srgb();
+    for row in 0..grid.rows() {
+        for col in 0..grid.cols() {
+            let cell = grid.get(col, row).unwrap();
+            let rect = match cell.content {
+                CellContent::Glyph(c) => atlas.get(c).or_else(|| atlas.get('?')).map(|g| g.rect),
+                _ => None,
+            };
+            let bg = palette.background();
+            let fg = palette.foreground(cell.ink);
+            for y in 0..ch {
+                for x in 0..cw {
+                    let coverage = rect.map_or(0, |r| {
+                        atlas.coverage()[((r.y + y) * atlas.width() + r.x + x) as usize]
+                    }) as f32
+                        / 255.0;
+                    let actual = pixel(&frame.2, frame.0, col * cw + x, row * ch + y);
+                    for channel in 0..3 {
+                        let mut expected = if srgb {
+                            srgb_to_linear(bg[channel])
+                                + (srgb_to_linear(fg[channel]) - srgb_to_linear(bg[channel]))
+                                    * coverage
+                        } else {
+                            bg[channel] + (fg[channel] - bg[channel]) * coverage
+                        };
+                        if srgb {
+                            expected = linear_to_srgb(expected);
+                        }
+                        assert!(
+                            (actual[channel] as f32 - expected * 255.0).abs() <= 2.0,
+                            "palette {palette:?} {format:?} cell {col},{row} pixel {x},{y} channel {channel}: {} vs {}",
+                            actual[channel],
+                            expected * 255.0
+                        );
+                    }
+                    assert_eq!(actual[3], 255);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn color_four_palettes_roles_titles_controls_and_background_on_both_target_formats() {
+    use newell_ui::InkRole::{Action, Contour, Text};
+    let mut grid = CellGrid::new(18, 3).unwrap();
+    // Identical full blocks prove role selection, while mixed glyphs exercise coverage.
+    for (x, ink) in [Text, Contour, Action].into_iter().enumerate() {
+        *grid.get_mut(x as u32, 0).unwrap() = Cell {
+            content: CellContent::Glyph('█'),
+            ink,
+            ..Cell::default()
+        };
+    }
+    for (x, c) in "╭─Title──╮ │├╰╴".chars().enumerate() {
+        let ink = if (2..7).contains(&x) || x >= 10 {
+            Text
+        } else {
+            Contour
+        };
+        *grid.get_mut(x as u32, 1).unwrap() = Cell {
+            content: if c == ' ' {
+                CellContent::Empty
+            } else {
+                CellContent::Glyph(c)
+            },
+            ink,
+            ..Cell::default()
+        };
+    }
+    for (x, c) in "Theme [ ◑ Dark  ]".chars().enumerate() {
+        *grid.get_mut(x as u32, 2).unwrap() = Cell {
+            content: if c == ' ' {
+                CellContent::Empty
+            } else {
+                CellContent::Glyph(c)
+            },
+            ink: if [6, 8, 16].contains(&x) {
+                Action
+            } else {
+                Text
+            },
+            ..Cell::default()
+        };
+    }
+    let palettes = [
+        UiPalette::new(Theme::Dark, false),
+        UiPalette::new(Theme::Light, false),
+        UiPalette::new(Theme::Dark, true),
+        UiPalette::new(Theme::Light, true),
+    ];
+    for format in [
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    ] {
+        let frames = render_palettes(&[&grid], &palettes, None, format);
+        for (&palette, frame) in palettes.iter().zip(&frames) {
+            assert_eq!(frame.3, 1);
+            assert_palette_frame(&grid, palette, format, frame);
+            let (cw, ch) = cell_size();
+            for (x, ink) in [Text, Contour, Action].into_iter().enumerate() {
+                let got = pixel(&frame.2, frame.0, x as u32 * cw + cw / 2, ch / 2);
+                let want = palette.foreground(ink).map(gray);
+                assert_eq!(&got[..3], &want);
+            }
+        }
+        let empty = CellGrid::new(0, 0).unwrap();
+        assert_eq!(
+            render_palettes(&[&empty], &palettes[..1], Some((8, 8)), format)[0].3,
+            0
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn color_visible_theme_changes_upload_cells_in_both_directions_and_modes() {
+    use newell_ui::{ShellKey, ShellState};
+    for enabled in [false, true] {
+        let mut shell = ShellState::new_application(82, 30);
+        shell.key(ShellKey::Alt('v'));
+        if enabled {
+            for _ in 0..4 {
+                shell.key(ShellKey::Down);
+            }
+            shell.key(ShellKey::Enter);
+            shell.key(ShellKey::Up);
+        } else {
+            for _ in 0..3 {
+                shell.key(ShellKey::Down);
+            }
+        }
+        let mut grids = Vec::new();
+        let mut palettes = Vec::new();
+        for theme in [Theme::Dark, Theme::Light, Theme::Dark] {
+            grids.push(shell.compose().unwrap());
+            palettes.push(UiPalette::new(theme, enabled));
+            shell.key(ShellKey::Enter);
+        }
+        assert_ne!(grids[0], grids[1]);
+        assert_eq!(grids[0], grids[2]);
+        let refs: Vec<_> = grids.iter().collect();
+        for format in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ] {
+            let frames = render_palettes(&refs, &palettes, None, format);
+            for ((grid, palette), frame) in grids.iter().zip(&palettes).zip(&frames) {
+                assert_eq!(frame.3, 1);
+                assert_palette_frame(grid, *palette, format, frame);
+            }
+            assert_ne!(frames[0].2, frames[1].2);
+            assert_eq!(frames[0].2, frames[2].2);
+        }
     }
 }

@@ -24,7 +24,7 @@ const ATLAS_COLUMNS: u32 = 16;
 
 /// Characters of `docs/ui_design/*.txt` outside printable ASCII, plus the text caret `▏` (U+258F).
 const UI_SYMBOLS: &str =
-    "─━│┃┄┆┈┊┌┏┐┓└┗┘┛├┣┤┫┬┳┴┻┼╋═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╩╪╬╭╮╯╰╴╵╶╷╹╻█▏░▒▓■□▲▶▼◀◐◑☰×…";
+    "Øà─━│┃┄┆┈┊┌┏┐┓└┗┘┛├┣┤┫┬┳┴┻┼╋═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╩╪╬╭╮╯╰╴╵╶╷╸╹╺╻█▏░▒▓■□▲▶▼◀◐◑☰×…";
 
 /// The required atlas set: printable ASCII U+0020..=U+007E plus `UI_SYMBOLS`, sorted by code point.
 pub fn canonical_glyphs() -> Vec<char> {

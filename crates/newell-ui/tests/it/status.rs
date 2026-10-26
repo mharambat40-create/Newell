@@ -7,7 +7,9 @@
 
 //! M2.24 complete-shell fidelity against the actual ASCII reference.
 #![allow(clippy::unwrap_used)]
-use newell_ui::{CellContent, CellGrid, GridMetrics, ShellKey, ShellState, UiPoint, hit_test};
+use newell_ui::{
+    CellContent, CellGrid, GridMetrics, ShellKey, ShellState, ThemeChoice, UiPoint, hit_test,
+};
 
 fn rows(g: &CellGrid) -> Vec<String> {
     (0..g.rows())
@@ -42,7 +44,12 @@ fn complete_shell_matches_reference_in_both_themes_and_both_heights() {
         for dark in [false, true] {
             let mut s = ShellState::new(82, height);
             s.set_status(98.0, 65);
-            if dark {
+            let desired_theme = if dark {
+                ThemeChoice::Dark
+            } else {
+                ThemeChoice::Light
+            };
+            if s.theme() != desired_theme {
                 s.key(ShellKey::Alt('v'));
                 let g = s.compose().unwrap();
                 let (col, row) = rows(&g)
@@ -66,6 +73,7 @@ fn complete_shell_matches_reference_in_both_themes_and_both_heights() {
                 ));
                 s.key(ShellKey::Escape);
             }
+            assert_eq!(s.theme(), desired_theme);
             let mut actual = rows(&s.compose().unwrap());
             if height == 30 {
                 let blank = format!("║{}║{}║", " ".repeat(23), " ".repeat(56));

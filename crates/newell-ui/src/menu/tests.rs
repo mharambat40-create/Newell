@@ -30,6 +30,7 @@ const fn item(
     enabled: bool,
 ) -> MenuEntry<'static> {
     MenuEntry::Item(MenuItem {
+        action_offsets: &[],
         action: MenuAction::new(action),
         label,
         mnemonic: tok(mn),
@@ -107,6 +108,7 @@ fn frame(state: &MenuState, inter: &InteractionState) -> (CellGrid, OverlayStack
         for col in 0..40 {
             if let Some(cell) = g.get_mut(col, row) {
                 *cell = Cell {
+                    ink: crate::InkRole::Text,
                     content: CellContent::Glyph('x'),
                     widget_id: Some(WidgetId::new(99)),
                     ..Cell::default()
@@ -592,6 +594,7 @@ fn view_entries(checked: bool, persp: usize) -> [MenuEntry<'static>; 13] {
             action: MenuAction::new(30),
             values: &VALUES,
             current: persp,
+            bounded: false,
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
@@ -599,6 +602,7 @@ fn view_entries(checked: bool, persp: usize) -> [MenuEntry<'static>; 13] {
             action: MenuAction::new(31),
             values: &SHADES,
             current: 0,
+            bounded: false,
             enabled: false,
         }),
         cb(32, "Tree panel", checked, true),
@@ -930,6 +934,7 @@ fn cyclic_with_empty_values_or_bad_current_is_safe() {
             action: MenuAction::new(50),
             values: &[],
             current: 7,
+            bounded: false,
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
@@ -937,6 +942,7 @@ fn cyclic_with_empty_values_or_bad_current_is_safe() {
             action: MenuAction::new(51),
             values: &VALUES,
             current: usize::MAX,
+            bounded: false,
             enabled: true,
         }),
     ];

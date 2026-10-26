@@ -164,7 +164,12 @@ fn measured_fps_updates_only_status_cells_and_idle_has_no_progress_deadline() {
 
 #[test]
 fn a_non_dismissing_formula_modal_blocks_progress_without_dismissing_it() {
-    let mut c = controller();
+    // This modal test needs the reference Action Box; live startup intentionally has none.
+    let mut c = ShellController::with_shell(
+        newell_ui::ShellState::new(82, 30),
+        GridMetrics::new(8, 18).unwrap(),
+    )
+    .unwrap();
     let (col, row) = (0..c.grid().rows())
         .find_map(|row| {
             let line = text(c.grid(), row);

@@ -11,6 +11,12 @@ use thiserror::Error;
 /// Errors produced while constructing validated UI data structures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum UiError {
+    #[error("invalid tree projection")]
+    InvalidTreeProjection,
+    #[error("projection generation exhausted")]
+    ProjectionGenerationExhausted,
+    #[error("interaction identity exhausted")]
+    InteractionIdentityExhausted,
     /// `cols * rows` overflowed, or the cell count does not fit in `usize`.
     #[error("grid cell count overflows for {cols} x {rows}")]
     CellCountOverflow { cols: u32, rows: u32 },

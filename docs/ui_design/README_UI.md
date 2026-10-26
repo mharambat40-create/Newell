@@ -565,6 +565,8 @@ The reference uses:
 `▲` and `▼` indicate scrolling toward the beginning or end.
 
 `┃`, `╻` and `╹` represent positions or portions of the scrollbar thumb.
+Selection-box content lists follow the five-row geometry and half-cell model
+in §21; these rules do not change other scrollbars.
 
 ---
 
@@ -587,16 +589,16 @@ cell's `H = 9k`), so a filled progress cell shows `k` px of background in total
 (`k div 2` px above, the rest below). This is accepted and MUST NOT be
 corrected by stretching, extra rows or a procedural rasteriser. Block elements
 are never stacked vertically in any reference. The shade glyphs `░ ▒ ▓` are the
-font's own patterns at the uniform scale; their coverage blend is part of the
-two-colour rule (`ARCHITECTURE.md` §3.6).
+font's own patterns at the uniform scale; their coverage blend uses the
+current palette's Text ink over its background (`ARCHITECTURE.md` §3.6).
 
 ---
 
 ## 5.10 Interaction state visuals
 
 The only hover visual in Newell is the discrete ASCII hover highlight of
-§5.12 (M2.25, `ARCHITECTURE.md` §3.5). Hover has no colour, brightness, fade,
-animation or shader effect, and it is not a focus, selection or pressed visual.
+§5.12 (M2.25, `ARCHITECTURE.md` §3.5). Hover changes no semantic ink role or palette entry and adds no brightness, fade,
+animation or shader effect; it is not a focus, selection or pressed visual.
 
 Logical focus, selection, pressed, disabled, checked and expanded state exist
 for keyboard navigation, activation and dragging. They are drawn **only** by
@@ -609,16 +611,18 @@ the ASCII structures documented in this directory:
 - `+|` / `-|` for direction (§5.4);
 - the selection-field texts `Select…`, `1 Element`, `N Elements` (§5.5);
 - the text-editing caret `▏` while a field is actively edited (§5.11);
-- the ASCII hover highlight `╞` `╡` `╘` on the single hovered target (§5.12).
+- the ASCII hover highlight `╞` `╡` `╘` on the single hovered target (§5.12);
+- the exact row-local tree hover and heavy selection glyphs (§26.4).
 
 A state with no documented structure has no visual. An implementation MUST NOT
 add a generic foreground/background inversion, a marker such as `>` or `<`, an
 underline, or any third colour or intensity to represent focus, selection or
 pressed state. Focus markers are not invented: a focused control without a
 documented structure has no visual (the keyboard focus target is observable
-only through its effect). The only foreground/background exchange is the global Light/Dark
-theme (`ARCHITECTURE.md` §3.6): Light is `#000000` on `#FFFFFF`, Dark is
-`#FFFFFF` on `#000000`.
+only through its effect). No interaction state introduces a colour, intensity or inversion. `View > Color`
+selects a fixed semantic palette independent of interaction state; Light/Dark
+selects the corresponding background and role colours (`ARCHITECTURE.md` §3.6).
+When Color is unchecked, the exact black/white themes apply.
 
 ---
 
@@ -631,10 +635,11 @@ approved indicator of editing and is specified for M2.23.
 
 - **When.** Drawn only while exactly one field is in edit mode. Not drawn for
   merely focused, selected, hovered (§5.12 changes border glyphs only) or pressed fields.
-- **Colour.** The theme foreground (`#000000` Light, `#FFFFFF` Dark) over the
-  background; no third colour, no inversion, **no blinking** (no animation,
-  `ARCHITECTURE.md` §3.5). The glyph is an ordinary cell in the flat cell
-  buffer; it needs no second draw call and no shader data.
+- **Colour.** The caret uses `Text`: black in unchecked Light, white in unchecked
+  Dark, `#111827` in Light + Color and white in Dark + Color. It has no independent
+  focus/edit colour, inversion or blink (`ARCHITECTURE.md` §§3.5–3.6). It is an
+  ordinary cell in the flat buffer and needs no additional draw call or
+  caret-specific shader data.
 - **Value untouched.** The caret is a composition-time artefact. The edited
   text value (the model/UI state string) never contains `▏`, and copying,
   validating or committing the value never sees it.
@@ -667,9 +672,13 @@ approved indicator of editing and is specified for M2.23.
 Binding rules: `ARCHITECTURE.md` §3.5 (*ASCII Hover Highlight*). Exact examples:
 `Interface_Elements.txt` ("Effet Hover") and `Special_ASCII.txt`. The hover
 highlight replaces a few border glyphs of the one row or button under the
-pointer. Nothing else changes.
+pointer. Nothing else changes. Every replacement inherits the replaced cell's
+semantic ink role (`ARCHITECTURE.md` §3.6), including Contour popup borders,
+Action affordances and Text hierarchy guides. For `╰╴→╘ ` the surviving `╘`
+retains the old `╰` role; the blank retains the old `╴` metadata. Hover adds no
+colour, brightness or shader effect.
 
-**The four transformations.** Each pair is the exact approved text, spaces
+**The four non-tree transformations.** Each pair is the exact approved text, spaces
 included. Every transformation keeps the cell count of the row.
 
 | Kind | Normal | Hovered | Cells changed |
@@ -683,7 +692,7 @@ The Checkbox normal text is the canonical row of `Action_Box_Extrude.txt`
 (right border `│`), also used in `Interface_Elements.txt` ("Effet Hover") and
 `ARCHITECTURE.md` §3.5. The right border becomes `╡` only in the hovered state.
 
-**Context-sensitive junction rule.** The substituted glyph depends on the glyph
+**Context-sensitive junction rule (non-tree controls).** The substituted glyph depends on the glyph
 being replaced and on the side of the hovered target, never on the row's text:
 
 | Slot | Original glyph | Hovered glyph |
@@ -715,7 +724,7 @@ being replaced and on the side of the hovered target, never on the row's text:
   `│      OK      ╞    Cancel    ╡`; the same rule applies to the OK/Cancel row
   of the modals (`Rename`, `Enter Name`).
 
-**Hoverable targets.** Only these four kinds exist:
+**Hoverable targets.** The four original kinds below and tree rows (§26.4) are eligible:
 
 - **Menu**: an enabled item row of an application or CommandBar popup menu
   (§28, §29), including the rows that contain `◀ ▶`, `[ ◐ Light ]` or a
@@ -736,10 +745,10 @@ region from the same row. Resolve this only for hover, using at most the fixed
 region-specific WidgetIds. This applies to every Action Box, including Profile,
 Start type and Magnitude in Loft.
 
-Every other control outside these Action Box rows and buttons (tree rows and
-markers, MenuBar and CommandBar labels, window controls, scroll indicators, the progress
-segment, text fields of modals, labels, spaces, frames) has no hover visual and
-never becomes the hovered target.
+Tree rows add the exact transformations and O(1) part normalization in §26.4–§26.5.
+Every other control outside these documented targets (MenuBar and CommandBar
+labels, window controls, scroll indicators, the progress segment, text fields of
+modals and inert chrome) has no hover visual and never becomes the hovered target.
 
 **One hovered target.** The Controller stores at most one
 `hovered: Option<WidgetId>`. Moving between two regions of the same row (for
@@ -747,7 +756,7 @@ example `+|` to `0.0`) changes the stored id but not the glyphs.
 
 **Eligibility.** Except for the Action Box label/value extension above, a cell
 is hoverable exactly when a left-button press on it,
-now, would route to an enabled, interactive widget of one of the four kinds
+now, would route to an enabled, interactive widget of one of the documented kinds
 (§25.1 precedence, rule 1, and the overlay rules of §27.1), so:
 
 - Disabled controls never hover. The Action Box label/value extension above is
@@ -773,13 +782,14 @@ now, would route to an enabled, interactive widget of one of the four kinds
   (`CursorLeft`) or by the pointer moving onto a cell that is not eligible.
 - After every recomposition (state change, overlay open/close, scroll, panel
   drag, scale or theme change, resize end) the Controller re-checks, with one
-  O(1) lookup, that the cell under the last known pointer position still carries
-  the hovered id; if not, or if the target no longer exists, hover is cleared.
+  O(1) lookup, that the cell under the last known pointer position still resolves to
+  the hovered id (tree parts normalize to their row id in O(1), §26.4); if not, or if the target no longer exists, hover is cleared.
   A recomposition never acquires a new target without a pointer motion.
 - A redraw is requested only when the stored value changes (`None` → `Some`,
   `Some(a)` → `Some(b)`, `Some` → `None`). Motion inside one target requests
   nothing. Hover wakes no timer and adds no periodic redraw.
-- On exit the normal glyphs reappear in the same frame that clears the id: the
+- On exit the current non-hovered glyphs reappear (selected tree glyphs if
+  selected, otherwise normal glyphs) in the same frame that clears the id: the
   highlight exists only at composition time and is never written into persistent
   state, so there is nothing to restore later and no leftover cell.
 
@@ -794,8 +804,9 @@ animation; no change of text, spacing, width, height or layout; no shader or
 atlas change (`╞ ╡ ╘` are already in the required glyph set, §35). The M2.24
 progress animation remains the only animation (`ARCHITECTURE.md` §3.5).
 
-**References unchanged.** The normal-state `.txt` references keep their exact
-characters. A snapshot without a pointer (hover `None`) shows the normal glyphs;
+**Reference states.** Hover alone does not modify normal reference artwork.
+The 2026-10-26 tree amendment updates the endpoint and adds the explicit §26
+reference states. A snapshot without a pointer (hover `None`) shows the normal glyphs;
 hovered snapshots are separate states.
 
 ---
@@ -2063,14 +2074,16 @@ Exact reference:
 ```text
 ╭─Selection───────────────────╮
 │┌───────────────────────────┐│
-││ □ Rim_Body               ▲││
-││ ■ Hub_Body               ┃││
-││ □ Inner_Surface          ▼││
+││ □ Rim_Body                ││
+││ ■ Hub_Body                ││
+││ □ Inner_Surface           ││
 │└───────────────────────────┘│
 │─────────────────────────────│
 │      OK      │    Cancel    │
 ╰─────────────────────────────╯
 ```
+
+This example has three content rows and no scrollbar (§21).
 
 Inside this modal:
 
@@ -2099,8 +2112,8 @@ Exact reference:
 ╭─Profils─────────────────────╮
 │┌───────────────────────────┐│
 ││ ☰ Spline_1             × ▲││
-││ ☰ Profil_3             × ╻││
-││ ☰ Profil_4             × ╹││
+││ ☰ Profil_3             × ┃││
+││ ☰ Profil_4             ×  ││
 ││ ☰ Profil_4             ×  ││
 ││ ☰ Compound_line_1      × ▼││
 │└───────────────────────────┘│
@@ -2109,7 +2122,8 @@ Exact reference:
 ╰─────────────────────────────╯
 ```
 
-Each line represents an already selected profile.
+Each line represents an already selected profile. This example shows the first
+five of nine profiles at offset zero; the track is `"┃  "` (§21).
 
 Example:
 
@@ -2136,22 +2150,131 @@ Profile order is part of the data required by operations such as Loft.
 
 ---
 
-# 21. Scroll bar states
+# 21. Selection-box content scrolling
 
-The current alternatives are:
+## 21.1 Scope, rows and gutter
+
+This rule applies to the content lists of both Generic Selection (§19) and
+Profile Selection (§20) boxes. Treeviews, application panels and unrelated
+scrollbars retain their existing behavior.
+
+- For `N = 1…5` content items, display all `N` rows, offset zero and no scrollbar.
+- For `N > 5`, the logical content window is exactly five rows. Display items
+  `[s, s + 5)`. Reserve the rightmost interior column as a one-cell-wide gutter:
+  `▲`, three track cells, `▼`, alongside those same five content rows. The bar
+  adds no content row and has no separator column of its own.
+- An empty list retains its blank list area and existing surrounding chrome,
+  with no item, placeholder text, new glyph or scrollbar. Offset is zero.
+- Keep existing outer footprints, title, list borders, footer, row padding and
+  profile controls. Any surplus interior area is inert blank space, not extra
+  content rows. Without a gutter, content reclaims that column; with a gutter,
+  labels are clipped to their reduced width before controls or borders. Profile
+  `×` and its existing trailing separation stay inside the content region.
+- Compute logical geometry before clipping to the available list rect and grid.
+  A constrained rect crops whole cells; it does not compress/reposition the
+  five-row bar or change the logical window or offset range. Off-grid cells
+  have no hit target. A zero-sized region draws nothing. With insufficient
+  width the gutter remains at its logical right edge and can be wholly clipped;
+  never overlay it on a content cell. Do not change global overlay placement or
+  surface-cropping rules to handle this local case.
+
+## 21.2 Exact thumb model
+
+The three track cells have six vertical half-cell slots, numbered `0…5`, upper
+half first. For `N > 5`, compute:
 
 ```text
-▲ ▲ ▲ ▲ ▲
-┃ ╻      
-  ╹ ┃ ╻  
-      ╹ ┃
-▼ ▼ ▼ ▼ ▼
+M = N − 5
+s = clamp(requested content offset, 0, M)
+L = max(1, 11 − N)
+T = 6 − L
+p = round_half_up(T × s / M)
+occupied slots = [p, p + L)
 ```
 
-These columns represent different scroll positions.
+For each track cell, both halves occupied gives `┃`, upper half only gives
+`╹`, lower half only gives `╻`, and neither gives a space. Keep the existing
+stroke thickness and these glyphs. Do not replace them with full-cell
+proportional thumbs or new symbols.
 
-The drawing is a state reference and MUST NOT be converted into a proportional
-scrollbar with different glyph positions without updating the UI specification.
+Each quoted string below contains exactly the THREE TRACK CELLS, top to
+bottom. Spaces inside quotes are significant. `▲` and `▼` stay above and below
+all states. Successive strings correspond to successive integer content offsets
+starting at zero:
+
+```text
+N=6:  ["┃┃╹", "╻┃┃"]
+N=7:  ["┃┃ ", "╻┃╹", " ┃┃"]
+N=8:  ["┃╹ ", "╻┃ ", " ┃╹", " ╻┃"]
+N=9:  ["┃  ", "╻╹ ", " ┃ ", " ╻╹", "  ┃"]
+N=10: ["╹  ", "╻  ", " ╹ ", " ╻ ", "  ╹", "  ╻"]
+```
+
+Verification by substitution: for `N=6…10`, `(L,T,M)` is respectively
+`(5,1,1)`, `(4,2,2)`, `(3,3,3)`, `(2,4,4)`, `(1,5,5)`. Thus `p=s`; filling
+`[s,s+L)` gives every string above and one half-cell of movement per content row.
+For `N > 10`, `L=1`, `T=5`, and `p=round_half_up(5s/(N−5))`.
+Multiple content offsets may share a position. Quantization affects only the
+thumb: wheel, arrows and keyboard retain exact integer item offsets, including
+steps that leave the thumb glyph unchanged. Position is monotone, with exact
+endpoints `p(0)=0` and `p(M)=T`.
+
+**Deterministic arithmetic.** All ratios are nonnegative. For numerator `a` and
+positive denominator `b`, let `q=a div b`, `r=a mod b`; return
+`q + (r >= b div 2 + b mod 2 ? 1 : 0)`. Ties round upward; do not use floating
+point, ties-to-even, or `(2a+b)/(2b)`. Current counts/offsets are `u32`; widen to
+`u64` before multiplication, including inverse drag products. Compute `L` with
+saturating subtraction (`11.saturating_sub(N).max(1)`), not unsigned `11-N`.
+Branch on `N<=5` before dividing. Clamp invalid/stale offsets before arithmetic;
+negative input deltas saturate toward zero, positive deltas toward `M`.
+
+## 21.3 State, input and identity
+
+The per-window Controller owns content offset and selection. Composition derives
+thumb geometry without mutating selection, item order, checked/draft flags or
+item WidgetIds. IDs belong to original items, never visible row numbers or
+labels (duplicate names remain distinct). Opening still starts at offset zero;
+OK, Cancel, Escape, focus return and overlay input precedence are unchanged.
+
+After a length change, retain the numeric offset if valid, otherwise clamp it
+to `max(0,N−5)`; growth does not jump to the bottom. At `N<=5`, store zero and
+remove the entire gutter and all arrow/thumb routing metadata. Clear obsolete
+pressed/capture/cursor state; unavailable focused arrows follow the existing
+fallback to OK. Retain surviving item identity and selection; removing an item
+removes only that item's state. Existing mock lists need no new model binding
+or public list-editing API for this work.
+
+Retain existing arrow activation (one content row), wheel/trackpad direction and
+step translation, keyboard focus ring and minimal ensure-visible scrolling.
+Disabled endpoint arrows remain drawn but cannot activate. Keep the established
+whole-cell thumb hit target on every cell containing an occupied half; blank
+track cells are inert. Track clicks, page jumps, auto-repeat, new reorder/remove
+gestures and new keyboard commands are not introduced by this change.
+
+Existing thumb dragging keeps its whole-row pointer sampling and capture
+lifecycle. On press retain pointer row `r0`, exact content offset `s0`, thumb
+position `p0`, item count and list geometry. For subsequent pointer row `r`,
+compute signed `d=r−r0` before clamping, then `t=clamp(p0+2d,0,T)`. With no row
+movement, retain `s0` (no press-time snap of a quantized offset). Otherwise set
+`s=round_half_up(M×t/T)` and draw from the forward model. Clamp outside-track
+motion to the endpoints. This preserves the grabbed row relationship and avoids
+unsigned-subtraction errors above the track. Dragging may traverse several
+items per pointer row as before; individual content rows remain reachable by
+arrows, wheel and keyboard. Never quantize those inputs through thumb position.
+
+A drag's own successful list scroll must retain capture across recomposition.
+Release, pointer exit, focus loss, resize/scale cancellation, overlay dismissal
+or external geometry/count change invalidates the grab; a disappearing bar
+cannot retain capture or a Grab/Grabbing cursor. Preserve all other capture
+routing and consume releases as before. No gesture starts on a stale target.
+
+Recomposition fully replaces glyph, ink, style, WidgetId and shared-border
+metadata throughout the old/new list allocation (including cleared surplus
+rows/gutter). Arrow and occupied thumb glyphs use `Action`, labels use `Text`,
+frames use `Contour`; blank track cells have no visible ink or thumb target.
+Follow §5.12 and `ARCHITECTURE.md` §§3.5–3.6: scroll indicators gain no hover
+visual, colors, stroke thickening or animation. Existing Grab/Grabbing OS cursor
+feedback (§25.1) remains.
 
 ---
 
@@ -2220,7 +2343,8 @@ The second starts with the existing name (the full stored name, never the
 **Rename trigger (M2.20).** `Rename` opens on a **double-click** of the primary
 (left) mouse button on the name text of a user-named tree row (a Feature row or
 an Element body row, §26). The category headers (`Features`, `Elements`,
-`Solid Bodies(N)`, `Surfaces(N)`, `Construct`), the playhead separator row, the
+`Bodies(N)`, `Surfaces(N)`, `Construct`, and the historical reference fixture's
+`Solid Bodies(N)`), the playhead separator row, the
 `[-]`/`[+]` marker cells and the `□`/`■` cells are not rename targets; a click
 on a marker or checkbox keeps its own action and never starts a rename.
 `winit` 0.30 reports no click count, so the Controller recognises a double-click
@@ -2297,7 +2421,13 @@ Its canonical regions are:
 The complete reference currently shows an Extrude Action Box over the right side
 of the viewport.
 
-The reference is 82 columns × 28 rows and is preserved unchanged. The minimum
+**Actual startup state.** The reference is an example composition, not the
+application's launch state. On launch no contextual Action Box is displayed;
+the command controller is idle and there is no Extrude preview. Extrude opens
+only when the user activates its command.
+
+The reference is 82 columns × 28 rows. The tree amendment of 2026-10-26
+changes only its playhead terminal blank to `─`; other cells remain unchanged. The minimum
 window grid is **82 columns × 30 rows** at every UI Scale and on every monitor
 (`ARCHITECTURE.md` §3.1.1). When the window moves to a smaller monitor, the
 number of columns and rows the user last chose is kept as far as it fits (never
@@ -2393,10 +2523,17 @@ unchanged. Resizing is inactive while the window is maximised or fullscreen.
 fixed, including when the minimum is reached. The grid is recomposed from the
 size reported by `Resized`, never from the requested size (§3.1.1).
 
-**Cursor shape (optional).** The implementation MAY set the OS resize cursor
-while the pointer is in a zone. This is an OS cursor shape, not a UI rendering
-effect (`ARCHITECTURE.md` §3.5): it stores no UI state, redraws nothing and
-changes no cell. Pointer motion without a press still changes no cell buffer.
+**OS cursor shape.** The cursor reflects the actionable pointer target, using
+the same O(1) hit test and precedence as pointer input. Window edges and corners
+show their matching resize cursor; the Navigation divider shows horizontal
+resize, and the Features / Elements divider shows vertical resize. The Features
+playhead and draggable scrollbar thumbs show Grab on hover and Grabbing while
+captured. Unused MenuBar drag space shows Move. A widget or popup covering a
+resize zone takes precedence, as it does for a press. The normal cursor returns
+when the pointer leaves the window, focus is lost, or an overlay/state change
+makes the handle unavailable. Cursor shape is an OS cursor shape, not a UI
+rendering effect (`ARCHITECTURE.md` §3.5): it stores no UI state, redraws
+nothing and changes no cell.
 
 **Manual verification (M2.17, macOS).** The Executor records the result of each
 item in the milestone report: (1) east, south and south-east drags follow the
@@ -2431,7 +2568,7 @@ limitation, never patched with unsafe code or a platform workaround.
 
 # 26. Navigation trees
 
-The exact reference is the NavigationPanel of `Interface_Exemple.txt`
+The exact historical reference fixture is the NavigationPanel of `Interface_Exemple.txt`
 (columns 1–25 of rows 5–26, shown here with the panel borders; row 16 and rows
 24–25 are blank panel rows):
 
@@ -2444,7 +2581,7 @@ The exact reference is the NavigationPanel of `Interface_Exemple.txt`
 ║ │ ├ ■ Sketch_Hole     ║
 ║ │ ╰╴Extrude_Cut_Center║
 ║ ├ Fillet_Inner        ║
-║ │ ─────────────────── ║
+║ │ ────────────────────║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
 ║                       ║
@@ -2460,6 +2597,18 @@ The exact reference is the NavigationPanel of `Interface_Exemple.txt`
 ╠═══════════════════════╩
 ```
 
+**Live labels and the reference exception (M4.2).** Live model-bound documents use
+exactly three Elements groups, in order: `Bodies(N)`, `Surfaces(N)`, `Construct`.
+`N` counts the group's direct entities, including hidden entities and zero.
+Construct has no count suffix and contains construction planes, axes, curves and
+points. The existing exact fixture above and `Interface_Exemple.txt` retain
+`Solid Bodies(2)` unchanged. That historical label and its preset document state
+apply only to the explicit reference fixture and its exact assertions; they do
+not prescribe live startup contents or override the live `Bodies(N)` label.
+The exact-reference comparisons in §25 concern that fixture, not a live document's
+projected Features/Elements contents. The later tree amendment changes only the playhead endpoint artwork; M4.2
+labels, identities and preset history gaps remain unchanged.
+
 Tree topology uses:
 
 ```text
@@ -2474,8 +2623,27 @@ top-level entry is `╰[+]` followed directly by the marker, exactly as in the
 reference. `Interface_Exemple.txt` is the more recent reference; the earlier
 `└`-based tree examples in this section were stale and are removed.
 
-The row `│ ─────────────────── ` (row 13 of the reference) is the *playhead
+The row `│ ────────────────────` (row 13 of the reference) is the *playhead
 separator* between two features. It is not a feature and is not selectable.
+
+**Live insertion cursor (M4.2).** The playhead identifies where a new operation
+will enter history. In a live document it may be placed before the first
+operation, between operations, or at End after all operations, including End of
+an empty history. Live initialization and document replacement default to End.
+The existing separator glyph is used at each boundary; it remains a drag handle,
+never a selectable operation. When Features is expanded, End of an empty history
+is shown after its header. Later operations remain displayed. Moving the cursor
+does not roll back, recompute or hide geometry.
+
+An insertion boundary and its display location are distinct. Folder headers do
+not count as operations. The separator may be displayed before a folder header
+or after its whole subtree while its insertion anchor remains the next operation
+in history, or End if no operation follows. Folder-boundary display placement
+must be explicit, not inferred from a folder name. The historical fixture keeps
+its original interior top-level gaps and initial separator after `Fillet_Inner`.
+In particular, its first admitted gap is displayed before the `Hub_Features`
+header and anchored before that folder's first operation, `Extrude_Base`.
+These fixture placements remain unchanged; endpoint assertions migrate to §26.1.
 
 **Truncated labels.** A label that does not fit its row is shortened to the
 available cell count by keeping its leading characters and replacing the final
@@ -2518,13 +2686,255 @@ The Features tree and Elements tree are different views of model information.
 
 Features represents the parametric/history structure.
 
-Elements groups resulting entities such as:
+Live Elements groups resulting entities as:
 
 ```text
-Solid Bodies
+Bodies
 Surfaces
 Construct
 ```
+
+
+## 26.1 Features-only playhead geometry
+
+Amendment authorized on 2026-10-26. This section supersedes old M2/M4.2
+playhead terminal padding, collapse relocation and tree-visual exclusions.
+Elements never contains a playhead, its hit target or an insertion action.
+A playhead is not a node, selection target, focus target or history operation.
+
+Use zero-based grid coordinates. A pane frame has left column `L`, outer width
+`O`, right border `R=L+O-1`, interior start `I=L+1` and interior width
+`W=max(O-2,0)`. Interior offsets are `0..W-1`; borders are never overwritten.
+The stroke ends at column `R-1=I+W-1`, with no trailing blank.
+
+**Proposed left endpoint, resolved here as the implementation policy:** the
+original requirement did not finish its left-endpoint sentence. The following
+depth-based choice preserves the illustrated separation and existing two-cell
+indentation; it must not be attributed to that incomplete supplied sentence.
+For a gap at structural depth `d>=1`, set `S=2*d+1` (interior offset). Draw
+`─` at offsets `[S,W)`. The count is `max(W-S,0)`. Ancestor guide levels
+`j=1..d` occupy offsets `2*j-1`, with a blank immediately after each at `2*j`.
+For `j<d`, draw `│` iff the ancestor at depth `j` has a later sibling
+under its own parent. For `j=d`, draw `│` for BeforeNode (the referenced child
+still follows the gap), and for AfterSubtree iff that node has a later sibling
+under the same parent. EndOfTree draws no guide. Otherwise leave the slot blank.
+Determine siblings from validated structural preorder/depth, not labels,
+visibility, selection or the previous row's glyph. The innermost guide therefore
+continues exactly when a following child remains at that level. Preserve
+outer continuing guides even when the innermost branch has ended. No horizontal
+stroke crosses a guide. EndOfTree has depth 1 and no continuing root-child guide.
+BeforeNode and AfterSubtree retain their structural node depth; their ancestors
+are found by identity/preorder. Clip to interior cells with bounded arithmetic;
+if `S>=W`, draw only fitting guides, with no stroke hit span.
+
+At `O=25`, `W=23`: depth 1 starts at global `L+4` (offset 3), with 20
+stroke cells; depth 2 starts at `L+6` (offset 5), with 18 stroke cells.
+These equal-width reference rows have continuing hierarchy guides:
+
+```text
+║ ├ Fillet_Inner        ║
+║ │ ────────────────────║
+║ ├ Chamfer_Edges       ║
+
+║ │ ├ ■ Sketch_Hole     ║
+║ │ │ ──────────────────║
+║ │ ╰╴Extrude_Cut_Center║
+```
+
+Only the horizontal stroke cells own PLAYHEAD_ID and admit drag. Gap guides,
+indentation and separator blanks are inert; panel borders retain resize
+ownership. This makes the stroke itself the deterministic interaction target.
+
+## 26.2 Collapsed inline playhead
+
+Keep the entire `PlacedHistoryGap { insertion, display }` unchanged on collapse
+and expand; never call `placed_gap(AfterSubtree(folder))` just to collapse.
+For BeforeNode/AfterSubtree, its containing folders are the strict folder
+ancestors of the referenced node; a gap before a folder or after its complete
+subtree is outside that folder. EndOfTree belongs to Features itself. This
+identity-based rule distinguishes an internal AfterSubtree(last child) from an
+external AfterSubtree(folder) even if their operation anchors coincide.
+
+If one of those ancestors is collapsed, show the indicator on the visible
+collapsed ancestor row (the outermost collapsed ancestor on the path from
+Features). Inner collapsed ancestors remain hidden. Draw no separate gap row.
+Re-expansion progressively exposes the deeper ancestor or the original gap;
+neither action moves the anchor or changes document/history. Collapsing the
+Features root hides the indicator entirely, retaining the pair. Scrolling can
+hide the row normally. Refresh/reconciliation retains the existing M4.2 anchor
+survival/deletion rules, but must not auto-expand ancestors just to show a
+retained cursor. Explicit cursor placement may retain its existing reveal rule.
+
+Let `P` be the natural fixed prefix length before this folder's label, and `N`
+its full name length. If `W>=P+5`, allocate `A=W-P-4` cells to the label,
+`D=min(N,A)` displayed cells, then one blank, then `W-P-D-1` stroke cells.
+Ellipsize with `…` if `N>A`: retain the first `A-1` scalars then `…`.
+There are always at least three visible `─` cells, right-aligned to `R-1`.
+Short names produce a longer stroke, never additional blanks. Preserve the
+underlying full name and semantic target; the inline indicator is not its name.
+
+If `W<P+5`, fitting the fixed controls, one label cell, separator and three
+stroke cells is impossible. Suppress the inline indicator and its hit span,
+render the ordinary clipped folder row and retain the anchor. Do not shorten
+controls, overwrite guides/borders, or draw a misleading one/two-cell stroke.
+This is the explicit narrow/deep fallback, not permission to relax the minimum
+for a displayed inline indicator. Width measurement never includes its stroke.
+
+Name cells alone retain Rename ownership; marker cells retain expansion,
+checkbox cells retain visibility; the one separating blank belongs to Row.
+Only the `─` cells have PLAYHEAD_ID. Pressing the stroke clears a pending
+Rename double-click and captures playhead drag without selecting/toggling the
+folder. A drag staying on its own inline host row is a no-op, retaining its
+internal anchor. Moving onto another row uses existing M4.2 admitted gaps and
+drop rules (a deliberate drop on a different folder remains AfterSubtree).
+Elements cannot initiate a playhead action; movement there during an already
+owned Features drag retains the existing Features-only row clamping policy.
+
+Examples below include their full interior prefix; widths are derived, not
+copied from the old padded sketches:
+
+```text
+║ ├[+] Hub_Features ────║
+║ ├[+] Hub_Featu… ───║
+║ ├[+] Hub_Features ───────║
+```
+
+Their outer widths are respectively 25, 22 and 28 cells.
+
+## 26.3 Shared tree-column maximum width
+
+Measure both Features and Elements in the current document/reference
+projection, including roots/headings, all group headings/count suffixes and
+all descendants even if collapsed or scrolled out. They share one column and
+one cap. Include hidden entities' rows. Measurement is independent of expansion,
+scrolling, hover, selection, visibility state and the current displayed width.
+Do not measure already ellipsized strings. A scalar occupies one cell under §26.
+
+For a row at depth `d`, the hierarchy prefix length is `H=0` at depth 0;
+otherwise `H=2*d` for a branch and `H=2*d+1` for a leaf. Natural row length is:
+
+`C = H + (branch ? 3 : 0) + (branch && spaced ? 1 : 0)
+       + (has_visibility_square ? 2 : 0) + full_label_scalar_count`.
+
+This includes leading indentation, connectors/tails, the full three-cell handle,
+its required spacing, and the square plus following blank. Use the same
+`full_label` and prefix geometry for measurement and drawing. Empty groups use
+the actual leaf/branch presentation; headings remain relevant even when no
+history/entities exist. Labels unsupported by the atlas still each consume
+one fallback cell. No playhead line, filler, inline reservation, hover substitute,
+outer border or viewport annotation contributes to `C`.
+
+Let `M=max(C)` across those rows, `content_interior_max=M+2` (two trailing
+padding cells), and `content_outer_max=M+4` (two separate border cells).
+The padding is only a cap allowance; labels may use all available interior
+cells at smaller widths. The stroke fills through that allowance to `R-1`.
+For the explicit reference fixture, M=24 from ` ├ □ Sketch_Profile_Main`:
+its content cap is 26 interior / 28 outer cells, not 24 or 26 outer cells.
+
+Keep the existing outer minimum 14 and half-window ceiling. For `cols` columns:
+`U=min(content_outer_max, floor(cols/2))`, `B=min(14,U)`,
+`effective_outer=clamp(preferred_outer,B,U)`. Roots ensure M>=11 in ordinary
+projections, so the content cap is at least 15 and does not conflict with the
+14-cell minimum. The window ceiling wins for synthetic grids too narrow for
+that minimum. Production retains the 82×30 window minimum. At zero/tiny widths,
+empty rectangles and saturating border arithmetic remain safe; no pointer owner
+may leak into Elements, viewport or off-grid cells.
+
+Initialize `preferred_outer=min(25,content_outer_max)`. A resize request stores
+`clamp(request,14,content_outer_max)` (ordinary projections), independent of the
+window ceiling. Content shrink permanently clamps the stored preference down;
+content growth retains it, never auto-expands. A temporary window shrink only
+reduces effective width, so growing the window restores the stored preference
+subject to the current cap. Recompute the content cap on projection replacement,
+rename/label change, add/remove/reparent/depth change, group-count or heading
+change, including same-document updates. Clamp before publishing the frame and
+hit map. Collapse, scroll, playhead movement, selection, hover, Theme and Color
+do not change the cap. Window/metrics and panel visibility changes recompute
+only effective layout; hiding the column retains its preference and content cap.
+
+## 26.4 Exact row glyph states
+
+These rules apply to both trees' visible node rows. Selected is a semantic
+membership predicate, never inferred from focus, hover, checked or expanded.
+For now consume M4.2's existing `ShellState.selected` identity; do not alter
+activation behavior or create shared-selection policy. M4.3 owns the authoritative
+viewport/tree/Selection-panel selection integration. Its backlog entry and the
+current model `Selection` entity collection do not yet define a feature/folder
+membership mapping or modifier behavior; this amendment does not invent one.
+When that contract is specified, feed its membership predicate to the same row
+visual without adding a second selection store. Hidden selected rows retain
+identity and regain their visual when shown.
+
+| Structural slot | Normal | Hovered | Selected | Selected + hovered |
+|---|---|---|---|---|
+| Continuing ancestor on this row | `│` | `│` | `┃` | `┃` |
+| Non-last connector | `├` | `╞` | `┣` | `┣` |
+| Last leaf connector + tail | `╰╴` | `╘╸` | `┗╸` | `┗╸` |
+| Last branch connector before handle | `╰` | `╘` | `┗` | `┗` |
+| Right frame, Color off | `║` | `╣` | `║` | `╣` |
+| Right frame, Color on | `│` | `╡` | `│` | `╡` |
+
+Blank ancestor slots stay blank. Non-last leaf spacing stays blank. Root rows
+have no connector or ancestor slots, so hover changes only their right frame;
+selection alone adds no root marker. Names, expansion handles, squares, spaces,
+left frame and all unrelated rows/borders stay unchanged. The hierarchy table
+uses Text ink in all four palettes; right frame stays Contour. A selected
+inline-host row follows this table, but its horizontal playhead stays `─`.
+Do not apply the tree `╘╸` rule to Action Box `╘ ` replacements.
+
+The exact supplied 25-cell rows, preserving `╸`, are:
+
+```text
+Normal
+║ │ ├ Extrude_Base      ║
+║ │ ╰╴Extrude_Cut_Center║
+Hovered (each row independently)
+║ │ ╞ Extrude_Base      ╣
+║ │ ╘╸Extrude_Cut_Center╣
+Selected
+║ ┃ ┣ Extrude_Base      ║
+║ ┃ ┗╸Extrude_Cut_Center║
+Selected + hovered (each row independently)
+║ ┃ ┣ Extrude_Base      ╣
+║ ┃ ┗╸Extrude_Cut_Center╣
+```
+
+Only one row can hover at once; the paired hover examples are alternatives,
+not a simultaneous two-row hover state. Selection wins hierarchy slots in the
+combined state: this uses existing required glyphs while making membership
+stable under pointer movement. On pointer exit, restore selected glyphs if
+still selected, otherwise normal glyphs. On deselection while hovered, restore
+the hover-only mapping. Recompose from semantic state, never reverse-map the
+previous glyphs. No inversion, animation, colour shift or increased pixel line
+width: heavy glyphs use the unchanged regular font and uniform atlas scale.
+
+## 26.5 Hover routing, publication and coverage
+
+Resolve a hit via the published CellGrid and visible slot table. Row, Name,
+Marker and Check parts normalize to that semantic row's existing Row WidgetId
+for hover only, in O(1). Click routing and Rename identity remain unchanged.
+Inert frames, PLAYHEAD_ID cells and gap guides never acquire row hover. Map
+validation after recomposition must use the same normalization rather than
+comparing a Name/Marker/Check id directly with the stored Row id. No row-width
+scan or bounding-box search is allowed. Scrolled/reused slots, disappearing
+rows, modals/menus and resize clear stale hover through existing precedence.
+
+A right-frame hover glyph is visual only, with unchanged resize hit metadata.
+Compose it after Color's contour normalization, or explicitly exempt that slot
+and emit `╡` in Color mode; the generic `╣→┤` conversion must not erase it.
+Glyph/ink changes alone do not change routing generation. Name truncation,
+inline stroke ownership, row count, width and slot changes do. Publish grid,
+slots and routing policy atomically. Preserve the controller's owned capture
+identity/origin and rebind only the matching drag's newly published generation;
+unrelated map changes cancel capture as in M4.2. Release, focus/pointer loss,
+overlays, scale and document replacement retain their cancellation rules.
+
+Required glyphs are `─ │ ├ ╰ ╴ ╞ ╘ ╸ ┃ ┣ ┗ ║ ╣ ╡ …`, plus existing controls
+and Color frame glyphs. Static inspection on 2026-10-26 confirms all occur in
+`glyph_atlas.rs::UI_SYMBOLS` and in the bundled Fira Code cmap (formats 4/12).
+No atlas-set addition or font change is necessary. Runtime atlas coverage and
+visual continuity at k=2…7 must still be verified by Executor; static font/set
+coverage does not establish raster or physical-display acceptance.
 
 ---
 
@@ -2753,9 +3163,10 @@ Current menu:
 ```text
 ╭─View──────────────╮
 │ ◀  Perspective  ▶ │
-│ ◀    Shaded     ▶ │
+│ ◀  Wireframe    ▶ │
 │ UI Scale ◀ 100% ▶ │
-│ Theme [ ◐ Light ] │
+│ Theme [ ◑ Dark  ] │
+│ □ Color           │
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
@@ -2766,6 +3177,12 @@ Current menu:
 │ Fullscreen        │
 ╰───────────────────╯
 ```
+
+`View > Task bar` controls the complete Command Bar, including its frame. When
+unchecked, the bar and frame are absent, their two layout rows are reclaimed,
+and the shell content below moves up by two rows. The hidden bar has no pointer
+targets and F6 cannot open it. Checking it again restores the original layout.
+The File/Edit/View/Help MenuBar remains available.
 
 Projection selector states:
 
@@ -2778,43 +3195,54 @@ Display-style states:
 
 ```text
 ◀    Points     ▶
+◀     Line      ▶
 ◀  Wireframe    ▶
-◀  Hidden line  ▶
+◀  Hidden Line  ▶
 ◀  No shading   ▶
 ◀    Shaded     ▶
-◀   Flat line   ▶
+◀    Default    ▶
 ```
 
 UI Scale states (`Application_Menu_Bar.txt`):
 
 ```text
-│ UI Scale ◀  60% ▶ │
-│ UI Scale ◀  80% ▶ │
+│ UI Scale    80% ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ UI Scale ◀ 120% ▶ │
-│ UI Scale ◀ 140% ▶ │
+│ UI Scale ◀ 140%  │
 ```
 
-`UI Scale` is a cyclic selector (§5.2) over exactly five **preference** values
-(60%, 80%, 100%, 120%, 140%). A percentage is not a fixed physical size: the
-application derives the integer cell size factor `k` automatically for the
-monitor showing the window (`ARCHITECTURE.md` §3.1.1). On the reference display
-the values are 60% = 12×27 px, 80% = 16×36, 100% = 20×45 (default),
-120% = 24×54 and 140% = 28×63. On another monitor the same percentage can give a
-smaller cell: 100% is 20×45 on the MacBook Air Retina display and 8×18 (`k = 2`,
-one step smaller) on a Full HD 1920×1080 monitor.
+`UI Scale` is a bounded selector (§5.2) over four displayed labels. At 80% the
+left arrow is replaced by a blank cell; at 140% the right arrow is replaced by
+a blank cell. These cells retain the popup surface hit target but have no
+action or hover feedback. The selector never wraps. At 100% and 120% both arrows
+are shown. The labels
+map to the original rendering multipliers as follows: 80% → factor 60%, 100% →
+factor 80%, 120% → factor 100%, and 140% → factor 120%. The old 140% factor is
+removed. The label is not used as a new multiplier: the existing integer cell
+size calculation continues to use the mapped factor (`ARCHITECTURE.md`
+§3.1.1). On a monitor that can fit each step, the displayed values correspond
+to 12×27, 16×36, 20×45 and 24×54 px respectively. The new default label is
+100%, using the size formerly associated with 80% (16×36 px at reference scale
+5); on Full HD, existing minimum-cell behavior resolves the four labels to
+8×18 px (`k = 2`).
 
-- The row **always shows the stored preference**, never the derived `k`: it reads
-  `100%` on both monitors, and moving the window between monitors never changes
-  the text of the row or the stored preference. The adaptation shows no dialog
-  and no notice.
-- `◀` selects the previous and `▶` the next of the five values, wrapping like
-  every other cyclic selector, and stores it as the new preference. **No value is
-  skipped or hidden**, even when the current monitor clamps several of them to
-  the same cell size: on a 1920×1080 monitor 60/80/100/120% all give 8×18 px, so
-  no step changes anything visible. This is intended
-  (`ARCHITECTURE.md` §3.1.1, *Several percentages may share one `k`*).
-- `100%` is the default preference, and the menu opens in Light theme by default.
+- The row always shows the selected label, never the derived `k`: it reads
+  `100%` on every monitor, and moving the window between monitors never changes
+  the label. The adaptation shows no dialog and no notice.
+- `◀` selects the previous and `▶` the next label. At 80%, the left arrow is a
+  blank, inert cell; at 140%, the right arrow is a blank, inert cell. Neither
+  arrow wraps at an endpoint. Both arrows work at 100% and 120%. Other cyclic
+  selectors keep their wrapping behavior. Labels are never skipped or hidden,
+  even when the current monitor maps several to the same cell size
+  (`ARCHITECTURE.md` §3.1.1, *Several labels may share one `k`*).
+- There is no 60% entry. An optional 60% label would use the former 40% factor;
+  on compact reference-scale-2 displays that factor requests `k = 1` and is
+  raised to the existing minimum `k = 2`, duplicating other presets, so it is
+  not offered.
+- `100%` is the default displayed label (factor 80%). New application, renderer, UI shell and View-menu states
+  use Dark theme, Color unchecked and Wireframe shading. The initial renderer therefore draws white
+  foreground on a black background and uses wireframe before a View-menu value is changed.
 - When the cell size changes (a step that changes `effective_k`, or the window
   moving to another monitor, a resolution or display-scale change, or entering or
   leaving fullscreen) the whole UI is recomposed in one atomic transition
@@ -2835,10 +3263,40 @@ Theme [ ◑ Dark  ]
 ```
 
 The bracketed field shows the current theme and is activated to switch to the
-other one. Light is black on white; Dark is white on black
-(`ARCHITECTURE.md` §3.6).
+other one. Activating the Theme row by pointer or Enter/Space toggles the theme
+while keeping the View popup open and the Theme row focused, so it can be toggled
+again. Theme retains this explicit keep-open behavior as a menu item; View
+checkboxes retain their established toggle/open-popup/focused-row behavior, and
+other View actions retain their existing menu closing behavior. With Color unchecked, Light is black on white
+and Dark is white on black (`ARCHITECTURE.md` §3.6).
 
-Checkbox entries control visibility.
+Color states are `□ Color` (initial state) and `■ Color`, on the row immediately after Theme. Color is a per-window checkbox and uses the established View checkbox activation: pointer or Enter/Space toggles it and keeps the popup open with that row selected. Theme and Color are independent; new windows start Dark + unchecked, and a Theme change preserves Color while updating the visible Light/Dark menu row. Unchecked preserves the exact existing Light/Dark glyphs and monochrome colours. Checked uses the four-state palette and semantic cell ownership in `ARCHITECTURE.md` §3.6. Text and values inside a control use `Text`; only its explicit affordance uses `Action`. In both `Theme [ ◑ Dark  ]` and `Theme [ ◐ Light ]`, the word `Theme` and the displayed value are `Text`, `[`/`]` and `◑`/`◐` are `Action`, spaces have no visible ink, and the popup's outer `│` delimiters are `Contour`. Theme remains one item with its current pointer, Enter/Space, focus and open-popup behavior. Menu popup, dialog and selection-panel title letters use `Text` inside a `Contour` top edge: corners, horizontal strokes, frame junctions and structural separators stay `Contour`. Treeview guides and connectors use `Text` even beside a Contour frame. At one shared or intersecting frame cell the visible frame owns the cell as `Contour`; routing metadata does not determine ink. Color checked maps double-stroke frame glyphs to same-cell single-stroke glyphs exactly as in §3.6. Hover keeps the §5.12 Unicode substitutions and the role of each substituted cell; it adds no colour, brightness, animation or shader effect. The viewport clears to the chosen UI background without changing model display styles.
+
+| Theme / Color | Background | Text, values, labels, tree guides | Contour | Action |
+|---|---|---|---|---|
+| Dark / off | `#000000` | `#FFFFFF` | `#FFFFFF` | `#FFFFFF` |
+| Light / off | `#FFFFFF` | `#000000` | `#000000` | `#000000` |
+| Dark / on | `#071521` | `#FFFFFF` | `#41B4E5` | `#FFA24A` |
+| Light / on | `#FFFFFF` | `#111827` | `#0969A0` | `#9A4D00` |
+
+The table gives sRGB source colours. Glyph coverage provides antialiasing; it
+does not introduce a separate state colour. Color-on single-stroke contours
+retain all cell coordinates and hit targets. Hover `╞`/`╡`/`╘` remains the
+approved stroke-form exception and inherits the original role.
+
+The seven display-style states remain in the order shown above. Wireframe is the
+startup state; navigation remains cyclic in both directions. Points shows mesh
+vertices; Wireframe shows mesh edges, including triangulation. Line shows only
+visible solid geometry contour and feature edges. Hidden Line shows the same
+geometry edges solid where visible and dashed where occluded, including when
+visibility changes within an edge. No shading retains its unlit surfaces;
+Shaded retains its lit surfaces. Default combines Shaded surfaces with Line's
+visible solid geometry edges. Face tessellation diagonals never appear in Line,
+Hidden Line or Default.
+
+The five Tree panel, Task bar, Status bar, Navigation cube and Grid Overlay
+checkboxes retain their existing visibility effects. Color selects semantic
+ink and contour glyphs independently; it changes none of those visibility flags.
 
 `[N]ormal to` contains an explicit keyboard mnemonic.
 
@@ -2876,6 +3334,8 @@ The Command Bar follows `Command_Bar.txt`: Workbench, Datum, Create, Shape,
 Modify, Pattern and Utilities, in that order. Its corrected header agrees with
 the seven popup definitions. This supersedes the CommandBar row in the older
 `Interface_Exemple.txt` shell reference; other shell rows remain authoritative.
+Its visibility and two-row layout behavior are controlled by `View > Task bar`
+as specified in §28.3.
 
 Current workbenches:
 
@@ -3217,7 +3677,13 @@ ExtrudeState {
 
 may determine which exact rows are composed.
 
-The final rendered representation remains a flat grid of cells.
+The final rendered representation remains a flat grid of cells. Each cell carries
+content, a semantic ink role (`Text`, `Contour` or `Action`), logical style and
+existing ownership/routing metadata. A full-cell write/copy includes the role;
+overlay replacement cannot retain underlying ink. Palette lookup belongs to
+`newell-render`, while component semantics assign roles in `newell-ui`. Neither
+roles nor Theme/Color become model document data. The grid still renders in one
+batched UI draw call with O(1) pointer routing (`ARCHITECTURE.md` §§3.4–3.6).
 
 ---
 

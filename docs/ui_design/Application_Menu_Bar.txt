@@ -17,9 +17,10 @@
 ╰───────────╯
 ╭─View──────────────╮
 │ ◀  Perspective  ▶ │
-│ ◀    Shaded     ▶ │
+│ ◀  Wireframe    ▶ │
 │ UI Scale ◀ 100% ▶ │
-│ Theme [ ◐ Light ] │
+│ Theme [ ◑ Dark  ] │
+│ □ Color           │
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
@@ -30,8 +31,8 @@
 │ Fullscreen        │
 ╰───────────────────╯
 ◀  Perspective  ▶, ◀ Orthographic  ▶
-◀    Points     ▶, ◀  Wireframe    ▶, ◀  Hidden line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀   Flat line   ▶
-◀  60% ▶, ◀  80% ▶, ◀ 100% ▶, ◀ 120% ▶, ◀ 140% ▶
+◀    Points     ▶, ◀     Line      ▶, ◀  Wireframe    ▶, ◀  Hidden Line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀    Default    ▶
+│ UI Scale    80% ▶ │, │ UI Scale ◀ 100% ▶ │, │ UI Scale ◀ 120% ▶ │, │ UI Scale ◀ 140%  │
 [ ◐ Light ], [ ◑ Dark  ]
 ╭─Help──────╮
 │ Tutorial  │

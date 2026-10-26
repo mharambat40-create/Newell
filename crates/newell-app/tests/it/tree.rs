@@ -12,14 +12,21 @@
 use std::time::Duration;
 
 use newell_app::controller::{DOUBLE_CLICK, Press, ShellController};
-use newell_ui::{CellContent, CellGrid, DEFAULT_K, GridMetrics, ShellKey, UiPoint};
+use newell_ui::{
+    CellContent, CellGrid, DEFAULT_K, FeatureNodeId, GridMetrics, ShellKey, ShellState,
+    TreeIntentKind, TreeTargetKind, UiPoint,
+};
 
 const W: u32 = 4 * DEFAULT_K;
 const H: u32 = 9 * DEFAULT_K;
 const SURFACE: (u32, u32) = (82 * W, 28 * H);
 
 fn controller() -> ShellController {
-    ShellController::new(82, 28, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap()
+    ShellController::with_shell(
+        ShellState::new(82, 28),
+        GridMetrics::from_k(DEFAULT_K).unwrap(),
+    )
+    .unwrap()
 }
 
 fn at(col: u32, row: u32) -> Option<UiPoint> {
@@ -56,12 +63,83 @@ fn ms(v: u64) -> Duration {
     Duration::from_millis(v)
 }
 
+trait ReferenceInput {
+    fn fixture_key(&mut self, key: ShellKey) -> newell_app::controller::Update;
+    fn fixture_press(&mut self, surface: (u32, u32), resizable: bool) -> Press;
+}
+impl ReferenceInput for ShellController {
+    fn fixture_key(&mut self, key: ShellKey) -> newell_app::controller::Update {
+        let update = self.key(key);
+        respond_fixture(self);
+        update
+    }
+    fn fixture_press(&mut self, surface: (u32, u32), resizable: bool) -> Press {
+        let press = self.press(surface, resizable);
+        respond_fixture(self);
+        press
+    }
+}
+fn respond_fixture(controller: &mut ShellController) {
+    let Some(intent) = controller.take_tree_intent() else {
+        return;
+    };
+    assert_eq!(intent.generation(), controller.generation());
+    let mut projection = controller.shell().tree_projection().clone();
+    let mut supported = true;
+    match (intent.target().kind, intent.kind()) {
+        (TreeTargetKind::Operation(id), TreeIntentKind::Rename { name, .. }) => projection
+            .features
+            .iter_mut()
+            .find(|item| item.id == FeatureNodeId::Operation(id))
+            .unwrap()
+            .name
+            .clone_from(name),
+        (TreeTargetKind::Folder(id), TreeIntentKind::Rename { name, .. }) => projection
+            .features
+            .iter_mut()
+            .find(|item| item.id == FeatureNodeId::Folder(id))
+            .unwrap()
+            .name
+            .clone_from(name),
+        (TreeTargetKind::Entity(id), TreeIntentKind::Rename { name, .. }) => projection
+            .elements
+            .iter_mut()
+            .find(|item| item.id == id)
+            .unwrap()
+            .name
+            .clone_from(name),
+        (TreeTargetKind::Operation(id), TreeIntentKind::SetVisibility { visible, .. }) => {
+            projection
+                .features
+                .iter_mut()
+                .find(|item| item.id == FeatureNodeId::Operation(id))
+                .unwrap()
+                .visibility = Some(*visible)
+        }
+        (TreeTargetKind::Entity(id), TreeIntentKind::SetVisibility { visible, .. }) => {
+            projection
+                .elements
+                .iter_mut()
+                .find(|item| item.id == id)
+                .unwrap()
+                .visible = *visible
+        }
+        _ => supported = false,
+    }
+    assert!(
+        supported,
+        "fixture intent must have a supported semantic target"
+    );
+    controller.set_tree_projection(projection).unwrap();
+}
+
 /// A press at the first cell of `needle` at time `t`.
 fn press_on(c: &mut ShellController, needle: &str, t: Duration) {
     let (col, row) = find(c, needle);
     c.pointer_moved(at(col, row));
     c.set_time(t);
-    assert!(matches!(c.press(SURFACE, true), Press::Shell(_)));
+    assert!(matches!(c.fixture_press(SURFACE, true), Press::Shell(_)));
+    respond_fixture(c);
 }
 
 fn rename_open(c: &ShellController) -> bool {
@@ -118,7 +196,7 @@ fn a_different_row_or_an_intervening_press_breaks_the_double_click() {
     press_on(&mut c, "Hub_Body", ms(0));
     c.pointer_moved(at(40, 12));
     c.set_time(ms(50));
-    c.press(SURFACE, true);
+    c.fixture_press(SURFACE, true);
     press_on(&mut c, "Hub_Body", ms(100));
     assert!(!rename_open(&c), "a press on empty space");
 
@@ -127,7 +205,7 @@ fn a_different_row_or_an_intervening_press_breaks_the_double_click() {
     let (col, row) = find(&c, "[X]");
     c.pointer_moved(at(col, row));
     c.set_time(ms(50));
-    assert!(matches!(c.press(SURFACE, true), Press::Window(_)));
+    assert!(matches!(c.fixture_press(SURFACE, true), Press::Window(_)));
     press_on(&mut c, "Hub_Body", ms(100));
     assert!(!rename_open(&c), "a press on a window control");
 }
@@ -150,7 +228,7 @@ fn markers_checkboxes_headers_and_the_playhead_are_not_rename_targets() {
         for t in [0, 100] {
             c.pointer_moved(at(col, row));
             c.set_time(ms(t));
-            c.press(SURFACE, true);
+            c.fixture_press(SURFACE, true);
         }
         assert!(!rename_open(&c), "{needle}");
     }
@@ -158,7 +236,7 @@ fn markers_checkboxes_headers_and_the_playhead_are_not_rename_targets() {
     for t in [0, 100] {
         c.pointer_moved(at(10, 12));
         c.set_time(ms(t));
-        c.press(SURFACE, true);
+        c.fixture_press(SURFACE, true);
     }
     assert!(!rename_open(&c), "the playhead row");
 }
@@ -170,9 +248,9 @@ fn a_double_click_is_consumed_and_the_modal_edits_confirms_and_cancels() {
     press_on(&mut c, "Hub_Body", ms(100));
     assert!(rename_open(&c));
     for ch in "_2".chars() {
-        assert!(c.key(ShellKey::Char(ch)).grid);
+        assert!(c.fixture_key(ShellKey::Char(ch)).grid);
     }
-    assert!(c.key(ShellKey::Enter).grid);
+    assert!(c.fixture_key(ShellKey::Enter).grid);
     assert!(!rename_open(&c));
     assert!(row_text(c.grid(), 20).contains("╰╴□ Hub_Body_2"));
 
@@ -180,14 +258,14 @@ fn a_double_click_is_consumed_and_the_modal_edits_confirms_and_cancels() {
     press_on(&mut c, "Hub_Body_2", ms(1_000));
     press_on(&mut c, "Hub_Body_2", ms(1_100));
     assert!(rename_open(&c));
-    c.key(ShellKey::Char('x'));
-    assert!(c.key(ShellKey::Escape).grid);
+    c.fixture_key(ShellKey::Char('x'));
+    assert!(c.fixture_key(ShellKey::Escape).grid);
     assert!(row_text(c.grid(), 20).contains("╰╴□ Hub_Body_2 "));
 
     // The consumed double-click does not chain: press, press (opens), cancel, press again.
     press_on(&mut c, "Hub_Body_2", ms(2_000));
     press_on(&mut c, "Hub_Body_2", ms(2_100));
-    c.key(ShellKey::Escape);
+    c.fixture_key(ShellKey::Escape);
     press_on(&mut c, "Hub_Body_2", ms(2_200));
     assert!(!rename_open(&c));
 }
@@ -205,7 +283,7 @@ fn dragging_the_divider_follows_the_pointer_row_by_row() {
     let mut c = controller();
     // The divider is the shared border row 16 (columns 1..=23).
     c.pointer_moved(at(10, 16));
-    assert!(matches!(c.press(SURFACE, true), Press::Shell(_)));
+    assert!(matches!(c.fixture_press(SURFACE, true), Press::Shell(_)));
     assert!(c.dragging());
     assert!(c.pointer_moved(at(10, 12)).grid);
     assert!(row_text(c.grid(), 12).starts_with("╠═══"));
@@ -230,7 +308,7 @@ fn the_divider_keeps_its_proportion_through_a_window_resize() {
     // 82 x 30 is the smallest composed grid: body 24 rows.
     let mut c = ShellController::new(82, 30, GridMetrics::from_k(DEFAULT_K).unwrap()).unwrap();
     c.pointer_moved(at(10, 16));
-    c.press((82 * W, 30 * H), true);
+    c.fixture_press((82 * W, 30 * H), true);
     c.pointer_moved(at(10, 12));
     c.pointer_released();
     let panes = |c: &ShellController| row_text(c.grid(), 12).starts_with("╠═══");
@@ -248,7 +326,7 @@ fn dragging_the_playhead_row_moves_only_the_separator() {
     let mut c = controller();
     let before: Vec<String> = (5..15).map(|r| row_text(c.grid(), r)).collect();
     c.pointer_moved(at(10, 12)); // the playhead row
-    assert!(matches!(c.press(SURFACE, true), Press::Shell(_)));
+    assert!(matches!(c.fixture_press(SURFACE, true), Press::Shell(_)));
     assert!(c.dragging());
     assert!(
         c.pointer_moved(at(10, 9)).grid,
@@ -274,9 +352,9 @@ fn modal_and_drag_state_do_not_leak_into_each_other() {
     assert!(rename_open(&c));
     // While the modal is open the divider and playhead cannot be grabbed.
     c.pointer_moved(at(10, 16));
-    c.press(SURFACE, true);
+    c.fixture_press(SURFACE, true);
     assert!(!c.dragging());
     c.pointer_moved(at(10, 12));
-    c.press(SURFACE, true);
+    c.fixture_press(SURFACE, true);
     assert!(!c.dragging());
 }

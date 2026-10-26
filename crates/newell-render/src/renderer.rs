@@ -22,15 +22,14 @@ use ab_glyph::FontVec;
 use crate::glyph_atlas::{GlyphAtlas, load_font};
 use crate::scene::Scene;
 use crate::surface::{FrameAction, SurfaceState, classify};
-use crate::ui::{Theme, UiOverlay};
-use crate::{CameraSnapshot, SceneViewport};
+use crate::ui::{Theme, UiOverlay, UiPalette, target_rgb};
+use crate::{CameraSnapshot, SceneDisplayMode, SceneViewport};
 
 const FONT: &[u8] = include_bytes!("../../../assets/FiraCode-Regular.ttf");
 
-/// Background clear colour of the frame: the theme background (pure black or white). The 3D
-/// viewport is specified separately (`ARCHITECTURE.md` §3.6) and draws over this later.
-fn clear_color(theme: Theme) -> wgpu::Color {
-    let [r, g, b] = theme.background().map(f64::from);
+/// Palette background converted for the target; model styles draw over it unchanged.
+fn clear_color(palette: UiPalette, srgb: bool) -> wgpu::Color {
+    let [r, g, b] = target_rgb(palette.background(), srgb).map(f64::from);
     wgpu::Color { r, g, b, a: 1.0 }
 }
 
@@ -57,7 +56,7 @@ pub struct Renderer {
     font: FontVec,
     /// Atlases rasterised since start-up (cached sizes are reused, not rebuilt).
     atlas_builds: u32,
-    theme: Theme,
+    palette: UiPalette,
     /// The M3 scene is drawn before the transparent ASCII overlay.
     scene: Scene,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
@@ -133,7 +132,7 @@ impl Renderer {
             ui,
             font,
             atlas_builds: 1,
-            theme: Theme::default(),
+            palette: UiPalette::default(),
             scene,
             gpu_errors,
         })
@@ -152,7 +151,7 @@ impl Renderer {
 
     /// Sets the physical-pixel rectangle in which the 3D scene is drawn.
     pub fn set_scene_viewport(&mut self, viewport: SceneViewport) {
-        self.scene.set_viewport(viewport);
+        self.scene.set_viewport(&self.device, viewport);
     }
 
     /// Masks one popup-sized rectangle from the scene while preserving the rest of its viewport.
@@ -160,14 +159,14 @@ impl Renderer {
         self.scene.set_occlusions(occlusions);
     }
 
-    /// Applies the View menu's shading index to the 3D scene.
-    pub fn set_scene_shading(&mut self, shading: usize) {
-        self.scene.set_shading(shading);
+    /// Applies a typed display mode to the 3D scene.
+    pub fn set_scene_display_mode(&mut self, mode: SceneDisplayMode) {
+        self.scene.set_display_mode(mode);
     }
 
     /// Consumes immutable camera matrices prepared by the window Controller.
     pub fn set_scene_camera(&mut self, camera: CameraSnapshot) {
-        self.scene.set_camera(camera);
+        self.scene.set_camera(&self.device, camera);
     }
 
     /// Replaces the ASCII overlay with `grid`, drawn from the top-left in whole cells of the
@@ -220,11 +219,19 @@ impl Renderer {
         self.atlas_builds
     }
 
-    /// Sets the UI theme (`Light` or `Dark`). Only the shader's theme uniform and the clear
-    /// colour change; the grid is not re-uploaded and the draw is still one call.
+    /// Changes Theme while preserving Color; updates palette uniforms and the clear colour.
+    /// Publish a grid with [`Self::set_ui_grid`] when visible glyphs also change, such as an
+    /// open View menu's Theme label. This method does not recompose or upload cells.
     pub fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
-        self.ui.set_theme(&self.queue, theme);
+        self.set_palette(self.palette.with_theme(theme));
+    }
+
+    /// Selects the UI palette and viewport background without changing model styles.
+    /// Changed UI glyphs, including Color's frame substitutions, require a separate
+    /// [`Self::set_ui_grid`] publication.
+    pub fn set_palette(&mut self, palette: UiPalette) {
+        self.palette = palette;
+        self.ui.set_palette(&self.queue, palette);
     }
 
     /// Acquires, clears to the theme background, submits, presents. Returns `Skipped` when the
@@ -270,7 +277,10 @@ impl Renderer {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(clear_color(self.theme)),
+                    load: wgpu::LoadOp::Clear(clear_color(
+                        self.palette,
+                        self.config.format.is_srgb(),
+                    )),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -327,5 +337,30 @@ fn block_on<F: Future>(future: F) -> F::Output {
             Poll::Ready(output) => return output,
             Poll::Pending => thread::park(),
         }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    #[test]
+    fn clear_background_converts_for_srgb_and_keeps_linear_components() {
+        for theme in [Theme::Light, Theme::Dark] {
+            for enabled in [false, true] {
+                let palette = UiPalette::new(theme, enabled);
+                let raw = clear_color(palette, false);
+                let encoded = clear_color(palette, true);
+                assert_eq!([raw.r, raw.g, raw.b], palette.background().map(f64::from));
+                assert_eq!(
+                    [encoded.r, encoded.g, encoded.b],
+                    target_rgb(palette.background(), true).map(f64::from)
+                );
+                assert_eq!(encoded.a, 1.0);
+                assert_eq!(raw.a, 1.0);
+            }
+        }
+        let raw = clear_color(UiPalette::new(Theme::Dark, true), false);
+        let linear = clear_color(UiPalette::new(Theme::Dark, true), true);
+        assert!(linear.r < raw.r && linear.g < raw.g && linear.b < raw.b);
     }
 }

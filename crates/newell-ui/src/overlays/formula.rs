@@ -273,13 +273,15 @@ impl FormulaEditor {
         let mut canvas = Canvas::new(grid, rect);
 
         let fill = "─".repeat(inner - TITLE.chars().count() - 1);
-        canvas.text(0, 0, &format!("╭─{TITLE}{fill}╮"), style, surface);
+        let title_end = canvas.contour(0, 0, "╭─", style, surface);
+        let title_end = canvas.text(title_end, 0, TITLE, style, surface);
+        canvas.contour(title_end, 0, &format!("{fill}╮"), style, surface);
 
         let outline = "─".repeat(inner - 2);
         for (row, left, right) in [(BOX_TOP_ROW, '┌', '┐'), (BOX_BOTTOM_ROW, '└', '┘')] {
-            canvas.text(0, row, "│", style, surface);
-            canvas.text(1, row, &format!("{left}{outline}{right}"), style, text);
-            canvas.text(last, row, "│", style, surface);
+            canvas.contour(0, row, "│", style, surface);
+            canvas.contour(1, row, &format!("{left}{outline}{right}"), style, text);
+            canvas.contour(last, row, "│", style, surface);
         }
 
         let caret = self.on_text().then(|| self.edit.caret());
@@ -290,18 +292,20 @@ impl FormulaEditor {
             let from = (line * ROW_CELLS).min(shown.len());
             let to = (from + ROW_CELLS).min(shown.len());
             let cells: String = shown[from..to].iter().collect();
-            canvas.text(0, row, "│", style, surface);
+            canvas.contour(0, row, "│", style, surface);
+            canvas.contour(1, row, "│", style, text);
             canvas.text(
-                1,
+                2,
                 row,
-                &format!("│{cells:<width$}│", width = ROW_CELLS),
+                &format!("{cells:<width$}", width = ROW_CELLS),
                 style,
                 text,
             );
-            canvas.text(last, row, "│", style, surface);
+            canvas.contour(last - 1, row, "│", style, text);
+            canvas.contour(last, row, "│", style, surface);
         }
 
-        canvas.text(
+        canvas.contour(
             0,
             SEPARATOR_ROW,
             &format!("│{}│", "─".repeat(inner)),
@@ -309,7 +313,7 @@ impl FormulaEditor {
             surface,
         );
 
-        canvas.text(0, BUTTON_ROW, "│", style, surface);
+        canvas.contour(0, BUTTON_ROW, "│", style, surface);
         canvas.text(1, BUTTON_ROW, "       OK       ", style, Some(ok));
         let border = SharedBorder {
             axis: BorderAxis::Vertical,
@@ -318,9 +322,9 @@ impl FormulaEditor {
         };
         canvas.put(17, BUTTON_ROW, shared('│', style, border));
         canvas.text(18, BUTTON_ROW, "     Cancel     ", style, Some(cancel));
-        canvas.text(last, BUTTON_ROW, "│", style, surface);
+        canvas.contour(last, BUTTON_ROW, "│", style, surface);
 
-        canvas.text(
+        canvas.contour(
             0,
             SIZE.1 - 1,
             &format!("╰{}╯", "─".repeat(inner)),
@@ -656,6 +660,7 @@ mod tests {
         f.open(&mut inter, "");
         let mut g = CellGrid::new(80, 24).unwrap();
         let covered = Cell {
+            ink: crate::InkRole::Text,
             content: CellContent::Glyph('x'),
             style: StyleId::DEFAULT,
             widget_id: Some(id(BACKGROUND)),
@@ -726,6 +731,56 @@ mod tests {
             f.activate(ok());
             let mut stray = OverlayStack::default();
             f.sync_overlay(&mut stray, GridRect::new(100, 100, 30, 30));
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{InkRole, InteractionState, WidgetStyles};
+    #[test]
+    fn title_edges_fields_and_hover_boundaries_have_separate_ink() {
+        let mut modal = FormulaEditor::new(2000);
+        let mut inter = InteractionState::default();
+        modal.open(&mut inter, "label with │ [+] ☰");
+        let styles = WidgetStyles::default();
+        let frame = GridRect::new(1, 1, SIZE.0, SIZE.1);
+        let mut grid = CellGrid::new(SIZE.0 + 2, SIZE.1 + 2).unwrap();
+        modal.draw_art(
+            &mut grid,
+            &WidgetContext {
+                styles: &styles,
+                interaction: &inter,
+            },
+            frame,
+        );
+        for dx in 0..SIZE.0 {
+            let c = grid.get(1 + dx, 1).unwrap();
+            assert_eq!(
+                c.ink,
+                if (2..2 + TITLE.len() as u32).contains(&dx) {
+                    InkRole::Text
+                } else {
+                    InkRole::Contour
+                }
+            );
+            assert_eq!(c.widget_id, Some(modal.surface()));
+        }
+        assert_eq!(grid.get(0, 1).unwrap(), &crate::Cell::default());
+        let mut cropped = CellGrid::new(8, SIZE.1 + 2).unwrap();
+        modal.draw_art(
+            &mut cropped,
+            &WidgetContext {
+                styles: &styles,
+                interaction: &inter,
+            },
+            frame,
+        );
+        for y in 0..cropped.rows() {
+            for x in 0..cropped.cols() {
+                assert_eq!(cropped.get(x, y), grid.get(x, y));
+            }
         }
     }
 }

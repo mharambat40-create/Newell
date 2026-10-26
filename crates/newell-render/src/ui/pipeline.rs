@@ -10,10 +10,10 @@ use newell_ui::CellGrid;
 use wgpu::util::DeviceExt;
 
 use super::gpu_cell::{GPU_CELL_BYTES, cells_to_bytes};
-use super::theme::Theme;
+use super::theme::{Theme, UiPalette};
 use crate::glyph_atlas::GlyphAtlas;
 
-const UNIFORM_BYTES: usize = 64;
+const UNIFORM_BYTES: usize = 96;
 /// Vertices per cell quad (two triangles).
 const QUAD_VERTICES: u32 = 6;
 
@@ -49,7 +49,7 @@ pub struct UiOverlay {
     cols: u32,
     viewport_px: (u32, u32),
     srgb_target: bool,
-    theme: Theme,
+    palette: UiPalette,
 }
 
 impl UiOverlay {
@@ -131,7 +131,7 @@ impl UiOverlay {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: GPU_CELL_BYTES as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Uint32],
+                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -164,7 +164,7 @@ impl UiOverlay {
             cols: 0,
             viewport_px: (1, 1),
             srgb_target: format.is_srgb(),
-            theme: Theme::default(),
+            palette: UiPalette::default(),
         }
     }
 
@@ -298,10 +298,15 @@ impl UiOverlay {
         self.write_uniforms(queue);
     }
 
-    /// Sets the theme. Rewrites only the small uniform buffer: no cell upload, no extra draw.
+    /// Changes Theme without changing this window's Color flag.
     pub fn set_theme(&mut self, queue: &wgpu::Queue, theme: Theme) {
-        if self.theme != theme {
-            self.theme = theme;
+        self.set_palette(queue, self.palette.with_theme(theme));
+    }
+
+    /// Updates palette uniforms without rebuilding the atlas or uploading cells.
+    pub fn set_palette(&mut self, queue: &wgpu::Queue, palette: UiPalette) {
+        if self.palette != palette {
+            self.palette = palette;
             self.write_uniforms(queue);
         }
     }
@@ -320,18 +325,7 @@ impl UiOverlay {
             atlas.width() as f32,
             atlas.height() as f32,
         ];
-        let mut bytes = Vec::with_capacity(UNIFORM_BYTES);
-        for value in floats {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        bytes.extend_from_slice(&self.cols.to_le_bytes());
-        bytes.extend_from_slice(&u32::from(self.srgb_target).to_le_bytes());
-        // Pads `cols` / `srgb_target` to the 16-byte alignment of the colour vector.
-        bytes.extend_from_slice(&[0; 8]);
-        for c in self.theme.foreground() {
-            bytes.extend_from_slice(&c.to_le_bytes());
-        }
-        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        let bytes = uniform_bytes(floats, self.cols, self.srgb_target, self.palette);
         queue.write_buffer(&self.uniforms, 0, &bytes);
     }
 
@@ -346,5 +340,165 @@ impl UiOverlay {
         pass.set_vertex_buffer(0, self.cells.slice(..));
         pass.draw(0..QUAD_VERTICES, 0..self.cell_count);
         1
+    }
+}
+
+fn uniform_bytes(floats: [f32; 8], cols: u32, srgb: bool, palette: UiPalette) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(UNIFORM_BYTES);
+    for value in floats {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&cols.to_le_bytes());
+    bytes.extend_from_slice(&u32::from(srgb).to_le_bytes());
+    // Pads `cols` / `srgb_target` to the 16-byte alignment of the colour vector.
+    bytes.extend_from_slice(&[0; 8]);
+    for ink in [
+        newell_ui::InkRole::Text,
+        newell_ui::InkRole::Contour,
+        newell_ui::InkRole::Action,
+    ] {
+        for c in palette.foreground(ink) {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    #[test]
+    fn palette_uniform_has_exact_header_padding_and_aligned_inks() {
+        let palette = UiPalette::new(Theme::Light, true);
+        let bytes = uniform_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 42, true, palette);
+        assert_eq!(bytes.len(), 96);
+        assert_eq!(&bytes[32..36], &42u32.to_le_bytes());
+        assert_eq!(&bytes[36..40], &1u32.to_le_bytes());
+        assert_eq!(&bytes[40..48], &[0; 8]);
+        for (i, ink) in [
+            newell_ui::InkRole::Text,
+            newell_ui::InkRole::Contour,
+            newell_ui::InkRole::Action,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (j, component) in palette.foreground(ink).into_iter().chain([1.0]).enumerate() {
+                assert_eq!(
+                    &bytes[48 + 16 * i + 4 * j..52 + 16 * i + 4 * j],
+                    &component.to_le_bytes()
+                );
+            }
+        }
+    }
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        use std::{
+            sync::Arc,
+            task::{Context, Poll, Wake, Waker},
+        };
+        struct WakeThread(std::thread::Thread);
+        impl Wake for WakeThread {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = Waker::from(Arc::new(WakeThread(std::thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(f);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn color_invalid_raw_gpu_role_falls_back_to_text() {
+        use newell_ui::{CellContent, GridMetrics};
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let font = crate::glyph_atlas::load_font(
+            include_bytes!("../../../../assets/FiraCode-Regular.ttf").to_vec(),
+        )
+        .unwrap();
+        let atlas = GlyphAtlas::build(&font, GridMetrics::from_k(5).unwrap()).unwrap();
+        let mut overlay = UiOverlay::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, atlas);
+        let mut grid = CellGrid::new(2, 1).unwrap();
+        for x in 0..2 {
+            grid.get_mut(x, 0).unwrap().content = CellContent::Glyph('█');
+        }
+        overlay.set_grid(&device, &queue, &grid);
+        overlay.set_palette(&queue, UiPalette::new(Theme::Dark, true));
+        overlay.set_viewport(&queue, 40, 45);
+        queue.write_buffer(&overlay.cells, 12, &99u32.to_le_bytes());
+        let size = wgpu::Extent3d {
+            width: 40,
+            height: 45,
+            depth_or_array_layers: 1,
+        };
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256 * 45,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            assert_eq!(overlay.draw(&mut pass), 1);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(45),
+                },
+            },
+            size,
+        );
+        queue.submit(Some(encoder.finish()));
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::Wait).unwrap();
+        let pixels = readback.slice(..).get_mapped_range();
+        for row in pixels.chunks(256) {
+            assert_eq!(&row[..80], &row[80..160]);
+        }
+        assert!(pixels.contains(&255));
     }
 }

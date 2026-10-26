@@ -13,21 +13,21 @@ use crate::glyph_atlas::GlyphAtlas;
 /// `GpuCell::glyph` value for a cell that draws nothing.
 pub const EMPTY_GLYPH: u32 = u32::MAX;
 
-/// Size of one serialised [`GpuCell`]: one little-endian `u32`.
-pub const GPU_CELL_BYTES: usize = 4;
+/// Size of one serialised [`GpuCell`]: two little-endian `u32`s (glyph, semantic ink).
+pub const GPU_CELL_BYTES: usize = 8;
 
 /// Character drawn for a glyph that is not in the atlas.
 const FALLBACK_GLYPH: char = '?';
 
-/// What the shader needs for one cell: where its glyph lives in the atlas.
+/// One glyph atlas origin and its semantic ink index, consumed by the UI shader.
 ///
-/// The UI is strictly monochrome (`ARCHITECTURE.md` §3.6): a cell never carries a colour or a
-/// style. Every glyph is drawn in the theme foreground over the theme background, so the
-/// cell's `StyleId` does not reach the GPU.
+/// Logical styles and hit-test routing remain CPU state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuCell {
     /// Atlas slot origin in pixels, `x | y << 16`, or [`EMPTY_GLYPH`].
     pub glyph: u32,
+    /// `InkRole::index()` in palette order; the shader resolves invalid raw indices to Text.
+    pub ink: u32,
 }
 
 fn pack_origin(rect: &crate::glyph_atlas::GlyphRect) -> Option<u32> {
@@ -37,6 +37,7 @@ fn pack_origin(rect: &crate::glyph_atlas::GlyphRect) -> Option<u32> {
 }
 
 impl GpuCell {
+    /// Resolves the atlas origin, falling back to `?`, and retains the cell's semantic ink.
     pub fn from_cell(cell: &Cell, atlas: &GlyphAtlas) -> Self {
         let glyph = match cell.content {
             CellContent::Empty => EMPTY_GLYPH,
@@ -46,11 +47,18 @@ impl GpuCell {
                 .and_then(|info| pack_origin(&info.rect))
                 .unwrap_or(EMPTY_GLYPH),
         };
-        Self { glyph }
+        Self {
+            glyph,
+            ink: cell.ink.index(),
+        }
     }
 
+    /// Eight bytes: little-endian glyph origin followed by little-endian ink index.
     pub fn to_bytes(self) -> [u8; GPU_CELL_BYTES] {
-        self.glyph.to_le_bytes()
+        let mut bytes = [0; GPU_CELL_BYTES];
+        bytes[..4].copy_from_slice(&self.glyph.to_le_bytes());
+        bytes[4..].copy_from_slice(&self.ink.to_le_bytes());
+        bytes
     }
 }
 
@@ -80,6 +88,7 @@ mod tests {
 
     fn cell(ch: char, style: u16) -> Cell {
         Cell {
+            ink: newell_ui::InkRole::Text,
             content: CellContent::Glyph(ch),
             style: StyleId::new(style),
             widget_id: None,
@@ -136,7 +145,7 @@ mod tests {
 
     #[test]
     fn styles_never_reach_the_gpu() {
-        // Monochrome: every style slot serialises identically.
+        // Logical style never changes the semantic ink word.
         let atlas = atlas();
         let plain = GpuCell::from_cell(&cell('A', 0), &atlas);
         for style in [1, 2, 3, 4, u16::MAX] {
@@ -158,9 +167,12 @@ mod tests {
     }
 
     #[test]
-    fn bytes_are_the_little_endian_glyph() {
-        let g = GpuCell { glyph: 0x0028_0018 };
-        assert_eq!(g.to_bytes(), [0x18, 0x00, 0x28, 0x00]);
+    fn bytes_are_the_little_endian_glyph_and_ink() {
+        let g = GpuCell {
+            glyph: 0x0028_0018,
+            ink: 2,
+        };
+        assert_eq!(g.to_bytes(), [0x18, 0x00, 0x28, 0x00, 2, 0, 0, 0]);
     }
 
     #[test]
@@ -187,6 +199,35 @@ mod tests {
         let atlas = atlas();
         for (c, r) in [(0, 0), (0, 4), (4, 0)] {
             assert!(cells_to_bytes(&CellGrid::new(c, r).unwrap(), &atlas).is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use newell_ui::{InkRole, StyleId, WidgetId};
+    #[test]
+    fn ink_word_preserves_role_through_fallback_and_omits_routing_style() {
+        let font = crate::glyph_atlas::load_font(
+            include_bytes!("../../../../assets/FiraCode-Regular.ttf").to_vec(),
+        )
+        .unwrap();
+        let atlas = GlyphAtlas::build(&font, newell_ui::GridMetrics::from_k(5).unwrap()).unwrap();
+        for ink in [InkRole::Text, InkRole::Contour, InkRole::Action] {
+            let mut c = Cell {
+                content: CellContent::Glyph('é'),
+                ink,
+                ..Cell::default()
+            };
+            let raw = GpuCell::from_cell(&c, &atlas);
+            assert_eq!(raw.ink, ink.index());
+            assert_eq!(&raw.to_bytes()[4..], &ink.index().to_le_bytes());
+            c.content = CellContent::Glyph('?');
+            assert_eq!(GpuCell::from_cell(&c, &atlas), raw);
+            c.style = StyleId::new(4);
+            c.widget_id = Some(WidgetId::new(5));
+            assert_eq!(GpuCell::from_cell(&c, &atlas), raw);
         }
     }
 }

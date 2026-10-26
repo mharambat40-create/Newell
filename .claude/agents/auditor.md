@@ -16,4 +16,5 @@ mission, permitted inputs/outputs, verification and stopping conditions.
 
 Perform only the human-assigned stage. Never dispatch another agent or advance
 the workflow automatically. Preparing a prompt authorizes returning it only.
-Follow the shared parallel-work rules and preserve other tasks' work.
+Follow the shared sequential workflow in the existing `main` checkout and
+preserve existing work and the Git index.

@@ -24,10 +24,13 @@
 
 use std::ops::Range;
 
-use crate::widgets::{Canvas, NumericFields, draw_numeric_view, hover_row, shared};
+use crate::widgets::{
+    Canvas, FieldKind, NumericFields, draw_numeric_kind, draw_numeric_view, draw_text_kind,
+    hover_row, shared,
+};
 use crate::{
     BorderAxis, CellGrid, Cyclic, GridRect, SharedBorder, WidgetContext, WidgetId, WidgetState,
-    draw_button, draw_checkbox, draw_cyclic, draw_numeric_field, draw_text_field,
+    draw_button, draw_checkbox, draw_cyclic,
 };
 
 /// External width of every Action Box row, frame included.
@@ -41,6 +44,7 @@ pub(crate) const KEY_SLOTS: u32 = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Item {
     Text {
+        ink: crate::InkRole,
         col: u32,
         text: String,
     },
@@ -72,6 +76,7 @@ enum Item {
         value: String,
     },
     Numeric {
+        kind: FieldKind,
         col: u32,
         width: u32,
         field: WidgetId,
@@ -79,6 +84,7 @@ enum Item {
         text: String,
     },
     TextField {
+        kind: FieldKind,
         col: u32,
         width: u32,
         id: WidgetId,
@@ -133,12 +139,21 @@ impl Row {
 
     /// Literal text at the cursor, one cell per `char` (a space is an empty cell).
     pub(crate) fn text(self, text: &str) -> Self {
+        self.text_with_ink(text, crate::InkRole::Text)
+    }
+
+    pub(crate) fn contour(self, text: &str) -> Self {
+        self.text_with_ink(text, crate::InkRole::Contour)
+    }
+
+    fn text_with_ink(self, text: &str, ink: crate::InkRole) -> Self {
         let width = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
         let col = self.col;
         self.push(
             width,
             Item::Text {
                 col,
+                ink,
                 text: text.to_owned(),
             },
         )
@@ -235,6 +250,7 @@ impl Row {
             width,
             Item::Numeric {
                 col,
+                kind: FieldKind::Edit,
                 width,
                 field,
                 formula,
@@ -261,6 +277,7 @@ impl Row {
                 width,
                 Item::TextField {
                     col,
+                    kind: FieldKind::Selection,
                     width,
                     id,
                     text: empty.to_owned(),
@@ -279,6 +296,7 @@ impl Row {
             width,
             Item::Numeric {
                 col,
+                kind: FieldKind::Selection,
                 width,
                 field,
                 formula,
@@ -296,6 +314,7 @@ impl Row {
             1,
             Item::Text {
                 col: border,
+                ink: crate::InkRole::Contour,
                 text: "│".to_owned(),
             },
         )
@@ -475,9 +494,9 @@ fn draw_items(
     let state = WidgetState::default();
     for item in &row.items {
         match item {
-            Item::Text { col, text } => {
+            Item::Text { col, text, ink } => {
                 let mut canvas = Canvas::new(grid, at(*col, BOX_WIDTH.saturating_sub(*col)));
-                canvas.text(0, 0, text, ctx.styles.normal, None);
+                canvas.text_with_ink(0, 0, text, ctx.styles.normal, None, *ink);
             }
             Item::Divider {
                 col,
@@ -536,20 +555,31 @@ fn draw_items(
                 field,
                 formula,
                 text,
-            } => match fields.and_then(|f| f.view(*field, text)) {
+                kind,
+            } => match fields
+                .filter(|_| *kind == FieldKind::Edit)
+                .and_then(|f| f.view(*field, text))
+            {
                 Some(view) => {
                     draw_numeric_view(grid, ctx, at(*col, *width), *field, *formula, state, &view);
                 }
-                None => {
-                    draw_numeric_field(grid, ctx, at(*col, *width), *field, *formula, state, text)
-                }
+                None => draw_numeric_kind(
+                    grid,
+                    ctx,
+                    at(*col, *width),
+                    *field,
+                    *formula,
+                    state,
+                    (text, *kind),
+                ),
             },
             Item::TextField {
                 col,
                 width,
                 id,
                 text,
-            } => draw_text_field(grid, ctx, at(*col, *width), *id, state, text),
+                kind,
+            } => draw_text_kind(grid, ctx, at(*col, *width), *id, state, text, *kind),
         }
     }
 }
@@ -664,5 +694,71 @@ mod tests {
         let border = sep.shared_border.unwrap();
         assert_eq!(border.low, Some(WidgetId::new(BASE + 5 * KEY_SLOTS)));
         assert_eq!(border.high, Some(WidgetId::new(BASE + 5 * KEY_SLOTS + 1)));
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{InkRole, InteractionState, WidgetStyles};
+    #[test]
+    fn selection_counts_and_numeric_values_have_semantic_delimiters() {
+        let styles = WidgetStyles::default();
+        let interaction = InteractionState::default();
+        let ctx = WidgetContext {
+            styles: &styles,
+            interaction: &interaction,
+        };
+        let mut b = ActionBox::default();
+        for count in [0, 1, 3] {
+            b.push(
+                Row::new(10)
+                    .contour("│")
+                    .text(" │ input ")
+                    .select(0, count)
+                    .end(),
+            );
+        }
+        b.push(
+            Row::new(10)
+                .contour("│")
+                .text(" │ Depth ")
+                .numeric(1, "+|3.0 mm")
+                .end(),
+        );
+        let mut grid = CellGrid::new(31, 4).unwrap();
+        b.draw(&mut grid, &ctx, GridRect::new(0, 0, 31, 4));
+        for y in 0..4 {
+            assert_eq!(grid.get(0, y).unwrap().ink, InkRole::Contour);
+            assert_eq!(grid.get(2, y).unwrap().ink, InkRole::Text);
+            assert_eq!(
+                grid.get(10, y).unwrap().ink,
+                if y < 3 {
+                    InkRole::Action
+                } else {
+                    InkRole::Contour
+                }
+            );
+            assert_eq!(
+                grid.get(29, y).unwrap().ink,
+                if y < 3 {
+                    InkRole::Action
+                } else {
+                    InkRole::Contour
+                }
+            );
+            assert_eq!(grid.get(30, y).unwrap().ink, InkRole::Contour);
+        }
+        assert_eq!(grid.get(11, 3).unwrap().ink, InkRole::Action);
+        assert_eq!(grid.get(12, 3).unwrap().ink, InkRole::Contour);
+        assert_eq!(grid.get(13, 3).unwrap().ink, InkRole::Text);
+        assert_eq!(grid.get(28, 3).unwrap().ink, InkRole::Action);
+        let mut crop = CellGrid::new(12, 3).unwrap();
+        b.draw(&mut crop, &ctx, GridRect::new(0, 0, 12, 3));
+        for y in 0..3 {
+            for x in 0..12 {
+                assert_eq!(crop.get(x, y), grid.get(x, y));
+            }
+        }
     }
 }

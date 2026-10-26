@@ -44,10 +44,10 @@ pub const fn composed_grid_size(metrics: GridMetrics, width_px: u32, height_px: 
     )
 }
 
-/// The five UI Scale preference values in percent (`ARCHITECTURE.md` §3.1.1).
-pub const SCALE_PERCENTS: [u32; 5] = [60, 80, 100, 120, 140];
-/// The default preference, 100 %.
-pub const DEFAULT_SCALE_PERCENT: u32 = 100;
+/// The rendering multipliers paired by index with the UI labels in `shell::data::SCALE_LABELS`.
+pub const SCALE_FACTORS_PERCENT: [u32; 4] = [60, 80, 100, 120];
+/// The default rendering multiplier: UI label 100% maps to the former 80% preset.
+pub const DEFAULT_SCALE_FACTOR_PERCENT: u32 = 80;
 /// The largest monitor reference scale: `k = 5` (20 × 45 px) is the design reference size.
 pub const MAX_REFERENCE_K: u32 = 5;
 
@@ -111,17 +111,20 @@ pub struct ScaleDecision {
     pub fits: bool,
 }
 
-/// `effective_k` from the monitor's physical size, the mode and the preference in percent
-/// (clamped to 60…140). `None` or a zero size is an unknown monitor: reference 5, cap 7.
-/// `k_req = (reference · percent + 50) / 100` (round half up; no tie exists because every
-/// preference is a multiple of 20), `k = clamp(k_req, 2, clamp(k_fit, 2, 7))`.
+/// `effective_k` from the monitor's physical size, the mode and the selected rendering
+/// multiplier in percent (clamped to 60…120). `None` or a zero size is an unknown monitor:
+/// reference 5, cap 7. `k_req = (reference · multiplier + 50) / 100` (round half up; no tie
+/// exists because every multiplier is a multiple of 20), `k = clamp(k_req, 2, clamp(k_fit, 2, 7))`.
 #[must_use]
 pub fn effective_scale(
     monitor: Option<(u32, u32)>,
     mode: ScaleMode,
-    percent: u32,
+    scale_factor_percent: u32,
 ) -> ScaleDecision {
-    let percent = percent.clamp(SCALE_PERCENTS[0], SCALE_PERCENTS[SCALE_PERCENTS.len() - 1]);
+    let scale_factor_percent = scale_factor_percent.clamp(
+        SCALE_FACTORS_PERCENT[0],
+        SCALE_FACTORS_PERCENT[SCALE_FACTORS_PERCENT.len() - 1],
+    );
     let known = monitor.filter(|&(w, h)| w > 0 && h > 0);
     let (reference, cap, fits) = match known {
         Some(size) => {
@@ -134,7 +137,7 @@ pub fn effective_scale(
         }
         None => (MAX_REFERENCE_K, MAX_K, true),
     };
-    let requested = (reference * percent + 50) / 100;
+    let requested = (reference * scale_factor_percent + 50) / 100;
     ScaleDecision {
         k: requested.clamp(MIN_K, cap),
         reference,
@@ -406,21 +409,21 @@ mod tests {
     const WINDOWED: ScaleMode = ScaleMode::Windowed;
     const FULLSCREEN: ScaleMode = ScaleMode::Fullscreen;
 
-    fn row(monitor: (u32, u32), mode: ScaleMode) -> [u32; 5] {
-        SCALE_PERCENTS.map(|p| effective_scale(Some(monitor), mode, p).k)
+    fn row(monitor: (u32, u32), mode: ScaleMode) -> [u32; 4] {
+        SCALE_FACTORS_PERCENT.map(|p| effective_scale(Some(monitor), mode, p).k)
     }
 
     #[test]
     fn example_table_windowed_and_fullscreen() {
-        type Row = ((u32, u32), [u32; 5], [u32; 5]);
+        type Row = ((u32, u32), [u32; 4], [u32; 4]);
         let table: [Row; 7] = [
-            ((1366, 768), [2, 2, 2, 2, 2], [2, 2, 2, 2, 2]),
-            ((1920, 1080), [2, 2, 2, 2, 3], [2, 2, 2, 2, 3]),
-            ((1920, 1200), [2, 3, 4, 4, 4], [2, 3, 4, 4, 4]),
-            ((2560, 1440), [3, 4, 5, 5, 5], [3, 4, 5, 5, 5]),
-            ((2560, 1664), [3, 4, 5, 5, 5], [3, 4, 5, 6, 6]),
-            ((3024, 1964), [3, 4, 5, 6, 6], [3, 4, 5, 6, 7]),
-            ((3840, 2160), [3, 4, 5, 6, 7], [3, 4, 5, 6, 7]),
+            ((1366, 768), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1080), [2, 2, 2, 2], [2, 2, 2, 2]),
+            ((1920, 1200), [2, 3, 4, 4], [2, 3, 4, 4]),
+            ((2560, 1440), [3, 4, 5, 5], [3, 4, 5, 5]),
+            ((2560, 1664), [3, 4, 5, 5], [3, 4, 5, 6]),
+            ((3024, 1964), [3, 4, 5, 6], [3, 4, 5, 6]),
+            ((3840, 2160), [3, 4, 5, 6], [3, 4, 5, 6]),
         ];
         for (monitor, windowed, fullscreen) in table {
             assert_eq!(row(monitor, WINDOWED), windowed, "{monitor:?} windowed");
@@ -452,7 +455,7 @@ mod tests {
         for w in (600..4500).step_by(97) {
             for h in (500..2600).step_by(89) {
                 let mut previous = 0;
-                for percent in SCALE_PERCENTS {
+                for percent in SCALE_FACTORS_PERCENT {
                     for mode in [WINDOWED, FULLSCREEN] {
                         let d = effective_scale(Some((w, h)), mode, percent);
                         assert!((MIN_K..=MAX_K).contains(&d.k));
@@ -471,7 +474,7 @@ mod tests {
     #[test]
     fn rounding_has_no_ties() {
         for reference in MIN_K..=MAX_REFERENCE_K {
-            for percent in SCALE_PERCENTS {
+            for percent in SCALE_FACTORS_PERCENT {
                 assert_ne!(reference * percent % 100, 50, "{reference} × {percent}");
             }
         }
@@ -523,10 +526,10 @@ mod tests {
     }
 
     #[test]
-    fn full_hd_and_retina_regression_at_100_percent() {
-        // Full HD: k = 2, cells 8 × 18. Retina: k = 5, cells 20 × 45. Both keep 4:9, 82 × 30.
-        for (monitor, k, cell) in [((1920, 1080), 2, (8, 18)), ((2560, 1664), 5, (20, 45))] {
-            let d = effective_scale(Some(monitor), WINDOWED, DEFAULT_SCALE_PERCENT);
+    fn startup_factor_80_keeps_the_minimum_on_full_hd_and_uses_k4_on_retina() {
+        // Startup label 100% maps to factor 80: k = 2 on Full HD and k = 4 on Retina.
+        for (monitor, k, cell) in [((1920, 1080), 2, (8, 18)), ((2560, 1664), 4, (16, 36))] {
+            let d = effective_scale(Some(monitor), WINDOWED, DEFAULT_SCALE_FACTOR_PERCENT);
             assert_eq!(d.k, k, "{monitor:?}");
             let metrics = m(d.k);
             assert_eq!((metrics.cell_width_px(), metrics.cell_height_px()), cell);
@@ -567,7 +570,7 @@ mod tests {
 
     #[test]
     fn small_monitor_clamps_several_percentages_to_one_k() {
-        assert_eq!(row((1920, 1080), WINDOWED), [2, 2, 2, 2, 3]);
+        assert_eq!(row((1920, 1080), WINDOWED), [2, 2, 2, 2]);
         assert!(effective_scale(Some((1366, 768)), WINDOWED, 100).fits);
         assert!(effective_scale(Some((1920, 1080)), WINDOWED, 100).fits);
         // k = 2 does not fit a monitor below 656 × 540 usable: 82 × 30 stays, k stays 2.

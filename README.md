@@ -11,18 +11,23 @@ Designed for extreme performance and a minimal memory footprint, Newell adopts a
 * **License:** **AGPL-3.0** (Open Source).
 
 ## The Agentic Workflow
-Newell's codebase is generated and refactored by four pipeline AI agents (Architect, Challenger, Executor, Auditor) and an optional read-only Explorer helper, working in ephemeral sessions to prevent context drift:
+Newell's codebase is generated and refactored by four AI roles (Architect,
+Challenger, Executor, Auditor) and an optional read-only Explorer helper,
+working in ephemeral sessions to prevent context drift:
 
 1. **Architect:** Translates concepts into Rust implementation plans.
-2. **Challenger:** Reviews plans for logical flaws and borrow-checker risks.
-3. **Executor:** Implements the approved plan and makes its tests pass.
-4. **Auditor:** Refactors green implementations (Clippy, docs, AGPL headers).
+2. **Challenger (optional):** Reviews plans when the human requests it; its
+   verdict is advice.
+3. **Executor:** Implements a plan after the human explicitly approves it and
+   requests implementation, then verifies the result.
+4. **Auditor (on request):** Refactors green implementations (Clippy, docs,
+   AGPL headers).
 
 **Explorer (optional helper):** Read-only conversational partner for project navigation. It is not a pipeline stage.
 
 **Every role is available to both Claude and ChatGPT through Codex.** The human
-assigns each role and controls every transition. Parallel writing tasks use
-separate branches/worktrees and an identified common baseline. Start with the
+assigns each role and controls every transition. All roles work sequentially
+in the existing Newell checkout on `main`. Start with the
 [shared workflow and prompt template](docs/agents/README.md).
 
 ## Documentation & AI Entry Points

@@ -155,7 +155,27 @@ fn selection_panel_open() {
     let mut s = shell();
     click(&mut s, "Add");
     click(&mut s, "Merge with all");
-    click(&mut s, "[Select…");
+    // The first Select field is Profile; target this ordinary entity field explicitly.
+    let grid = s.compose().unwrap();
+    let (col, row) = (0..grid.rows())
+        .find_map(|row| {
+            let chars = row_text(&grid, row);
+            let line: String = chars.iter().collect();
+            line.contains("Targets").then(|| {
+                let col = chars.iter().position(|&c| c == '[').unwrap();
+                (u32::try_from(col).unwrap(), row)
+            })
+        })
+        .expect("Targets field must be visible");
+    let hit = hit_test(
+        UiPoint {
+            x: col * 6 + 3,
+            y: row * 10 + 5,
+        },
+        GridMetrics::new(6, 10).unwrap(),
+        &grid,
+    );
+    assert!(s.click(hit));
     assert!(s.modal_open());
     insta::assert_snapshot!(snapshot(&s));
 }
@@ -343,4 +363,35 @@ fn hover_button_cancel() {
     let s = shell();
     let id = id_in_row(&s.compose().unwrap(), "OK", "Cancel");
     insta::assert_snapshot!(hovered(&s, id));
+}
+
+#[test]
+fn view_menu_color_unchecked() {
+    let mut s = shell();
+    s.key(ShellKey::Alt('v'));
+    insta::assert_snapshot!(snapshot(&s));
+}
+
+#[test]
+fn view_menu_color_checked_dark() {
+    let mut s = shell();
+    s.key(ShellKey::Alt('v'));
+    for _ in 0..4 {
+        s.key(ShellKey::Down);
+    }
+    s.key(ShellKey::Enter);
+    insta::assert_snapshot!(snapshot(&s));
+}
+
+#[test]
+fn view_menu_color_checked_light() {
+    let mut s = shell();
+    s.key(ShellKey::Alt('v'));
+    for _ in 0..4 {
+        s.key(ShellKey::Down);
+    }
+    s.key(ShellKey::Enter);
+    s.key(ShellKey::Up);
+    s.key(ShellKey::Enter);
+    insta::assert_snapshot!(snapshot(&s));
 }

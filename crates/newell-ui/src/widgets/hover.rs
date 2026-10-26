@@ -178,6 +178,7 @@ mod tests {
         };
         let style = StyleId::new(3);
         *g.get_mut(0, 0).unwrap() = Cell {
+            ink: crate::InkRole::Text,
             content: CellContent::Glyph('│'),
             style,
             widget_id: Some(id),
@@ -207,5 +208,52 @@ mod tests {
         let mut past = line("│ Ab");
         assert!(hover_row(&mut past, 0, 0, 1..9));
         assert_eq!(text(&past), "╞ Ab");
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use crate::{BorderAxis, InkRole, SharedBorder, StyleId, WidgetId};
+    #[test]
+    fn replacement_glyphs_and_blank_keep_every_replaced_cells_metadata() {
+        for ink in [InkRole::Text, InkRole::Contour, InkRole::Action] {
+            for (before, after, start) in [("│ value│", "╞ value╡", 1), ("╰╴value│", "╘ value╡", 2)]
+            {
+                let mut g = CellGrid::new(8, 1).unwrap();
+                for (x, ch) in before.chars().enumerate() {
+                    let c = g.get_mut(x as u32, 0).unwrap();
+                    c.content = if ch == ' ' {
+                        CellContent::Empty
+                    } else {
+                        CellContent::Glyph(ch)
+                    };
+                    c.ink = ink;
+                    c.style = StyleId::new(2);
+                    c.widget_id = Some(WidgetId::new(x as u32));
+                    c.shared_border = Some(SharedBorder {
+                        axis: BorderAxis::Vertical,
+                        low: c.widget_id,
+                        high: None,
+                    });
+                }
+                let old = g.clone();
+                assert!(hover_row(&mut g, 0, 0, start..7));
+                for ((a, b), ch) in old.cells().iter().zip(g.cells()).zip(after.chars()) {
+                    assert_eq!(
+                        b.content,
+                        if ch == ' ' {
+                            CellContent::Empty
+                        } else {
+                            CellContent::Glyph(ch)
+                        }
+                    );
+                    assert_eq!(
+                        (a.ink, a.style, a.widget_id, a.shared_border),
+                        (b.ink, b.style, b.widget_id, b.shared_border)
+                    );
+                }
+            }
+        }
     }
 }

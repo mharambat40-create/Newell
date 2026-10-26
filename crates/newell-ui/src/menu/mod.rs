@@ -131,6 +131,10 @@ impl Mnemonic {
 /// An activatable menu item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuItem<'a> {
+    /// Zero-based Unicode-scalar offsets of explicit affordances in `label`.
+    /// The caller supplies semantics; the popup writer changes only these cells' ink.
+    /// Offsets beyond the label or its visible clipped row are ignored.
+    pub action_offsets: &'a [u32],
     pub action: MenuAction,
     pub label: &'a str,
     pub mnemonic: Option<Mnemonic>,
@@ -156,6 +160,8 @@ pub struct MenuCycle<'a> {
     pub label: &'a str,
     pub values: &'a [&'a str],
     pub current: usize,
+    /// At an endpoint, hide and reject the corresponding arrow instead of wrapping.
+    pub bounded: bool,
     pub enabled: bool,
 }
 
@@ -479,7 +485,17 @@ impl MenuState {
     /// Requests a cyclic change if `entry` is an enabled cyclic row.
     fn cycle(entry: Option<&MenuEntry<'_>>, step: CycleStep) -> MenuResult {
         match entry {
-            Some(MenuEntry::Cyclic(c)) if c.enabled => MenuResult::Cycled(c.action, step),
+            Some(MenuEntry::Cyclic(c)) if c.enabled => {
+                let at_endpoint = match step {
+                    CycleStep::Previous => c.current == 0,
+                    CycleStep::Next => c.current.saturating_add(1) >= c.values.len(),
+                };
+                if c.bounded && at_endpoint {
+                    MenuResult::Handled
+                } else {
+                    MenuResult::Cycled(c.action, step)
+                }
+            }
             _ => MenuResult::Handled,
         }
     }

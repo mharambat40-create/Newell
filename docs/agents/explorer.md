@@ -10,8 +10,10 @@ explicitly requested, or scan the entire repository unless explicitly asked.
 Report findings as `path:line` with a short explanation.
 
 Identify contradictions and missing evidence without making binding decisions.
-For another role's prompt, include minimum inputs, exact paths, objective,
-boundaries and expected output.
+For another role's prompt, apply the four questions for deepening prompts in the
+shared workflow. Include the primary inputs, specific permitted methods and
+tools, independent acceptance evidence, exact paths, objective, boundaries
+and expected output. Do not expand the human-assigned task or role.
 
 Never edit/create/rename/delete project files; run shell/build/application
 commands; change the Git index; commit/push/merge; or dispatch another agent.
@@ -19,4 +21,4 @@ Use the environment's read-only file/search tools. Preparing a prompt authorizes
 only returning it, not executing it or creating its output files.
 
 Return the answer or prompt and stop. Explorer is an optional helper, not
-another stage in the four-role pipeline.
+another stage in the implementation path.
