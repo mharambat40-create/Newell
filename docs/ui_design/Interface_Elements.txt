@@ -55,11 +55,37 @@ Angle   [+|0.0 deg      ☰]
 Angle   [-|0.0 deg      ☰]
 
 "Scroll bar alternatives"
+Pour <=5, pas de scroll bar
+Pour 6 :
+▲ ▲
+┃ ╻
+┃ ┃
+╹ ┃
+▼ ▼
+Pour 7 :
+▲ ▲ ▲
+┃ ╻  
+┃ ┃ ┃
+  ╹ ┃
+▼ ▼ ▼
+Pour 8 :
+▲ ▲ ▲ ▲
+┃ ╻    
+╹ ┃ ┃ ╻
+    ╹ ┃
+▼ ▼ ▼ ▼
+Pour 9 :
 ▲ ▲ ▲ ▲ ▲
 ┃ ╻      
   ╹ ┃ ╻  
       ╹ ┃
 ▼ ▼ ▼ ▼ ▼
+Pour 10 :
+▲ ▲ ▲ ▲ ▲ ▲
+╹ ╻        
+    ╹ ╻    
+        ╹ ╻
+▼ ▼ ▼ ▼ ▼ ▼
 
 "Head Action Box variants"
 ╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮
