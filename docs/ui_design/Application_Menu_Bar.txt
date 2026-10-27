@@ -25,6 +25,7 @@
 │ ■ Task bar        │
 │ ■ Status bar      │
 │ ■ Navigation cube │
+│ ╰╴   ◀ Gizmo  ▶   │
 │ □ Grid Overlay    │
 │ [N]ormal to       │
 │ Reset Cam         │
@@ -34,6 +35,12 @@
 ◀    Points     ▶, ◀     Line      ▶, ◀  Wireframe    ▶, ◀  Hidden Line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀    Default    ▶
 │ UI Scale    80% ▶ │, │ UI Scale ◀ 100% ▶ │, │ UI Scale ◀ 120% ▶ │, │ UI Scale ◀ 140%   │
 [ ◐ Light ], [ ◑ Dark  ]
+
+│ □ Navigation cube │
+
+│ ■ Navigation cube │
+│ ╰╴   ◀ Gizmo  ▶   │
+◀ Gizmo  ▶, ◀  Cube  ▶
 ╭─Help──────╮
 │ Tutorial  │
 │ Docs      │
