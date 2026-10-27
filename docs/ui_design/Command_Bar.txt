@@ -1,6 +1,6 @@
 "Command Bar"
 
- Workbench │ Sketch │ Create │ Shape │ Modify │ Pattern │ Construction 
+ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities
 
 ╭─Workbench───────╮
 │ Part design     │
@@ -12,6 +12,12 @@
 │ Animation       │
 │ Manufacture     │
 │ PLM             │
+╰─────────────────╯
+╭─Datum───────────╮
+│ [S]ketch        │
+│ [Pl]ane         │
+│ [A]xis          │
+│ [P]oint         │
 ╰─────────────────╯
 ╭─Create──────────╮
 │ [E]xtrude       │
@@ -56,4 +62,11 @@
 │ Linear          │
 │ Circular        │
 │ Curve           │
+╰─────────────────╯
+
+╭─Utilities───────╮
+│ [M]esure        │
+│ Split View      │
+│ Curvature       │
+│ Properties      │
 ╰─────────────────╯

@@ -21,6 +21,8 @@ pub enum DragKind {
     Orbit,
     /// A deferred secondary-button pan after the pointer has crossed the click-drag threshold.
     SecondaryPan,
+    /// A phased, button-free trackpad scroll pan over exposed scene pixels.
+    TrackpadPan,
     Pan,
 }
 
@@ -38,8 +40,8 @@ impl DragKind {
 
 /// Logical-pixel pointer movement needed to capture a primary or secondary drag.
 ///
-/// A primary press still reaches ordinary scene picking immediately. Keeping this slop in
-/// logical pixels makes clicks equally stable on standard and Retina displays.
+/// Selection waits for a certified release. Keeping this slop in logical pixels makes
+/// clicks equally stable on standard and Retina displays.
 pub const CLICK_DRAG_THRESHOLD_LOGICAL_PX: f64 = 4.0;
 /// Distinct phase streams cannot steal each other's zoom anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,11 @@ pub struct Navigation {
     secondary_scroll_offset: (f64, f64),
     /// Keeps the same phased scroll stream out of UI scrolling/zoom after button release.
     secondary_scroll_stream: bool,
+    /// Ownership and accumulated physical-pixel displacement for a phased PixelDelta pan.
+    trackpad_pan_stream: bool,
+    trackpad_pan_anchor: Option<(f64, f64)>,
+    trackpad_pan_offset: (f64, f64),
+    trackpad_pan_gate: NavigationGesture,
     zoom: Option<Zoom>,
     scroll_gate: NavigationGesture,
     pinch_gate: NavigationGesture,
@@ -276,6 +283,14 @@ impl Navigation {
     /// Routes pointer movement through the captured drag, including any two-finger scroll
     /// displacement accumulated while the secondary button is held.
     pub fn advance_pointer(&mut self, point: (f64, f64)) -> bool {
+        // Scroll deltas alone advance this capture; macOS also emits CursorMoved
+        // before scroll events, without including the accumulated pan displacement.
+        if self
+            .drag
+            .is_some_and(|drag| drag.kind == DragKind::TrackpadPan)
+        {
+            return false;
+        }
         let point = if self.secondary_pan_active() {
             (
                 point.0 + self.secondary_scroll_offset.0,
@@ -306,13 +321,18 @@ impl Navigation {
             }
             if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
                 self.secondary_scroll_stream = false;
+                self.scroll_gate.update(phase, false);
             }
             return Some(false);
         }
         // Reject the same scroll stream's momentum after button release; a fresh Started
         // phase can still begin ordinary cursor-targeted zoom.
         self.scroll_gate.update(phase, false);
-        self.secondary_scroll_stream = !matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        self.secondary_scroll_stream = match phase {
+            TouchPhase::Started => true,
+            TouchPhase::Moved => self.secondary_scroll_stream,
+            TouchPhase::Ended | TouchPhase::Cancelled => false,
+        };
         if phase == TouchPhase::Cancelled || !delta.0.is_finite() || !delta.1.is_finite() {
             return Some(false);
         }
@@ -325,6 +345,104 @@ impl Navigation {
         }
         self.secondary_scroll_offset = next;
         Some(self.advance_pointer(pointer))
+    }
+    /// Marks a phased PixelDelta stream as owned by the UI. Later phases cannot start a
+    /// viewport pan if the pointer leaves that UI target before the stream ends.
+    pub fn reject_trackpad_pan_scroll(&mut self, phase: TouchPhase) {
+        if phase == TouchPhase::Started {
+            self.trackpad_pan_stream = true;
+            self.trackpad_pan_gate.update(phase, false);
+            self.release(DragKind::TrackpadPan);
+        } else if self.trackpad_pan_stream {
+            self.trackpad_pan_gate.update(phase, false);
+            self.release(DragKind::TrackpadPan);
+            if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.trackpad_pan_stream = false;
+            }
+        }
+    }
+    /// Routes a phased PixelDelta gesture through the existing contextual-depth pan math.
+    /// `PixelDelta` is already in physical pixels; it is deliberately not scaled again.
+    /// `None` means this was not a stream started by this router, leaving it available to zoom.
+    pub fn advance_trackpad_pan_scroll(
+        &mut self,
+        delta: (f64, f64),
+        phase: TouchPhase,
+        pointer: (f64, f64),
+        display_scale: f64,
+        eligible: bool,
+    ) -> Option<bool> {
+        // macOS MayBegin and Began both map to Started. Once captured, keep the
+        // original anchor/depth and accumulate either event's delta normally.
+        let phase = if phase == TouchPhase::Started
+            && self
+                .drag
+                .is_some_and(|drag| drag.kind == DragKind::TrackpadPan)
+        {
+            TouchPhase::Moved
+        } else {
+            phase
+        };
+        if phase == TouchPhase::Started {
+            self.trackpad_pan_stream = true;
+            self.trackpad_pan_anchor = Some(pointer);
+            self.trackpad_pan_offset = (0.0, 0.0);
+            let allowed = self
+                .trackpad_pan_gate
+                .update(phase, eligible && self.visible(pointer));
+            if !allowed {
+                self.release(DragKind::TrackpadPan);
+                return Some(false);
+            }
+            if !self.begin(DragKind::TrackpadPan, pointer, display_scale, true) {
+                self.trackpad_pan_gate.cancel();
+                return Some(false);
+            }
+        } else if !self.trackpad_pan_stream {
+            return None;
+        } else {
+            let allowed = self
+                .trackpad_pan_gate
+                .update(phase, eligible && self.visible(pointer));
+            if !allowed {
+                self.release(DragKind::TrackpadPan);
+                if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                    self.trackpad_pan_stream = false;
+                    self.trackpad_pan_anchor = None;
+                }
+                return Some(false);
+            }
+        }
+        if phase == TouchPhase::Cancelled || !delta.0.is_finite() || !delta.1.is_finite() {
+            self.release(DragKind::TrackpadPan);
+            self.trackpad_pan_gate.cancel();
+            if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.trackpad_pan_stream = false;
+                self.trackpad_pan_anchor = None;
+            }
+            return Some(false);
+        }
+        let next = (
+            self.trackpad_pan_offset.0 + delta.0,
+            self.trackpad_pan_offset.1 + delta.1,
+        );
+        if !next.0.is_finite() || !next.1.is_finite() {
+            self.release(DragKind::TrackpadPan);
+            self.trackpad_pan_gate.cancel();
+            return Some(false);
+        }
+        self.trackpad_pan_offset = next;
+        let anchor = self.trackpad_pan_anchor.unwrap_or(pointer);
+        let changed = self.navigate((
+            anchor.0 + self.trackpad_pan_offset.0,
+            anchor.1 + self.trackpad_pan_offset.1,
+        ));
+        if phase == TouchPhase::Ended {
+            self.release(DragKind::TrackpadPan);
+            self.trackpad_pan_stream = false;
+            self.trackpad_pan_anchor = None;
+        }
+        Some(changed)
     }
     /// Whether mouse capture owns motion, including zero-displacement events.
     #[must_use]
@@ -357,7 +475,7 @@ impl Navigation {
                     .pitch_excess_pixels(displacement, drag.display_scale);
                 next
             }
-            DragKind::SecondaryPan | DragKind::Pan => {
+            DragKind::SecondaryPan | DragKind::Pan | DragKind::TrackpadPan => {
                 drag.camera.pan(drag.start, point, drag.depth)
             }
         };
@@ -365,9 +483,31 @@ impl Navigation {
         self.record(before)
     }
     /// Only the initiating mouse button releases a captured drag.
+    pub fn finish_primary(&mut self, point: (f64, f64)) -> Option<(f64, f64)> {
+        let click = self
+            .pending_drag
+            .filter(|pending| {
+                let dx = (point.0 - pending.start.0) / pending.display_scale;
+                let dy = (point.1 - pending.start.1) / pending.display_scale;
+                pending.kind == DragKind::PrimaryOrbit
+                    && point.0.is_finite()
+                    && point.1.is_finite()
+                    && pending.mesh_revision == self.scene.revision()
+                    && pending.camera == self.camera
+                    && dx.mul_add(dx, dy * dy) <= CLICK_DRAG_THRESHOLD_LOGICAL_PX.powi(2)
+                    && self.visible(point)
+            })
+            .map(|pending| pending.start);
+        self.release(DragKind::PrimaryOrbit);
+        click
+    }
     pub fn release(&mut self, kind: DragKind) {
         if kind == DragKind::SecondaryPan {
             self.secondary_scroll_offset = (0.0, 0.0);
+        }
+        if kind == DragKind::TrackpadPan {
+            self.trackpad_pan_offset = (0.0, 0.0);
+            self.trackpad_pan_anchor = None;
         }
         if self.pending_drag.is_some_and(|drag| drag.kind == kind) {
             self.pending_drag = None;
@@ -381,9 +521,12 @@ impl Navigation {
         self.drag = None;
         self.pending_drag = None;
         self.secondary_scroll_offset = (0.0, 0.0);
+        self.trackpad_pan_offset = (0.0, 0.0);
+        self.trackpad_pan_anchor = None;
         self.zoom = None;
         self.scroll_gate.cancel();
         self.pinch_gate.cancel();
+        self.trackpad_pan_gate.cancel();
     }
     fn record(&mut self, before: Camera) -> bool {
         let changed = self.camera != before;
@@ -410,6 +553,9 @@ impl Navigation {
                 ZoomSource::Pinch => &mut self.pinch_gate,
             };
             let allowed = gate.update(phase, visible);
+            // Moved-only input has no lifecycle to release a frozen anchor later.
+            // Apply it once, just like a discrete wheel event, without retaining capture.
+            end = !gate.is_active();
             if (phase == TouchPhase::Started || !allowed)
                 && self.zoom.is_some_and(|zoom| zoom.source == source)
             {
@@ -431,7 +577,6 @@ impl Navigation {
                     point,
                 });
             }
-            end = phase == TouchPhase::Ended;
             self.zoom
         } else {
             if !visible || self.zoom.is_some() {
@@ -522,6 +667,20 @@ impl Navigation {
         ];
         self.record(before)
     }
+    /// Centres the displayed scene in the current viewport without changing its framing.
+    /// Used once after startup layout settles; ordinary viewport resizes preserve their
+    /// existing screen-space position.
+    pub fn center_scene(&mut self) -> bool {
+        let Some(bounds) = self.scene.bounds() else {
+            return false;
+        };
+        let before = self.camera;
+        let centre = bounds.centre();
+        let forward = self.camera.basis().2;
+        self.camera.eye = sub(centre, scale(forward, self.camera.focal_distance));
+        self.camera.lens_shift = [0.0; 2];
+        self.record(before)
+    }
     /// Immutable payload for the View. Invalid float conversion never enters GPU uniforms.
     #[must_use]
     pub fn snapshot(&self) -> Option<CameraSnapshot> {
@@ -529,5 +688,31 @@ impl Navigation {
             self.scene.bounds().map_or(([0.5; 3], 1.0), |b| b.sphere()),
             self.revision,
         )
+    }
+}
+
+#[cfg(test)]
+mod click_certificate_tests {
+    use super::*;
+    #[test]
+    fn click_release_checks_final_displacement_dpi_button_owner_and_cancellation() {
+        for scale in [1.0, 2.0] {
+            let mut n = Navigation::default();
+            n.set_layout(SceneViewport::new(0, 0, 300, 200), Vec::new());
+            assert!(n.begin_primary_orbit((100.0, 100.0), scale, true));
+            n.release(DragKind::SecondaryPan);
+            assert_eq!(
+                n.finish_primary((100.0 + 4.0 * scale, 100.0)),
+                Some((100.0, 100.0))
+            );
+            assert!(n.begin_primary_orbit((100.0, 100.0), scale, true));
+            assert_eq!(n.finish_primary((100.0 + 4.01 * scale, 100.0)), None);
+            assert!(n.begin_primary_orbit((100.0, 100.0), scale, true));
+            n.advance_primary_orbit((100.0 + 5.0 * scale, 100.0));
+            assert_eq!(n.finish_primary((100.0, 100.0)), None);
+            assert!(n.begin_primary_orbit((100.0, 100.0), scale, true));
+            n.cancel();
+            assert_eq!(n.finish_primary((100.0, 100.0)), None);
+        }
     }
 }

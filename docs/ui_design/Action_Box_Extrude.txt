@@ -123,3 +123,9 @@ Same for Surfaces
 
 │ □ Merge with all            │
 │ ╰╴Targets   [Select…       ]│
+
+"Main Up to Offset variants"
+│ ╰╴□ Offset                  │
+
+│ ╰╴■ Offset                  │
+│   ╰╴Dist  [0.0 mm         ☰]│

@@ -11,18 +11,23 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use newell_kernel::NewellSolid;
-use newell_model::{
-    CommandController, CommandState, EntityId, ExtrudeGeometry, ExtrudeResult, ExtrudeSpec,
-    ExtrudeTermination, ParameterValue, Selection,
+use crate::selection::{
+    CommandSelectionInputs, SelectionOp, SelectionRequest, WindowSelection, candidate_rows,
+    resolve_tree_selection,
 };
+use newell_kernel::{NewellMesh, NewellSolid};
+use newell_model::{CommandController, CommandState, EntityId, Selection};
 use newell_render::{FrameOutcome, Renderer, SceneDisplayMode, SceneViewport, Theme};
 use newell_ui::{
-    ActionOperation, DEFAULT_SCALE_FACTOR_PERCENT, ExtrudeGeometryType, ExtrudeResultMode,
-    ExtrudeStatus, ExtrudeTermination as UiExtrudeTermination, FeatureNodeId, GapDisplayLocation,
-    GridMetrics, HistoryGap, OpaqueTreeId, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice,
-    TreeDocumentId, WindowAction, composed_grid_size, effective_scale, fit_window, k_fit,
-    min_window_size,
+    ActionOperation, DEFAULT_SCALE_FACTOR_PERCENT, ExtrudeStatus, FeatureNodeId,
+    GapDisplayLocation, GridMetrics, HistoryGap, OpaqueTreeId, ResizeSnapshot, ResizeZone,
+    ScaleMode, ThemeChoice, TreeDocumentId, WindowAction, composed_grid_size, effective_scale,
+    fit_window, k_fit, min_window_size,
+};
+use newell_ui::{
+    CommandInputSessionId, EntitySelectionView, LocalSelectionView, SelectionDestination,
+    SelectionEdit, SelectionFieldCount, SelectionFieldDescriptor, SelectionOpen, SelectionOutcome,
+    SelectionRow, SelectionSessionId, SelectionUiRequest,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -43,6 +48,20 @@ use crate::window::{CancelReason, ControlArm, ResizeManager, check_fit, screen_p
 use std::sync::mpsc::Receiver;
 
 const TITLE: &str = "Newell";
+
+#[derive(Debug, Clone, Copy)]
+struct SceneEntityBinding {
+    document: crate::DocumentInstanceId,
+    mesh_revision: u64,
+    entity: EntityId,
+}
+#[derive(Debug, Clone, Copy)]
+struct PendingSceneClick {
+    document: crate::DocumentInstanceId,
+    generation: newell_ui::ProjectionGeneration,
+    mesh_revision: u64,
+    edit: SelectionEdit,
+}
 /// A monitor change seen while the window is still being moved is applied once the window has
 /// been still this long. The OS drag loop streams `Moved` events and resizing the window under
 /// the user's hand fights it; the change is applied once, for the monitor where it comes to rest.
@@ -165,6 +184,32 @@ struct ExtrudeCommitLatch {
     insertion: Option<(TreeDocumentId, HistoryGap)>,
 }
 
+#[derive(Debug, Clone)]
+enum NumericDeliveryKind {
+    FormulaApply(
+        newell_ui::FormulaApplyRequest,
+        newell_ui::NumericProjection,
+        Option<String>,
+    ),
+    View(newell_ui::NumericProjection),
+    Formula(
+        newell_ui::NumericFormulaOpenRequest,
+        newell_ui::NumericProjection,
+    ),
+    Confirm(
+        newell_ui::NumericConfirmRequest,
+        bool,
+        Option<newell_model::FeatureId>,
+        newell_ui::NumericProjection,
+    ),
+}
+#[derive(Debug, Clone)]
+struct NumericDelivery {
+    kind: NumericDeliveryKind,
+    retry_at: Option<Instant>,
+    attempts: u8,
+}
+
 fn ui_palette(shell: &newell_ui::ShellState) -> newell_render::UiPalette {
     let theme = match shell.theme() {
         ThemeChoice::Light => Theme::Light,
@@ -187,10 +232,29 @@ pub(crate) struct App {
     layout_retry_rearm_pending: bool,
     #[cfg(test)]
     last_ui_publication: Option<newell_ui::CellGrid>,
-    selection: Selection,
+    selection: WindowSelection,
+    command_inputs: Option<CommandSelectionInputs>,
+    numeric_inputs: Option<crate::parameters::CommandNumericInputs>,
+    numeric_cache:
+        std::collections::BTreeMap<ActionOperation, crate::parameters::CommandNumericInputs>,
+    numeric_delivery: Option<NumericDelivery>,
+    numeric_last_attempt: u64,
+    numeric_committed: bool,
+    numeric_preview_suspended: bool,
+    active_selection: Option<SelectionOpen>,
+    next_selection_id: u64,
+    next_command_id: u64,
+    selection_view_pending: bool,
+    selection_retry_at: Option<Instant>,
+    selection_attempts: u8,
+    selection_suspended: bool,
+    #[cfg(test)]
+    fail_next_selection: u8,
     commands: CommandController,
     /// Entity represented by the initial viewport solid.
-    scene_entity: Option<EntityId>,
+    scene_entity: Option<SceneEntityBinding>,
+    pending_scene_click: Option<PendingSceneClick>,
+    scene_selected: bool,
     modifiers: ModifiersState,
     navigation: Navigation,
     scene_pointer: Option<PhysicalPosition<f64>>,
@@ -228,9 +292,463 @@ pub(crate) struct App {
 }
 
 impl App {
+    fn selection_view(&self) -> LocalSelectionView {
+        let fields = self
+            .shell
+            .as_ref()
+            .map(|shell| {
+                shell
+                    .shell()
+                    .field_descriptors()
+                    .into_iter()
+                    .map(|d| {
+                        let count = self
+                            .command_inputs
+                            .as_ref()
+                            .and_then(|inputs| inputs.values.get(&d.field))
+                            .map_or(0, |v| v.entities().len());
+                        SelectionFieldCount {
+                            field: d.field,
+                            count,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        LocalSelectionView {
+            selection: EntitySelectionView {
+                document: self.document.identity().tree(),
+                entities: self
+                    .selection
+                    .entities()
+                    .iter()
+                    .map(|id| OpaqueTreeId::new(id.get()))
+                    .collect(),
+            },
+            fields,
+        }
+    }
+    fn mark_selection_pending(&mut self) {
+        self.selection_view_pending = true;
+        self.selection_attempts = 0;
+        self.selection_suspended = false;
+        self.selection_retry_at = None;
+    }
+    fn selection_published(&mut self) {
+        self.selection_view_pending = false;
+        self.selection_retry_at = None;
+        self.selection_attempts = 0;
+        self.selection_suspended = false;
+    }
+    fn publish_selection(&mut self) -> Update {
+        self.mark_selection_pending();
+        self.update_scene_selection();
+        self.retry_selection(Instant::now(), false)
+    }
+    fn retry_selection(&mut self, now: Instant, rearm: bool) -> Update {
+        if !self.selection_view_pending {
+            return Update::default();
+        }
+        if rearm && self.selection_suspended {
+            self.selection_suspended = false;
+            self.selection_attempts = 0;
+        }
+        if self.selection_suspended || self.selection_retry_at.is_some_and(|t| now < t) {
+            return Update::default();
+        }
+        if self
+            .shell
+            .as_ref()
+            .is_none_or(|s| s.shell().tree_projection().document != self.document.identity().tree())
+        {
+            return Update::default();
+        }
+        let view = self.selection_view();
+        self.selection_attempts += 1;
+        self.selection_retry_at = None;
+        #[cfg(test)]
+        let injected = if self.fail_next_selection > 0 {
+            self.fail_next_selection -= 1;
+            true
+        } else {
+            false
+        };
+        #[cfg(not(test))]
+        let injected = false;
+        let result = if injected {
+            Err(newell_ui::UiError::InvalidSelection)
+        } else {
+            self.shell
+                .as_mut()
+                .map(|shell| shell.set_selection_view(view))
+                .unwrap_or(Ok(Update::default()))
+        };
+        match result {
+            Ok(update) => {
+                self.selection_published();
+                update
+            }
+            Err(error) => {
+                if self.selection_attempts == 1 {
+                    self.selection_retry_at = now.checked_add(Duration::from_millis(100));
+                } else {
+                    self.selection_suspended = true;
+                }
+                log(&format!("selection refresh pending: {error}"));
+                Update::default()
+            }
+        }
+    }
+    fn handle_selection_request(&mut self, request: SelectionRequest) -> Update {
+        if self.selection.apply(request, &self.document) {
+            self.publish_selection()
+        } else {
+            Update::default()
+        }
+    }
+    fn update_scene_selection(&mut self) {
+        let selected = self.scene_entity.is_some_and(|binding| {
+            binding.document == self.document.identity()
+                && binding.mesh_revision == self.navigation.scene().revision()
+                && self.document.document().entity(binding.entity).is_some()
+                && self.selection.entities().contains(&binding.entity)
+        });
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene_selected(selected);
+        }
+        if self.scene_selected != selected {
+            self.scene_selected = selected;
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+    fn install_scene_mesh(&mut self, mesh: NewellMesh, entity: Option<EntityId>) {
+        self.pending_scene_click = None;
+        self.navigation.set_mesh(&mesh);
+        self.scene_entity = entity
+            .filter(|id| self.document.document().entity(*id).is_some())
+            .map(|entity| SceneEntityBinding {
+                document: self.document.identity(),
+                mesh_revision: self.navigation.scene().revision(),
+                entity,
+            });
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene_mesh(mesh);
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
+        }
+        self.update_scene_selection();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+    fn finish_scene_selection(
+        &mut self,
+        point: (f64, f64),
+        certificate: Option<(f64, f64)>,
+    ) -> Update {
+        let pending = self.pending_scene_click.take();
+        let (Some(pending), Some(origin)) = (pending, certificate) else {
+            return Update::default();
+        };
+        if pending.document != self.document.identity()
+            || pending.mesh_revision != self.navigation.scene().revision()
+            || self
+                .shell
+                .as_ref()
+                .is_none_or(|s| s.generation() != pending.generation || !s.scene_input_enabled())
+            || !self.navigation.visible(point)
+        {
+            return Update::default();
+        }
+        let entities = if let Some(hit) = self.navigation.pick(origin) {
+            let Some(binding) = self.scene_entity.filter(|b| {
+                b.document == pending.document
+                    && b.mesh_revision == hit.mesh_revision
+                    && self.document.document().entity(b.entity).is_some()
+            }) else {
+                return Update::default();
+            };
+            vec![binding.entity]
+        } else {
+            if pending.edit != SelectionEdit::Replace {
+                return Update::default();
+            }
+            Vec::new()
+        };
+        self.handle_selection_request(SelectionRequest {
+            document: pending.document,
+            op: pending.edit.into(),
+            entities,
+        })
+    }
+    fn start_command_inputs(&mut self, operation: ActionOperation) -> Update {
+        if self.shell.as_ref().is_none_or(|s| {
+            s.shell().tree_projection().document != self.document.identity().tree()
+                || s.shell().operation() != operation
+        }) {
+            return Update::default();
+        }
+        let Some(next) = self.next_command_id.checked_add(1) else {
+            log(&newell_ui::UiError::InteractionIdentityExhausted.to_string());
+            return Update::default();
+        };
+        self.next_command_id = next;
+        let Some(shell) = &self.shell else {
+            return Update::default();
+        };
+        let numeric_descriptors = shell.shell().numeric_descriptors();
+        let mut numeric_inputs = match crate::parameters::CommandNumericInputs::new(
+            self.document.identity(),
+            CommandInputSessionId(next),
+            operation,
+            &numeric_descriptors,
+        ) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        if let Some(outgoing) = self.numeric_inputs.as_ref() {
+            self.numeric_cache
+                .insert(outgoing.operation, outgoing.clone());
+        }
+        if let Some(cached) = self
+            .numeric_cache
+            .get(&operation)
+            .filter(|i| i.document == self.document.identity())
+        {
+            numeric_inputs.values = cached.values.clone();
+        }
+        let insertion = shell.shell().playhead().insertion;
+        let owner = if operation == ActionOperation::Extrude {
+            let before = match insertion {
+                HistoryGap::End => None,
+                HistoryGap::Before(id) => match self.document.feature_id(id) {
+                    Some(id) => Some(id),
+                    None => {
+                        log("missing insertion anchor");
+                        return Update::default();
+                    }
+                },
+            };
+            newell_model::parameters::ParameterDraftOwner::InsertExtrude { before }
+        } else {
+            newell_model::parameters::ParameterDraftOwner::Document
+        };
+        numeric_inputs.parameter_draft = match self.document.document().begin_parameter_draft(owner)
+        {
+            Ok(draft) => draft,
+            Err(error) => {
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        // A new command lifetime cannot inherit unpublished parameter identities from an old draft.
+        for value in numeric_inputs.values.values_mut() {
+            value.formula.clear();
+        }
+
+        let mut values = std::collections::BTreeMap::new();
+        for d in shell
+            .shell()
+            .field_descriptors()
+            .into_iter()
+            .filter(|d| d.field.operation == operation)
+        {
+            let candidates = candidate_rows(
+                &self.document,
+                Some(d),
+                (operation == ActionOperation::Extrude).then_some(insertion),
+            );
+            let ids = self
+                .selection
+                .entities()
+                .iter()
+                .copied()
+                .filter(|id| candidates.iter().any(|r| r.entity.get() == id.get()));
+            let mut selected = Selection::default();
+            selected.replace(ids.take(d.max_count.unwrap_or(usize::MAX)));
+            values.insert(d.field, selected);
+        }
+        self.command_inputs = Some(CommandSelectionInputs {
+            session: CommandInputSessionId(next),
+            document: self.document.identity(),
+            operation,
+            insertion,
+            values,
+        });
+        self.numeric_inputs = Some(numeric_inputs);
+        self.numeric_last_attempt = 0;
+        self.numeric_committed = false;
+        self.numeric_preview_suspended = false;
+        self.numeric_delivery = None;
+        self.active_selection = None;
+        self.extrude_latch = ExtrudeCommitLatch {
+            armed: operation == ActionOperation::Extrude,
+            insertion: Some((self.document.identity().tree(), insertion)),
+        };
+        self.commands.cancel();
+        let selection_update = self.publish_selection();
+        selection_update.merge(self.publish_numeric_view())
+    }
+    fn panel_rows(&self, request: &SelectionOpen) -> Option<Vec<SelectionRow>> {
+        if request.document != self.document.identity().tree() {
+            return None;
+        }
+        match request.destination {
+            SelectionDestination::Window => Some(candidate_rows(&self.document, None, None)),
+            SelectionDestination::Field { session, field } => {
+                let inputs = self.command_inputs.as_ref().filter(|i| {
+                    i.session == session
+                        && i.document == self.document.identity()
+                        && i.operation == field.operation
+                })?;
+                if let HistoryGap::Before(id) = inputs.insertion
+                    && self.document.feature_id(id).is_none()
+                {
+                    return None;
+                }
+                let shell = self.shell.as_ref()?;
+                if !shell.shell().selection_field_visible(field) {
+                    return None;
+                }
+                let descriptor = shell
+                    .shell()
+                    .field_descriptors()
+                    .into_iter()
+                    .find(|d| d.field == field)?;
+                Some(candidate_rows(
+                    &self.document,
+                    Some(descriptor),
+                    (field.operation == ActionOperation::Extrude).then_some(inputs.insertion),
+                ))
+            }
+        }
+    }
+    fn handle_selection_ui(&mut self, request: SelectionUiRequest) -> Update {
+        match request {
+            SelectionUiRequest::OpenField(d) => self.open_field_selection(d),
+            SelectionUiRequest::Complete(completion) => {
+                let matches_active = self.active_selection.as_ref().is_some_and(|r| {
+                    r.session == completion.session
+                        && r.document == completion.document
+                        && r.destination == completion.destination
+                });
+                if !matches_active {
+                    return Update::default();
+                }
+                let Some(active) = self.active_selection.take() else {
+                    return Update::default();
+                };
+                let Some(rows) = self.panel_rows(&active) else {
+                    return Update::default();
+                };
+                let SelectionOutcome::Confirmed(ids) = completion.outcome else {
+                    return Update::default();
+                };
+                if active.max_count.is_some_and(|max| ids.len() > max)
+                    || ids.iter().any(|id| !rows.iter().any(|r| r.entity == *id))
+                    || ids
+                        .iter()
+                        .copied()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != ids.len()
+                {
+                    return Update::default();
+                }
+                let entities = ids
+                    .iter()
+                    .map(|id| EntityId::from_raw(id.get()))
+                    .collect::<Vec<_>>();
+                match active.destination {
+                    SelectionDestination::Window => {
+                        self.handle_selection_request(SelectionRequest {
+                            document: self.document.identity(),
+                            op: SelectionOp::Replace,
+                            entities,
+                        })
+                    }
+                    SelectionDestination::Field { field, .. } => {
+                        if let Some(value) = self
+                            .command_inputs
+                            .as_mut()
+                            .and_then(|i| i.values.get_mut(&field))
+                        {
+                            value.replace(entities);
+                        }
+                        self.publish_selection()
+                    }
+                }
+            }
+        }
+    }
+    fn open_field_selection(&mut self, descriptor: SelectionFieldDescriptor) -> Update {
+        let Some(inputs) = self.command_inputs.as_ref() else {
+            return Update::default();
+        };
+        let Some(next) = self.next_selection_id.checked_add(1) else {
+            log(&newell_ui::UiError::InteractionIdentityExhausted.to_string());
+            return Update::default();
+        };
+        let Some(shell) = &self.shell else {
+            return Update::default();
+        };
+        if !shell.shell().selection_field_visible(descriptor.field)
+            || !shell.shell().field_descriptors().contains(&descriptor)
+        {
+            return Update::default();
+        }
+        let mut request = SelectionOpen {
+            session: SelectionSessionId(next),
+            document: self.document.identity().tree(),
+            destination: SelectionDestination::Field {
+                session: inputs.session,
+                field: descriptor.field,
+            },
+            rows: Vec::new(),
+            applied: inputs
+                .values
+                .get(&descriptor.field)
+                .map(|v| {
+                    v.entities()
+                        .iter()
+                        .map(|id| OpaqueTreeId::new(id.get()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            max_count: descriptor.max_count,
+        };
+        let Some(rows) = self.panel_rows(&request) else {
+            return Update::default();
+        };
+        request.rows = rows;
+        request
+            .applied
+            .retain(|id| request.rows.iter().any(|r| r.entity == *id));
+        match self
+            .shell
+            .as_mut()
+            .map(|s| s.open_selection(request.clone()))
+        {
+            Some(Ok(update)) => {
+                self.next_selection_id = next;
+                self.active_selection = Some(request);
+                self.navigation.cancel();
+                self.pending_scene_click = None;
+                update
+            }
+            _ => Update::default(),
+        }
+    }
     pub(crate) fn new() -> Self {
         let mut document = DocumentSession::default();
         let document_events = document.subscribe();
+        let document_identity = document.identity();
         Self {
             renderer: None,
             window: None,
@@ -243,9 +761,27 @@ impl App {
             layout_retry_rearm_pending: false,
             #[cfg(test)]
             last_ui_publication: None,
-            selection: Selection::default(),
+            selection: WindowSelection::new(document_identity),
+            command_inputs: None,
+            numeric_inputs: None,
+            numeric_cache: std::collections::BTreeMap::new(),
+            numeric_delivery: None,
+            numeric_last_attempt: 0,
+            numeric_committed: false,
+            numeric_preview_suspended: false,
+            active_selection: None,
+            next_selection_id: 0,
+            next_command_id: 0,
+            selection_view_pending: false,
+            selection_retry_at: None,
+            selection_attempts: 0,
+            selection_suspended: false,
+            #[cfg(test)]
+            fail_next_selection: 0,
             commands: CommandController::default(),
             scene_entity: None,
+            pending_scene_click: None,
+            scene_selected: false,
             modifiers: ModifiersState::empty(),
             navigation: Navigation::default(),
             scene_pointer: None,
@@ -278,76 +814,365 @@ impl App {
         event_loop.exit();
     }
 
-    /// Projects the UI-only Extrude editor into the M4 command controller. The application is
-    /// the sole adapter between ASCII widget values and the model; neither side depends on the
-    /// other. A valid draft immediately replaces the viewport mesh as a preview.
-    fn sync_extrude_command(&mut self) {
-        let Some(shell) = &self.shell else { return };
-        if shell.shell().operation() != ActionOperation::Extrude {
-            self.extrude_latch = ExtrudeCommitLatch::default();
-            self.commands.cancel();
-            return;
+    fn publish_numeric_view(&mut self) -> Update {
+        let Some(inputs) = self.numeric_inputs.as_ref() else {
+            return Update::default();
+        };
+        match inputs.project() {
+            Ok(projection) => self.queue_numeric_delivery(NumericDeliveryKind::View(projection)),
+            Err(error) => {
+                log(&error.to_string());
+                Update::default()
+            }
         }
-        if self.projection_sync.acknowledged_document() != Some(self.document.identity().tree()) {
-            self.extrude_latch = ExtrudeCommitLatch::default();
-            return;
+    }
+    fn queue_numeric_delivery(&mut self, kind: NumericDeliveryKind) -> Update {
+        self.numeric_delivery = Some(NumericDelivery {
+            kind,
+            retry_at: None,
+            attempts: 0,
+        });
+        self.deliver_numeric(Instant::now(), false)
+    }
+    fn deliver_numeric(&mut self, now: Instant, rearm: bool) -> Update {
+        let Some(mut pending) = self.numeric_delivery.take() else {
+            return Update::default();
+        };
+        if pending.attempts > 0 {
+            if pending.retry_at.is_none() && !rearm {
+                self.numeric_delivery = Some(pending);
+                return Update::default();
+            }
+            if pending.retry_at.is_some_and(|at| now < at) {
+                self.numeric_delivery = Some(pending);
+                return Update::default();
+            }
+            if rearm && pending.retry_at.is_none() {
+                pending.attempts = 0;
+            }
         }
-        let ui = shell.shell().extrude();
-        let depth = shell.shell().extrude_depth_source();
-        let geometry = match ui.values.geometry {
-            ExtrudeGeometryType::Solid => ExtrudeGeometry::Solid,
-            ExtrudeGeometryType::Surface => ExtrudeGeometry::Surface,
-        };
-        let result = match ui.values.result {
-            ExtrudeResultMode::New => ExtrudeResult::New,
-            ExtrudeResultMode::Add => ExtrudeResult::Add,
-            ExtrudeResultMode::Remove => ExtrudeResult::Remove,
-        };
-        let termination = match ui.values.termination {
-            UiExtrudeTermination::Blind => ExtrudeTermination::Blind,
-            UiExtrudeTermination::UpTo => ExtrudeTermination::UpTo,
-            UiExtrudeTermination::ThroughAll => ExtrudeTermination::ThroughAll,
-        };
-        let spec = ExtrudeSpec {
-            profile: self.selection.entities().first().copied(),
-            geometry,
-            result,
-            termination,
-            depth: ParameterValue::Literal(depth),
-            starting_offset: ui
-                .values
-                .starting_offset
-                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
-            end_offset: ui
-                .values
-                .end_offset
-                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
-            symmetric: ui.values.symmetric,
-            second_end: ui
-                .values
-                .second_side
-                .then(|| ParameterValue::Literal("0.0 mm".to_owned())),
-            invert: ui.values.invert,
-            merge_with_all: ui.values.merge_with_all,
-            merge_scope: if ui.values.merge_with_all {
-                Vec::new()
-            } else {
-                self.selection.entities().to_vec()
-            },
-        };
-        match ui.status {
-            ExtrudeStatus::Editing => {
-                if !self.extrude_latch.armed {
-                    self.extrude_latch = ExtrudeCommitLatch {
-                        armed: true,
-                        insertion: Some((
-                            self.document.identity().tree(),
-                            shell.shell().playhead().insertion,
-                        )),
-                    };
+        let result = if let Some(shell) = self.shell.as_mut() {
+            match &pending.kind {
+                NumericDeliveryKind::FormulaApply(request, projection, diagnostic) => {
+                    shell.finish_formula_apply(request, projection.clone(), diagnostic.clone())
                 }
+                NumericDeliveryKind::View(projection) => {
+                    shell.set_numeric_projection(projection.clone())
+                }
+                NumericDeliveryKind::Formula(request, projection) => {
+                    shell.open_numeric_formula(*request, projection.clone())
+                }
+                NumericDeliveryKind::Confirm(request, accepted, _, projection) => shell
+                    .finish_numeric_confirm_with_projection(
+                        *request,
+                        *accepted,
+                        projection.clone(),
+                    ),
+            }
+        } else {
+            Err(newell_ui::UiError::InvalidNumericProjection)
+        };
+        match result {
+            Ok(mut update) => {
+                if let NumericDeliveryKind::Confirm(request, true, feature, _) = pending.kind
+                    && (request.operation != ActionOperation::Extrude || feature.is_some())
+                {
+                    self.numeric_cache.remove(&request.operation);
+                    self.numeric_inputs = None;
+                    self.command_inputs = None;
+                    self.active_selection = None;
+                    self.numeric_committed = false;
+                    update = update.merge(self.publish_selection());
+                }
+                update
+            }
+            Err(error) => {
+                log(&error.to_string());
+                pending.attempts = pending.attempts.saturating_add(1);
+                pending.retry_at = if pending.attempts == 1 {
+                    Some(now + Duration::from_millis(100))
+                } else {
+                    None
+                };
+                self.numeric_delivery = Some(pending);
+                Update::default()
+            }
+        }
+    }
+    fn process_numeric_requests(&mut self) -> (Update, bool) {
+        let Some(shell) = self.shell.as_mut() else {
+            return (Update::default(), false);
+        };
+        if let Some(inputs) = self.numeric_inputs.as_mut() {
+            inputs.active_fields = inputs
+                .descriptors
+                .keys()
+                .copied()
+                .filter(|field| shell.shell().numeric_field_visible(*field))
+                .collect();
+        }
+        let requests = shell.take_numeric_requests();
+        let allowed: Vec<_> = requests
+            .iter()
+            .map(|r| shell.numeric_origin_allows(r))
+            .collect();
+        let mut rejected = false;
+        let mut rejections = Vec::new();
+        if let Some(error) = shell.take_numeric_error() {
+            log(&error.to_string());
+            rejected = true;
+        }
+        for (request, allowed) in requests.into_iter().zip(allowed) {
+            let destination = request.destination;
+            let sequence = request.sequence;
+            let result = if let Some(inputs) = self.numeric_inputs.as_mut() {
+                if request.destination.document != self.document.identity().tree() {
+                    Err(AppError::InvalidNumericRequest)
+                } else if let Some(descriptor) =
+                    inputs.descriptors.get(&request.destination.field).copied()
+                {
+                    if allowed {
+                        inputs.apply(request, descriptor)
+                    } else {
+                        inputs.consume_sequence(&request);
+                        Err(AppError::InvalidNumericRequest)
+                    }
+                } else {
+                    inputs.consume_sequence(&request);
+                    Err(AppError::InvalidNumericRequest)
+                }
+            } else {
+                Err(AppError::InvalidNumericRequest)
+            };
+            if let Err(error) = result {
+                rejected = true;
+                rejections.push((destination, sequence));
+                log(&error.to_string());
+            }
+        }
+        let mut update = Update::default();
+        for (destination, sequence) in rejections {
+            match shell.reject_numeric_edit(destination, sequence) {
+                Ok(next) => update = update.merge(next),
+                Err(error) => log(&error.to_string()),
+            }
+        }
+        (update, rejected)
+    }
+    fn complete_numeric_formula(
+        &mut self,
+        request: newell_ui::NumericFormulaOpenRequest,
+    ) -> Update {
+        let certificate = newell_ui::NumericRequest {
+            destination: request.destination,
+            sequence: request.sequence,
+            origin: request.origin,
+            edit: newell_ui::NumericEdit::Formula(String::new()),
+        };
+        if self.shell.as_ref().is_none_or(|shell| {
+            !shell.numeric_origin_allows(&certificate)
+                || !shell.shell().numeric_formula_pending(request)
+        }) {
+            return Update::default();
+        }
+        let Some(inputs) = self.numeric_inputs.as_mut().filter(|i| {
+            i.document == self.document.identity()
+                && i.document.tree() == request.destination.document
+                && i.session == request.destination.session
+                && i.operation == request.destination.field.operation
+                && request.sequence > i.consumed_sequence
+                && request.through_sequence <= i.consumed_sequence
+                && i.values.contains_key(&request.destination.field)
+        }) else {
+            return Update::default();
+        };
+        inputs.consumed_sequence = request.sequence;
+        match inputs.project() {
+            Ok(projection) => {
+                self.queue_numeric_delivery(NumericDeliveryKind::Formula(request, projection))
+            }
+            Err(error) => {
+                log(&error.to_string());
+                Update::default()
+            }
+        }
+    }
+    fn complete_formula_apply(&mut self, request: newell_ui::FormulaApplyRequest) -> Update {
+        let certificate = newell_ui::NumericRequest {
+            destination: request.destination,
+            sequence: request.attempt.0,
+            origin: request.origin,
+            edit: newell_ui::NumericEdit::Formula(request.source.clone()),
+        };
+        if self.shell.as_ref().is_none_or(|shell| {
+            !shell.shell().formula_apply_pending(&request)
+                || !shell.numeric_origin_allows(&certificate)
+        }) {
+            return Update::default();
+        }
+        let Some(inputs) = self
+            .numeric_inputs
+            .as_mut()
+            .filter(|i| i.document == self.document.identity())
+        else {
+            return Update::default();
+        };
+        let result = inputs
+            .parameter_draft
+            .validate_source(self.document.document())
+            .map_err(AppError::from)
+            .and_then(|()| inputs.apply_formula(&request));
+        inputs.consumed_sequence = inputs.consumed_sequence.max(request.attempt.0);
+        let diagnostic = result.err().map(|error| error.to_string());
+        self.numeric_preview_suspended = diagnostic.is_some();
+        let projection = match inputs.project() {
+            Ok(projection) => projection,
+            Err(error) => {
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        self.queue_numeric_delivery(NumericDeliveryKind::FormulaApply(
+            request, projection, diagnostic,
+        ))
+    }
+    fn complete_numeric_confirm(
+        &mut self,
+        request: newell_ui::NumericConfirmRequest,
+        rejected: bool,
+    ) -> Update {
+        if self.shell.as_ref().is_none_or(|shell| {
+            shell.shell().operation() != request.operation
+                || !shell.shell().numeric_confirm_pending(request)
+                || shell.shell().numeric_session()
+                    != Some((request.document, request.session, request.operation))
+        }) {
+            return Update::default();
+        }
+        let Some(inputs) = self.numeric_inputs.as_ref().filter(|i| {
+            i.document == self.document.identity()
+                && i.document.tree() == request.document
+                && i.session == request.session
+                && i.operation == request.operation
+                && request.attempt.0 > self.numeric_last_attempt
+        }) else {
+            return Update::default();
+        };
+        self.numeric_last_attempt = request.attempt.0;
+        let barrier = inputs.consumed_sequence >= request.through_sequence;
+        let projection = match inputs.project() {
+            Ok(p) => p,
+            Err(error) => {
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        let mut feature = None;
+        let accepted = if rejected || !barrier {
+            false
+        } else if request.operation != ActionOperation::Extrude {
+            true
+        } else {
+            let result = (|| -> Result<Option<newell_model::FeatureId>, AppError> {
+                let shell = self.shell.as_ref().ok_or(AppError::InvalidNumericRequest)?;
+                let selections = self
+                    .command_inputs
+                    .as_ref()
+                    .ok_or(AppError::InvalidNumericRequest)?;
+                let spec = crate::parameters::build_extrude_spec(
+                    &shell.shell().extrude().values,
+                    inputs,
+                    selections,
+                )?;
+                self.extrude_latch = ExtrudeCommitLatch {
+                    armed: true,
+                    insertion: Some((request.document, selections.insertion)),
+                };
+                let latch = std::mem::take(&mut self.extrude_latch);
+                let (_, gap) = latch.insertion.ok_or(AppError::InvalidNumericRequest)?;
+                let before = match gap {
+                    HistoryGap::End => None,
+                    HistoryGap::Before(id) => Some(
+                        self.document
+                            .feature_id(id)
+                            .ok_or(AppError::InvalidDocumentProjection)?,
+                    ),
+                };
+                self.document
+                    .confirm_before(&mut self.commands, spec, before)
+            })();
+            match result {
+                Ok(Some(id)) => {
+                    feature = Some(id);
+                    self.numeric_committed = true;
+                    self.committed_cursor = Some((request.document, OpaqueTreeId::new(id.get())));
+                    true
+                }
+                Ok(None) => false,
+                Err(error) => {
+                    log(&error.to_string());
+                    false
+                }
+            }
+        };
+        // Every attempt consumes the latch, including lexical/validation failures.
+        self.extrude_latch = ExtrudeCommitLatch::default();
+        self.numeric_preview_suspended = !accepted;
+        self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+            request, accepted, feature, projection,
+        ))
+    }
+    fn sync_extrude_command(&mut self) {
+        if self.numeric_preview_suspended
+            || self.numeric_committed
+            || self
+                .numeric_delivery
+                .as_ref()
+                .is_some_and(|d| !matches!(d.kind, NumericDeliveryKind::View(_)))
+        {
+            return;
+        }
+        if self.projection_sync.acknowledged_document() != Some(self.document.identity().tree())
+            || self.shell.as_ref().is_none_or(|s| {
+                s.shell().tree_projection().document != self.document.identity().tree()
+            })
+        {
+            return;
+        }
+        if self.command_inputs.is_none()
+            && self.shell.as_ref().is_some_and(|s| {
+                s.shell().operation() == ActionOperation::Extrude
+                    && s.shell().extrude().status == ExtrudeStatus::Editing
+            })
+        {
+            let update = self.start_command_inputs(ActionOperation::Extrude);
+            self.apply(update);
+        }
+        let Some(shell) = self.shell.as_ref() else {
+            return;
+        };
+        if shell.shell().operation() != ActionOperation::Extrude {
+            self.commands.cancel();
+            self.extrude_latch = ExtrudeCommitLatch::default();
+            return;
+        }
+        match shell.shell().extrude().status {
+            ExtrudeStatus::Editing => {
+                let Some(numeric) = self.numeric_inputs.as_ref() else {
+                    return;
+                };
+                let Some(selections) = self.command_inputs.as_ref() else {
+                    return;
+                };
+                let Ok(spec) = crate::parameters::build_extrude_spec(
+                    &shell.shell().extrude().values,
+                    numeric,
+                    selections,
+                ) else {
+                    return;
+                };
                 if matches!(self.commands.state(), CommandState::Idle) {
-                    self.commands.begin_extrude(&self.selection);
+                    self.commands.begin_extrude(&Selection::default());
                 }
                 if self
                     .commands
@@ -361,36 +1186,15 @@ impl App {
                     self.set_preview_depth(depth.as_millimetres());
                 }
             }
-            ExtrudeStatus::Confirmed => {
-                let latch = std::mem::take(&mut self.extrude_latch);
-                let Some((document, gap)) = latch.insertion.filter(|_| latch.armed) else {
-                    return;
-                };
-                if document != self.document.identity().tree() {
-                    return;
-                }
-                let before = match gap {
-                    HistoryGap::End => None,
-                    HistoryGap::Before(id) => {
-                        let Some(feature) = self.document.feature_id(id) else {
-                            self.commands.cancel();
-                            return;
-                        };
-                        Some(feature)
-                    }
-                };
-                match self
-                    .document
-                    .confirm_before(&mut self.commands, spec, before)
-                {
-                    Ok(Some(id)) => {
-                        self.committed_cursor = Some((document, OpaqueTreeId::new(id.get())));
-                    }
-                    Ok(None) => {}
-                    Err(error) => log(&error.to_string()),
-                }
-            }
+            ExtrudeStatus::Confirmed => {}
             ExtrudeStatus::Cancelled => {
+                if self.command_inputs.is_none() && !self.extrude_latch.armed {
+                    return;
+                }
+                self.numeric_cache.remove(&ActionOperation::Extrude);
+                self.command_inputs = None;
+                self.numeric_inputs = None;
+                self.active_selection = None;
                 self.extrude_latch = ExtrudeCommitLatch::default();
                 self.commands.cancel();
                 self.set_preview_depth(10.0);
@@ -406,13 +1210,7 @@ impl App {
         let Ok(mesh) = solid.tessellate(0.05) else {
             return;
         };
-        if let Some(renderer) = &mut self.renderer {
-            self.navigation.set_mesh(&mesh);
-            renderer.set_scene_mesh(mesh);
-            if let Some(camera) = self.navigation.snapshot() {
-                renderer.set_scene_camera(camera);
-            }
-        }
+        self.install_scene_mesh(mesh, None);
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -484,38 +1282,70 @@ impl App {
     }
 
     fn poll_document_projection(&mut self, now: Instant, trigger: ProjectionTrigger) -> Update {
-        if self
-            .projection_sync
-            .acknowledged_document()
-            .is_some_and(|id| id != self.document.identity().tree())
-        {
+        let mut invalidation_update = Update::default();
+        if self.selection.document != self.document.identity() {
             self.extrude_latch = ExtrudeCommitLatch::default();
             self.committed_cursor = None;
             self.commands.cancel();
+            self.command_inputs = None;
+            self.numeric_inputs = None;
+            self.numeric_cache.clear();
+            self.numeric_delivery = None;
+            self.numeric_committed = false;
+            self.active_selection = None;
+            self.scene_entity = None;
+            self.pending_scene_click = None;
+            self.navigation.cancel();
             if let Some(shell) = &mut self.shell {
-                shell.invalidate_document_interactions();
+                invalidation_update = shell.invalidate_document_interactions();
             }
         }
+        self.selection.reconcile(&self.document);
+        if let Some(inputs) = &mut self.command_inputs {
+            for value in inputs.values.values_mut() {
+                let ids = value
+                    .entities()
+                    .iter()
+                    .copied()
+                    .filter(|id| self.document.document().entity(*id).is_some())
+                    .collect::<Vec<_>>();
+                value.replace(ids);
+            }
+        }
+        if self
+            .scene_entity
+            .is_some_and(|b| self.document.document().entity(b.entity).is_none())
+        {
+            self.scene_entity = None;
+        }
+        self.update_scene_selection();
+        let view = self.selection_view();
+        let rows = self
+            .active_selection
+            .as_ref()
+            .and_then(|request| self.panel_rows(request));
         let Some(shell) = &mut self.shell else {
             return Update::default();
         };
-        let mut update = match self.projection_sync.poll(
-            &self.document,
-            &self.document_events,
-            now,
-            trigger,
-            |projection| {
-                shell
-                    .set_tree_projection(projection)
-                    .map_err(AppError::from)
+        let mut update = invalidation_update.merge(
+            match self.projection_sync.poll(
+                &self.document,
+                &self.document_events,
+                now,
+                trigger,
+                |projection| {
+                    shell
+                        .set_document_view_and_candidates(projection, view, rows)
+                        .map_err(AppError::from)
+                },
+            ) {
+                Ok(update) => update.unwrap_or_default(),
+                Err(error) => {
+                    log(&format!("tree refresh pending: {error}"));
+                    Update::default()
+                }
             },
-        ) {
-            Ok(update) => update.unwrap_or_default(),
-            Err(error) => {
-                log(&format!("tree refresh pending: {error}"));
-                Update::default()
-            }
-        };
+        );
         if let Some((document, operation)) = self.committed_cursor
             && shell.shell().tree_projection().document == document
             && self.projection_sync.acknowledged_document() == Some(document)
@@ -531,23 +1361,142 @@ impl App {
                 }
             }
         }
+        if self.projection_sync.acknowledged_document() == Some(self.document.identity().tree())
+            && self
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.shell().entity_selection() == &self.selection_view().selection)
+        {
+            // The document publisher satisfies only a matching complete local view.
+            let fields_match = self.shell.as_ref().is_some_and(|s| {
+                self.selection_view()
+                    .fields
+                    .iter()
+                    .all(|f| s.shell().selection_field_count(f.field) == f.count)
+            });
+            if fields_match {
+                self.selection_published();
+            }
+        }
+        update = update.merge(self.retry_selection(
+            now,
+            matches!(
+                trigger,
+                ProjectionTrigger::UserActivation | ProjectionTrigger::LayoutPublished
+            ),
+        ));
+        update = update.merge(self.deliver_numeric(
+            now,
+            matches!(
+                trigger,
+                ProjectionTrigger::UserActivation | ProjectionTrigger::LayoutPublished
+            ),
+        ));
         update
     }
     fn next_document_retry_deadline(&self) -> Option<Instant> {
-        self.projection_sync.deadline()
+        [
+            self.projection_sync.deadline(),
+            self.selection_retry_at,
+            self.numeric_delivery.as_ref().and_then(|d| d.retry_at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
-    fn finish_shell_input(&mut self, update: Update) {
-        if let Some(shell) = &mut self.shell
-            && let Some(intent) = shell.take_tree_intent()
-            && intent.generation() == shell.generation()
+    fn finish_shell_input(&mut self, mut update: Update) {
+        if update.any() {
+            self.numeric_preview_suspended = false;
+        }
+        if self
+            .numeric_delivery
+            .as_ref()
+            .is_some_and(|d| !matches!(d.kind, NumericDeliveryKind::View(_)))
+        {
+            update = update.merge(self.deliver_numeric(Instant::now(), true));
+            self.apply(update);
+            return;
+        }
+        let (numeric_update, rejected) = self.process_numeric_requests();
+        update = update.merge(numeric_update);
+        let formula_apply = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_formula_apply);
+        let formula_open = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_numeric_formula_open);
+        let confirmation = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_numeric_confirm);
+        let intent = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_tree_intent);
+        let selection_request = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_selection_request);
+        let started = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_command_start);
+        if let Some(operation) = started {
+            update = update.merge(self.start_command_inputs(operation));
+        }
+        if let Some(intent) = intent
+            && self
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.generation() == intent.generation())
             && intent.target().document == self.document.identity().tree()
-            && let Err(error) = self
+        {
+            if let newell_ui::TreeIntentKind::Select { edit } = intent.kind() {
+                if let Some(entities) = resolve_tree_selection(&self.document, intent.target()) {
+                    update = update.merge(self.handle_selection_request(SelectionRequest {
+                        document: self.document.identity(),
+                        op: (*edit).into(),
+                        entities,
+                    }));
+                }
+            } else if let Err(error) = self
                 .document
                 .apply_tree_edit(intent.target(), intent.kind())
-        {
-            log(&error.to_string());
+            {
+                log(&error.to_string());
+            }
+        }
+        if let Some(request) = selection_request {
+            update = update.merge(self.handle_selection_ui(request));
+        }
+        if let Some(request) = formula_apply {
+            update = update.merge(self.complete_formula_apply(request));
+        } else if let Some(request) = formula_open {
+            update = update.merge(self.complete_numeric_formula(request));
+        } else if let Some(request) = confirmation {
+            update = update.merge(self.complete_numeric_confirm(request, rejected));
+        } else {
+            update = update.merge(self.publish_numeric_view());
         }
         self.sync_extrude_command();
+        if self
+            .shell
+            .as_ref()
+            .is_some_and(|s| !s.shell().command_open())
+            && self.command_inputs.is_some()
+            && !self.numeric_committed
+            && self.numeric_delivery.is_none()
+        {
+            if let Some(numeric) = self.numeric_inputs.as_ref() {
+                self.numeric_cache.remove(&numeric.operation);
+            }
+            self.command_inputs = None;
+            self.numeric_inputs = None;
+            self.active_selection = None;
+            update = update.merge(self.publish_selection());
+        }
         let projection =
             self.poll_document_projection(Instant::now(), ProjectionTrigger::UserActivation);
         self.apply(update.merge(projection));
@@ -978,28 +1927,27 @@ impl App {
         match press {
             Press::Shell(update) => {
                 self.finish_shell_input(update);
-                if scene_input && let Some(cursor) = cursor {
-                    let point = (f64::from(cursor.x), f64::from(cursor.y));
-                    if !self.native_resizing
-                        && let Some(pointer) = self.scene_pointer
-                    {
-                        self.navigation.begin_primary_orbit(
-                            (pointer.x, pointer.y),
-                            window.scale_factor(),
-                            true,
-                        );
-                    }
-                    if let Some(hit) = self.navigation.pick(point) {
-                        if let Some(entity) = self.scene_entity {
-                            self.selection.replace([entity]);
-                        }
-                        log(&format!(
-                            "picked viewport face {} at {:.3}; {} entity selected",
-                            hit.face_index,
-                            hit.distance,
-                            self.selection.entities().len()
-                        ));
-                    }
+                if scene_input
+                    && cursor.is_some()
+                    && !self.native_resizing
+                    && let Some(pointer) = self.scene_pointer
+                    && self.navigation.begin_primary_orbit(
+                        (pointer.x, pointer.y),
+                        window.scale_factor(),
+                        true,
+                    )
+                    && let Some(shell) = &self.shell
+                {
+                    self.pending_scene_click = Some(PendingSceneClick {
+                        document: self.document.identity(),
+                        generation: shell.generation(),
+                        mesh_revision: self.navigation.scene().revision(),
+                        edit: SelectionEdit::modifiers(
+                            self.modifiers.shift_key(),
+                            self.modifiers.control_key()
+                                || (cfg!(target_os = "macos") && self.modifiers.super_key()),
+                        ),
+                    });
                 }
             }
             Press::Window(action) => self.control.arm(action),
@@ -1173,31 +2121,27 @@ impl ApplicationHandler for App {
             renderer.set_ui_grid(shell.grid());
             renderer.set_scene_viewport(scene_viewport(&shell));
             renderer.set_scene_occlusions(scene_occlusions(&shell));
-            self.navigation
-                .set_layout(scene_viewport(&shell), scene_occlusions(&shell));
-            let solid = match NewellSolid::box_solid(1.0, 1.0, 1.0) {
-                Ok(solid) => solid,
-                Err(error) => return self.fail(event_loop, error),
-            };
-            let mesh = match solid.tessellate(0.05) {
-                Ok(mesh) => mesh,
-                Err(error) => return self.fail(event_loop, error),
-            };
-            self.navigation.set_mesh(&mesh);
-            renderer.set_scene_mesh(mesh);
-            if let Some(camera) = self.navigation.snapshot() {
-                renderer.set_scene_camera(camera);
-            }
         }
+        self.navigation
+            .set_layout(scene_viewport(&shell), scene_occlusions(&shell));
         let base = match self.document.add_base_solid("Base Solid") {
             Ok(base) => base,
             Err(error) => return self.fail(event_loop, error),
         };
-        self.scene_entity = self
+        let entity = self
             .document
             .document()
             .feature(base)
-            .and_then(|feature| feature.outputs().first().copied());
+            .and_then(|f| f.outputs().first().copied());
+        let solid = match NewellSolid::box_solid(1.0, 1.0, 1.0) {
+            Ok(solid) => solid,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        let mesh = match solid.tessellate(0.05) {
+            Ok(mesh) => mesh,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        self.install_scene_mesh(mesh, entity);
         self.shell = Some(shell);
         self.window = Some(window.clone());
         let update = self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
@@ -1211,6 +2155,13 @@ impl ApplicationHandler for App {
         window.set_visible(true);
         if !hosted {
             self.reconcile("startup (after show)", None);
+        }
+        // Startup reconciliation can move the viewport after its first camera layout. Recenter
+        // the initial scene once against the final viewport while preserving its framing.
+        if self.navigation.center_scene()
+            && let (Some(renderer), Some(camera)) = (&mut self.renderer, self.navigation.snapshot())
+        {
+            renderer.set_scene_camera(camera);
         }
         self.verify_window(
             &window,
@@ -1248,13 +2199,14 @@ impl ApplicationHandler for App {
                 self.cancel_resize(CancelReason::FocusLost);
                 self.control.cancel();
                 let update = if let Some(shell) = &mut self.shell {
-                    let update = shell.pointer_moved(None);
-                    shell.pointer_released();
-                    update
+                    shell
+                        .pointer_moved(None)
+                        .merge(shell.pointer_released())
+                        .merge(shell.numeric_focus_lost())
                 } else {
                     Update::default()
                 };
-                self.apply(update);
+                self.finish_shell_input(update);
             }
             WindowEvent::Moved(_) => {
                 // A move may be the middle of a drag across monitors: the hosting monitor is
@@ -1338,6 +2290,9 @@ impl ApplicationHandler for App {
                 self.scene_pointer = Some(position);
                 let point = ui_point(position.x, position.y);
                 let camera_changed = self.navigation.advance_pointer((position.x, position.y));
+                if !self.navigation.primary_orbit_pending() {
+                    self.pending_scene_click = None;
+                }
                 if self.navigation.is_dragging() {
                     if camera_changed {
                         window.request_redraw();
@@ -1383,7 +2338,12 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 self.native_resizing = false;
-                self.navigation.release(DragKind::PrimaryOrbit);
+                let point = self
+                    .scene_pointer
+                    .map_or((f64::NAN, f64::NAN), |p| (p.x, p.y));
+                let certificate = self.navigation.finish_primary(point);
+                let selection_update = self.finish_scene_selection(point, certificate);
+                self.apply(selection_update);
                 // The release that ends a managed resize is consumed.
                 if !self.resize.release() {
                     let under = self
@@ -1395,9 +2355,11 @@ impl ApplicationHandler for App {
                     {
                         self.window_action(event_loop, &window, action);
                     }
-                    if let Some(shell) = &mut self.shell {
-                        shell.pointer_released();
-                    }
+                    let hover_update = self
+                        .shell
+                        .as_mut()
+                        .map_or(Update::default(), ShellController::pointer_released);
+                    self.apply(hover_update);
                 }
             }
             WindowEvent::MouseInput {
@@ -1441,12 +2403,32 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 if self.resize.is_active() || self.native_resizing {
+                    if matches!(delta, MouseScrollDelta::PixelDelta(_)) {
+                        self.navigation.reject_trackpad_pan_scroll(phase);
+                    }
                     return;
                 }
+                let point = self
+                    .scene_pointer
+                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
+                // UI-owned scrolling keeps first refusal, including a zero-delta start phase.
+                let panel_steps = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(delta) => (delta.y / 40.0) as f32,
+                };
+                if self.scroll_shell_panel(panel_steps.round() as i32) {
+                    if matches!(delta, MouseScrollDelta::PixelDelta(_)) {
+                        self.navigation.reject_trackpad_pan_scroll(phase);
+                    }
+                    return;
+                }
+                let eligible = !self.resize.is_active()
+                    && !self.native_resizing
+                    && self
+                        .shell
+                        .as_ref()
+                        .is_some_and(ShellController::scene_input_enabled);
                 if let MouseScrollDelta::PixelDelta(pixels) = delta {
-                    let point = self
-                        .scene_pointer
-                        .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
                     if let Some(changed) = self.navigation.advance_secondary_pan_scroll(
                         (pixels.x, pixels.y),
                         phase,
@@ -1462,29 +2444,32 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // macOS winit emits phased PixelDelta events for trackpad scrolling. A
+                    // Started stream over the scene uses the same frozen-depth pan as mouse
+                    // drags; unphased PixelDelta and LineDelta continue through wheel zoom.
+                    if let Some(changed) = self.navigation.advance_trackpad_pan_scroll(
+                        (pixels.x, pixels.y),
+                        phase,
+                        point,
+                        window.scale_factor(),
+                        eligible,
+                    ) {
+                        if changed {
+                            if let (Some(renderer), Some(camera)) =
+                                (&mut self.renderer, self.navigation.snapshot())
+                            {
+                                renderer.set_scene_camera(camera);
+                            }
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let steps = zoom_steps(delta, window.scale_factor());
-                // Panel scrolling keeps its existing convention, independently of camera sensitivity.
-                let panel_steps = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(delta) => (delta.y / 40.0) as f32,
-                };
-                if self.scroll_shell_panel(panel_steps.round() as i32) {
-                    return;
-                }
-                let eligible = !self.resize.is_active()
-                    && !self.native_resizing
-                    && self
-                        .shell
-                        .as_ref()
-                        .is_some_and(ShellController::scene_input_enabled);
                 let stream = match delta {
                     MouseScrollDelta::LineDelta(..) => None,
                     MouseScrollDelta::PixelDelta(_) => Some((ZoomSource::Scroll, phase)),
                 };
-                let point = self
-                    .scene_pointer
-                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
                 if self
                     .navigation
                     .zoom(point, f64::from(steps), stream, eligible)
@@ -1530,9 +2515,31 @@ impl ApplicationHandler for App {
                     window.request_redraw();
                 }
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+                if let Some(shell) = &mut self.shell {
+                    shell.set_selection_modifiers(
+                        self.modifiers.shift_key(),
+                        self.modifiers.control_key()
+                            || (cfg!(target_os = "macos") && self.modifiers.super_key()),
+                    );
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.navigation.cancel();
+                self.pending_scene_click = None;
+                if event.logical_key == Key::Named(NamedKey::Escape)
+                    && self
+                        .shell
+                        .as_ref()
+                        .is_some_and(|s| s.shell().selection().is_open())
+                {
+                    if let Some(shell) = &mut self.shell {
+                        let update = shell.key(newell_ui::ShellKey::Escape);
+                        self.finish_shell_input(update);
+                    }
+                    return;
+                }
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.view_fullscreen {
                     if let Some(window) = &self.window {
                         window.set_fullscreen(None);
@@ -1723,8 +2730,14 @@ mod tests {
                     })
                     .collect();
                 text.windows(pattern.len())
-                    .position(|window| window == pattern)
-                    .map(|col| UiPoint {
+                    .enumerate()
+                    .find(|(col, window)| {
+                        *window == pattern
+                            && shell.grid().get(*col as u32, row).is_some_and(|cell| {
+                                cell.widget_id.is_some() || cell.shared_border.is_some()
+                            })
+                    })
+                    .map(|(col, _)| UiPoint {
                         x: col as u32 * 4 + 2,
                         y: row * 9 + 4,
                     })
@@ -1745,12 +2758,14 @@ mod tests {
         key(app, ShellKey::Char('1'));
         key(app, ShellKey::Char('0'));
         key(app, ShellKey::Enter);
-        let source = app.shell.as_ref().unwrap().shell().extrude_depth_source();
         assert_eq!(
-            ParameterValue::Literal(source)
-                .evaluate(app.document.document().parameters())
-                .unwrap()
-                .as_millimetres(),
+            app.numeric_inputs.as_ref().unwrap().values[&newell_ui::NumericFieldKey {
+                operation: ActionOperation::Extrude,
+                key: 4
+            }]
+                .quantity
+                .value_in(newell_model::Unit::Millimetre)
+                .unwrap(),
             10.0
         );
     }
@@ -1807,7 +2822,12 @@ mod tests {
                 app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
             app.apply(update);
             let id = app.document.document().feature(base).unwrap().outputs()[0];
-            app.selection.replace([id]);
+            let update = app.handle_selection_request(SelectionRequest {
+                document: app.document.identity(),
+                op: SelectionOp::Replace,
+                entities: vec![id],
+            });
+            app.apply(update);
             let shell = app.shell.as_mut().unwrap();
             let gap = shell
                 .shell()
@@ -1825,6 +2845,19 @@ mod tests {
             }
             app.finish_shell_input(Update::default());
             depth(&mut app);
+            // A deliberately stale/forward command reference still fails the model
+            // preflight even though the candidate chooser correctly filters it out.
+            app.command_inputs
+                .as_mut()
+                .unwrap()
+                .values
+                .get_mut(&newell_ui::SelectionFieldKey {
+                    operation: ActionOperation::Extrude,
+                    key: 2,
+                })
+                .unwrap()
+                .replace([id]);
+            app.finish_shell_input(Update::default());
             let document = app.document.document().clone();
             let revision = app.document.revision();
             let state = app.commands.state().clone();
@@ -1881,7 +2914,7 @@ mod tests {
         app.apply(update);
         let shell = app.shell.as_mut().unwrap();
         shell.pointer_moved(Some(UiPoint {
-            x: 24 * 4 + 2,
+            x: (shell.shell().nav_width() - 1) * 4 + 2,
             y: 10 * 9 + 4,
         }));
         shell.pointer_pressed();
@@ -1896,6 +2929,72 @@ mod tests {
         assert!(!app.shell.as_ref().unwrap().dragging());
         assert_eq!(app.shell.as_ref().unwrap().grid(), &old);
         assert!(!app.extrude_latch.armed);
+    }
+
+    #[test]
+    fn replacement_cancels_capture_before_any_projection_has_been_acknowledged() {
+        let mut app = App::new();
+        app.shell = Some(
+            ShellController::with_shell(
+                ShellState::new_application(82, 40),
+                GridMetrics::new(4, 9).unwrap(),
+            )
+            .unwrap(),
+        );
+        let now = Instant::now();
+        app.projection_sync.fail_next_projection = 1;
+        let update = app.poll_document_projection(now, ProjectionTrigger::Notification);
+        assert!(!update.grid);
+        assert_eq!(app.projection_sync.acknowledged_document(), None);
+        let shell = app.shell.as_mut().unwrap();
+        let point = UiPoint {
+            x: (shell.shell().nav_width() - 1) * 4 + 2,
+            y: 10 * 9 + 4,
+        };
+        shell.pointer_moved(Some(point));
+        shell.pointer_pressed();
+        assert!(shell.dragging());
+        let old_grid = shell.grid().clone();
+        let old_generation = shell.generation();
+        let old_width = shell.shell().nav_width();
+        app.document
+            .replace(newell_model::Document::default())
+            .unwrap();
+        app.projection_sync.fail_next_projection = 1;
+        let update = app.poll_document_projection(now, ProjectionTrigger::Notification);
+        assert!(!update.grid);
+        assert_eq!(app.projection_sync.acknowledged_document(), None);
+        assert_eq!(app.selection.document, app.document.identity());
+        let shell = app.shell.as_mut().unwrap();
+        assert!(!shell.dragging());
+        assert_eq!(shell.grid(), &old_grid);
+        assert_eq!(shell.generation(), old_generation);
+        shell.pointer_moved(Some(UiPoint {
+            x: point.x + 16,
+            ..point
+        }));
+        shell.pointer_released();
+        assert_eq!(shell.shell().nav_width(), old_width);
+        assert!(!shell.dragging());
+        let update = app.poll_document_projection(
+            now + Duration::from_millis(100),
+            ProjectionTrigger::RetryDeadline,
+        );
+        app.apply(update);
+        assert_eq!(
+            app.projection_sync.acknowledged_document(),
+            Some(app.document.identity().tree())
+        );
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .tree_projection()
+                .document,
+            app.document.identity().tree()
+        );
+        assert!(!app.shell.as_ref().unwrap().dragging());
     }
 
     #[test]
@@ -1948,7 +3047,7 @@ mod tests {
                         CellContent::Empty => ' ',
                     })
                     .collect();
-                text.contains("■ long_name")
+                text.contains("■ long_")
             })
             .unwrap();
         let shell = app.shell.as_mut().unwrap();
@@ -1968,7 +3067,7 @@ mod tests {
     }
 
     #[test]
-    fn real_tree_edits_publish_once_and_reproject_without_shared_selection() {
+    fn real_tree_edits_publish_once_and_reproject_shared_selection() {
         let mut app = live_app();
         let feature = app.document.add_base_solid("base").unwrap();
         let entity = app.document.document().feature(feature).unwrap().outputs()[0];
@@ -1994,7 +3093,7 @@ mod tests {
             events.try_recv().is_err(),
             "keyboard leaf activation does not toggle visibility"
         );
-        assert!(app.selection.entities().is_empty());
+        assert_eq!(app.selection.entities(), &[entity]);
         click(&mut app, "base");
         click(&mut app, "base");
         assert!(app.shell.as_ref().unwrap().shell().rename().is_open());
@@ -2026,7 +3125,7 @@ mod tests {
                 .name,
             "base_renamed"
         );
-        assert!(app.selection.entities().is_empty());
+        assert_eq!(app.selection.entities(), &[entity]);
     }
 }
 
@@ -2041,18 +3140,18 @@ mod display_mode_tests {
         let mut shell = ShellState::new(82, 30);
         assert_eq!(
             scene_display_mode(shell.shading()),
-            SceneDisplayMode::Wireframe
+            SceneDisplayMode::HiddenLine
         );
         shell.key(ShellKey::Alt('v'));
         shell.key(ShellKey::Down);
         for expected in [
-            SceneDisplayMode::HiddenLine,
             SceneDisplayMode::NoShading,
             SceneDisplayMode::Shaded,
             SceneDisplayMode::Default,
             SceneDisplayMode::Points,
             SceneDisplayMode::Line,
             SceneDisplayMode::Wireframe,
+            SceneDisplayMode::HiddenLine,
         ] {
             shell.key(ShellKey::Right);
             assert_eq!(scene_display_mode(shell.shading()), expected);
@@ -2183,5 +3282,1090 @@ mod color_tests {
                 .features
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_selection_tests {
+    use super::tests::{click, key};
+    use super::*;
+    use newell_model::{ConstructionKind, EntityKind, NewEntity};
+    use newell_ui::{SelectionFieldRole, ShellKey, UiPoint};
+
+    fn app() -> (App, Vec<EntityId>) {
+        let mut app = App::new();
+        app.shell = Some(ShellController::new(100, 45, GridMetrics::new(4, 9).unwrap()).unwrap());
+        let f = app
+            .document
+            .add_base_feature(
+                "outputs".into(),
+                [
+                    ("body-a", EntityKind::Body),
+                    ("surface-b", EntityKind::Surface),
+                    ("axis-c", EntityKind::Construction(ConstructionKind::Axis)),
+                ]
+                .map(|(name, kind)| NewEntity {
+                    name: name.into(),
+                    kind,
+                    visible: true,
+                })
+                .into(),
+            )
+            .unwrap();
+        let ids = app
+            .document
+            .document()
+            .feature(f)
+            .unwrap()
+            .outputs()
+            .to_vec();
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        (app, ids)
+    }
+    fn select(app: &mut App, op: SelectionOp, entities: Vec<EntityId>) {
+        let update = app.handle_selection_request(SelectionRequest {
+            document: app.document.identity(),
+            op,
+            entities,
+        });
+        app.apply(update);
+    }
+    fn open_window(app: &mut App) -> SelectionOpen {
+        app.next_selection_id = app.next_selection_id.checked_add(1).unwrap();
+        let request = SelectionOpen {
+            session: SelectionSessionId(app.next_selection_id),
+            document: app.document.identity().tree(),
+            destination: SelectionDestination::Window,
+            rows: candidate_rows(&app.document, None, None),
+            applied: app
+                .selection
+                .entities()
+                .iter()
+                .map(|id| OpaqueTreeId::new(id.get()))
+                .collect(),
+            max_count: None,
+        };
+        let update = app
+            .shell
+            .as_mut()
+            .unwrap()
+            .open_selection(request.clone())
+            .unwrap();
+        app.active_selection = Some(request.clone());
+        app.apply(update);
+        request
+    }
+    #[test]
+    fn operation_outputs_modifiers_visibility_and_both_tree_views_share_one_ordered_state() {
+        let (mut app, ids) = app();
+        let revision = app.document.revision();
+        let events = app.document.subscribe();
+        click(&mut app, "outputs");
+        assert_eq!(app.selection.entities(), ids);
+        let shell = app.shell.as_ref().unwrap().shell();
+        assert_eq!(
+            shell.entity_selection().entities,
+            ids.iter()
+                .map(|id| OpaqueTreeId::new(id.get()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(shell.operation_selection(OpaqueTreeId::new(0)), (3, 3));
+        app.shell
+            .as_mut()
+            .unwrap()
+            .set_selection_modifiers(false, true);
+        click(&mut app, "body-a");
+        assert_eq!(app.selection.entities(), &ids[1..]);
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .operation_selection(OpaqueTreeId::new(0)),
+            (2, 3)
+        );
+        click(&mut app, "Bodies(1)");
+        assert_eq!(app.selection.entities(), &ids[1..]);
+        assert_eq!(app.document.revision(), revision);
+        assert!(events.try_recv().is_err());
+        click(&mut app, "■ body-a");
+        assert!(!app.document.document().entity(ids[0]).unwrap().visible());
+        assert_eq!(app.selection.entities(), &ids[1..]);
+        assert_eq!(events.try_iter().count(), 1);
+        assert_eq!(
+            app.last_ui_publication.as_ref(),
+            Some(app.shell.as_ref().unwrap().grid())
+        );
+    }
+    #[test]
+    fn window_panel_drafts_commit_once_cancel_and_reject_old_completions() {
+        let (mut app, ids) = app();
+        select(&mut app, SelectionOp::Replace, vec![ids[1], ids[0]]);
+        let revision = app.document.revision();
+        let events = app.document.subscribe();
+        let request = open_window(&mut app);
+        key(&mut app, ShellKey::Char(' '));
+        assert_eq!(app.selection.entities(), &[ids[1], ids[0]]);
+        key(&mut app, ShellKey::Escape);
+        assert_eq!(app.selection.entities(), &[ids[1], ids[0]]);
+        open_window(&mut app);
+        key(&mut app, ShellKey::Char(' '));
+        click(&mut app, "OK");
+        assert_eq!(app.selection.entities(), &[ids[1]]);
+        let update = app.handle_selection_ui(SelectionUiRequest::Complete(
+            newell_ui::SelectionCompletion {
+                session: request.session,
+                document: request.document,
+                destination: request.destination,
+                outcome: SelectionOutcome::Confirmed(Vec::new()),
+            },
+        ));
+        assert!(!update.any());
+        assert_eq!(app.selection.entities(), &[ids[1]]);
+        assert_eq!(app.document.revision(), revision);
+        assert!(events.try_recv().is_err());
+    }
+    #[test]
+    fn field_transaction_latches_and_updates_only_originating_input() {
+        let (mut app, ids) = app();
+        select(&mut app, SelectionOp::Replace, vec![ids[0]]);
+        click(&mut app, "Create");
+        click(&mut app, "[E]xtrude");
+        let session = app.command_inputs.as_ref().unwrap().session;
+        let d = app
+            .shell
+            .as_ref()
+            .unwrap()
+            .shell()
+            .field_descriptors()
+            .into_iter()
+            .find(|d| {
+                d.field.operation == ActionOperation::Extrude
+                    && d.role == SelectionFieldRole::Direction
+            })
+            .unwrap();
+        select(&mut app, SelectionOp::Replace, vec![ids[1]]);
+        let revision = app.document.revision();
+        let events = app.document.subscribe();
+        let update = app.open_field_selection(d);
+        app.apply(update);
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .selection()
+                .request()
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        key(&mut app, ShellKey::Char(' '));
+        assert!(
+            app.command_inputs.as_ref().unwrap().values[&d.field]
+                .entities()
+                .is_empty()
+        );
+        click(&mut app, "OK");
+        assert_eq!(app.command_inputs.as_ref().unwrap().session, session);
+        assert_eq!(
+            app.command_inputs.as_ref().unwrap().values[&d.field].entities(),
+            &[ids[2]]
+        );
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .selection_field_count(d.field),
+            1
+        );
+        assert_eq!(app.selection.entities(), &[ids[1]]);
+        let update = app.open_field_selection(d);
+        app.apply(update);
+        key(&mut app, ShellKey::Char(' '));
+        key(&mut app, ShellKey::Escape);
+        assert_eq!(
+            app.command_inputs.as_ref().unwrap().values[&d.field].entities(),
+            &[ids[2]]
+        );
+        assert_eq!(app.document.revision(), revision);
+        assert!(events.try_recv().is_err());
+        let seeded = app
+            .command_inputs
+            .as_ref()
+            .unwrap()
+            .values
+            .iter()
+            .find(|(k, _)| k.key == 2)
+            .unwrap()
+            .1
+            .entities();
+        assert_eq!(seeded, &[ids[0]]);
+    }
+    #[test]
+    fn local_publication_retries_without_a_document_event_and_replacement_invalidates_every_session()
+     {
+        let (mut app, ids) = app();
+        let events = app.document.subscribe();
+        app.fail_next_selection = 1;
+        select(&mut app, SelectionOp::Replace, vec![ids[0]]);
+        assert!(app.selection_view_pending);
+        let deadline = app.selection_retry_at.unwrap();
+        let update = app.poll_document_projection(
+            deadline - Duration::from_millis(1),
+            ProjectionTrigger::Notification,
+        );
+        assert!(!update.grid);
+        let update = app.poll_document_projection(deadline, ProjectionTrigger::RetryDeadline);
+        app.apply(update);
+        assert!(!app.selection_view_pending);
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .entity_selection()
+                .entities,
+            vec![OpaqueTreeId::new(ids[0].get())]
+        );
+        assert!(events.try_recv().is_err());
+        let old_request = open_window(&mut app);
+        app.document.replace(Default::default()).unwrap();
+        app.projection_sync.fail_next_projection = 1;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        assert!(!update.grid);
+        assert!(app.selection.entities().is_empty());
+        assert!(app.active_selection.is_none());
+        assert!(!app.scene_selected);
+        let update = app.handle_selection_ui(SelectionUiRequest::Complete(
+            newell_ui::SelectionCompletion {
+                session: old_request.session,
+                document: old_request.document,
+                destination: old_request.destination,
+                outcome: SelectionOutcome::Confirmed(old_request.applied),
+            },
+        ));
+        assert!(!update.any());
+        assert!(app.selection.entities().is_empty());
+    }
+    #[test]
+    fn stale_completion_cannot_consume_a_newer_window_transaction() {
+        let (mut app, ids) = app();
+        let stale = open_window(&mut app);
+        key(&mut app, ShellKey::Escape);
+        let current = open_window(&mut app);
+        let update = app.handle_selection_ui(SelectionUiRequest::Complete(
+            newell_ui::SelectionCompletion {
+                session: stale.session,
+                document: stale.document,
+                destination: stale.destination,
+                outcome: SelectionOutcome::Confirmed(vec![OpaqueTreeId::new(ids[1].get())]),
+            },
+        ));
+        assert!(!update.any());
+        assert_eq!(
+            app.active_selection.as_ref().unwrap().session,
+            current.session
+        );
+        key(&mut app, ShellKey::Char(' '));
+        click(&mut app, "OK");
+        assert_eq!(app.selection.entities(), &[ids[0]]);
+    }
+    #[test]
+    fn rename_reconciles_open_draft_and_replacement_blocks_old_modal_input_before_retry() {
+        let (mut app, ids) = app();
+        open_window(&mut app);
+        key(&mut app, ShellKey::Char(' '));
+        app.document
+            .rename_entity(ids[0], "new-body-name".into())
+            .unwrap();
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let panel = app.shell.as_ref().unwrap().shell().selection();
+        assert_eq!(panel.request().unwrap().rows[0].label, "new-body-name");
+        assert_eq!(panel.draft_entities(), &[OpaqueTreeId::new(ids[0].get())]);
+        app.document.replace(Default::default()).unwrap();
+        app.projection_sync.fail_next_projection = 1;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        assert!(!update.any());
+        assert!(app.active_selection.is_none());
+        let panel = app.shell.as_ref().unwrap().shell().selection().clone();
+        let update = app.shell.as_mut().unwrap().key(ShellKey::Char(' '));
+        assert!(!update.any());
+        assert_eq!(app.shell.as_ref().unwrap().shell().selection(), &panel);
+        let deadline = app.next_document_retry_deadline().unwrap();
+        let update = app.poll_document_projection(deadline, ProjectionTrigger::RetryDeadline);
+        app.apply(update);
+        assert!(!app.shell.as_ref().unwrap().shell().selection().is_open());
+        assert!(!app.shell.as_ref().unwrap().shell().command_open());
+    }
+    #[test]
+    fn failed_local_publication_suspends_after_one_retry_then_rearms_without_events() {
+        let (mut app, ids) = app();
+        let events = app.document.subscribe();
+        let revision = app.document.revision();
+        app.fail_next_selection = 2;
+        select(&mut app, SelectionOp::Replace, vec![ids[0]]);
+        let deadline = app.selection_retry_at.unwrap();
+        app.poll_document_projection(deadline, ProjectionTrigger::RetryDeadline);
+        assert!(app.selection_suspended);
+        assert!(app.selection_retry_at.is_none());
+        let generation = app.shell.as_ref().unwrap().generation();
+        for _ in 0..3 {
+            app.poll_document_projection(
+                deadline + Duration::from_secs(1),
+                ProjectionTrigger::Notification,
+            );
+        }
+        assert!(app.selection_suspended);
+        assert_eq!(app.shell.as_ref().unwrap().generation(), generation);
+        let update = app.poll_document_projection(
+            deadline + Duration::from_secs(1),
+            ProjectionTrigger::UserActivation,
+        );
+        app.apply(update);
+        assert!(!app.selection_view_pending);
+        assert_eq!(app.document.revision(), revision);
+        assert!(events.try_recv().is_err());
+    }
+    fn arm(app: &mut App, point: (f64, f64), edit: SelectionEdit) {
+        assert!(app.navigation.begin_primary_orbit(point, 1.0, true));
+        app.pending_scene_click = Some(PendingSceneClick {
+            document: app.document.identity(),
+            generation: app.shell.as_ref().unwrap().generation(),
+            mesh_revision: app.navigation.scene().revision(),
+            edit,
+        });
+    }
+    fn release(app: &mut App, point: (f64, f64)) {
+        let certificate = app.navigation.finish_primary(point);
+        let update = app.finish_scene_selection(point, certificate);
+        app.apply(update);
+    }
+    #[test]
+    fn real_mesh_click_release_drag_miss_preview_and_selection_brightness_binding() {
+        let (mut app, ids) = app();
+        let viewport = scene_viewport(app.shell.as_ref().unwrap());
+        app.navigation.set_layout(viewport, Vec::new());
+        let mesh = NewellSolid::box_solid(1.0, 1.0, 1.0)
+            .unwrap()
+            .tessellate(0.05)
+            .unwrap();
+        app.install_scene_mesh(mesh.clone(), Some(ids[0]));
+        let point = app.navigation.camera().project([0.5, 0.5, 0.5]).unwrap();
+        assert!(app.navigation.pick(point).is_some());
+        // The controller's exposed-pixel eligibility uses its current cursor too.
+        app.shell.as_mut().unwrap().pointer_moved(Some(UiPoint {
+            x: point.0 as u32,
+            y: point.1 as u32,
+        }));
+        arm(&mut app, point, SelectionEdit::Replace);
+        assert!(app.selection.entities().is_empty());
+        release(&mut app, point);
+        assert_eq!(app.selection.entities(), &[ids[0]]);
+        assert!(app.scene_selected);
+        let miss = (f64::from(viewport.x + 1), f64::from(viewport.y + 1));
+        assert!(app.navigation.pick(miss).is_none());
+        app.shell.as_mut().unwrap().pointer_moved(Some(UiPoint {
+            x: miss.0 as u32,
+            y: miss.1 as u32,
+        }));
+        for edit in [SelectionEdit::Add, SelectionEdit::Toggle] {
+            arm(&mut app, miss, edit);
+            release(&mut app, miss);
+            assert_eq!(app.selection.entities(), &[ids[0]]);
+        }
+        arm(&mut app, miss, SelectionEdit::Replace);
+        release(&mut app, miss);
+        assert!(app.selection.entities().is_empty());
+        assert!(!app.scene_selected);
+        app.shell.as_mut().unwrap().pointer_moved(Some(UiPoint {
+            x: point.0 as u32,
+            y: point.1 as u32,
+        }));
+        select(&mut app, SelectionOp::Replace, vec![ids[1]]);
+        arm(&mut app, point, SelectionEdit::Replace);
+        app.install_scene_mesh(mesh.clone(), Some(ids[0]));
+        release(&mut app, point);
+        assert_eq!(app.selection.entities(), &[ids[1]]);
+        select(&mut app, SelectionOp::Clear, Vec::new());
+        arm(&mut app, point, SelectionEdit::Replace);
+        app.navigation
+            .advance_primary_orbit((point.0 + 10.0, point.1));
+        release(&mut app, point);
+        assert!(app.selection.entities().is_empty());
+        assert!(!app.scene_selected);
+        // Use the new camera projection after orbit.
+        let point = app.navigation.camera().project([0.5, 0.5, 0.5]).unwrap();
+        app.shell.as_mut().unwrap().pointer_moved(Some(UiPoint {
+            x: point.0 as u32,
+            y: point.1 as u32,
+        }));
+        select(&mut app, SelectionOp::Replace, vec![ids[1]]);
+        app.install_scene_mesh(mesh, None);
+        arm(&mut app, point, SelectionEdit::Replace);
+        release(&mut app, point);
+        assert_eq!(app.selection.entities(), &[ids[1]]);
+        assert!(!app.scene_selected);
+    }
+}
+
+#[cfg(test)]
+mod numeric_binding_tests {
+    use super::tests::{click, key, live_app};
+    use super::*;
+    use newell_model::{Direction, Feature, Length, Quantity, Unit};
+    use newell_ui::{EditKey, NumericFieldKey, ShellKey, UiPoint, WidgetId};
+
+    fn field(key: u32) -> NumericFieldKey {
+        NumericFieldKey {
+            operation: ActionOperation::Extrude,
+            key,
+        }
+    }
+    fn app() -> App {
+        let mut a = live_app();
+        a.finish_shell_input(Update::default());
+        a
+    }
+    fn activate(a: &mut App, key: u32, slot: u32) {
+        let shell = a.shell.as_mut().unwrap();
+        let base = shell.shell().extrude().depth_field_id().get() - 4 * 4;
+        let id = WidgetId::new(base + key * 4 + slot);
+        let point = (0..shell.grid().rows())
+            .find_map(|r| {
+                (0..shell.grid().cols())
+                    .find(|c| shell.grid().get(*c, r).unwrap().widget_id == Some(id))
+                    .map(|c| UiPoint {
+                        x: c * 4 + 2,
+                        y: r * 9 + 4,
+                    })
+            })
+            .expect("visible stable control");
+        shell.pointer_moved(Some(point));
+        let update = shell.pointer_pressed();
+        shell.pointer_released();
+        a.finish_shell_input(update);
+    }
+    fn edit(a: &mut App, field: u32, text: &str, reverse: bool, accept: bool) {
+        activate(a, field, 0);
+        key(a, ShellKey::Edit(EditKey::SelectAll));
+        for c in text.chars() {
+            key(a, ShellKey::Char(c));
+        }
+        if reverse {
+            key(a, ShellKey::Char('-'));
+        }
+        if accept {
+            key(a, ShellKey::Enter);
+        }
+    }
+    fn formula(a: &mut App, field: u32, source: &str) {
+        activate(a, field, 1);
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        key(a, ShellKey::Edit(EditKey::SelectAll));
+        for c in source.chars() {
+            key(a, ShellKey::Char(c));
+        }
+        key(a, ShellKey::Enter);
+    }
+    fn value(a: &App, key: u32) -> f64 {
+        a.numeric_inputs.as_ref().unwrap().values[&field(key)]
+            .quantity
+            .value_in(Unit::Millimetre)
+            .unwrap()
+    }
+    fn committed(a: &App) -> &newell_model::ExtrudeSpec {
+        a.document
+            .document()
+            .features()
+            .last()
+            .and_then(|(_, feature)| match feature {
+                Feature::Extrude(f) => Some(&f.spec),
+                _ => None,
+            })
+            .unwrap()
+    }
+    fn mm(p: &newell_model::ParameterValue) -> f64 {
+        p.evaluate(&newell_model::parameters::ParameterRegistry::default())
+            .unwrap()
+            .as_millimetres()
+    }
+
+    #[test]
+    fn unequal_distances_and_independent_directions_commit_once() {
+        let mut a = app();
+        let events = a.document.subscribe();
+        edit(&mut a, 4, "12.3", false, true);
+        activate(&mut a, 9, 0);
+        edit(&mut a, 11, "4.5", true, true);
+        activate(&mut a, 13, 0);
+        edit(&mut a, 15, "6.7", false, true);
+        activate(&mut a, 18, 0);
+        edit(&mut a, 20, "8.9", true, false);
+        activate(&mut a, 28, 0);
+        let spec = committed(&a);
+        assert_eq!(mm(&spec.depth), 12.3);
+        assert_eq!(mm(spec.starting_offset.as_ref().unwrap()), 4.5);
+        assert_eq!(mm(spec.end_offset.as_ref().unwrap()), 6.7);
+        assert_eq!(mm(spec.second_end.as_ref().unwrap()), 8.9);
+        assert_eq!(spec.directions.starting_offset, Direction::Reverse);
+        assert_eq!(spec.directions.second_end, Direction::Reverse);
+        assert_eq!(spec.directions.depth, Direction::Forward);
+        assert_eq!(a.document.revision(), 1);
+        assert_eq!(events.try_iter().count(), 1);
+        assert!(a.numeric_inputs.is_none());
+        for _ in 0..3 {
+            a.finish_shell_input(Update::default());
+            a.sync_extrude_command();
+        }
+        assert_eq!(a.document.document().features().len(), 1);
+    }
+    #[test]
+    fn nested_second_offset_is_separate_and_hidden_values_survive_branches() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        activate(&mut a, 9, 0);
+        edit(&mut a, 11, "4.5", false, false);
+        activate(&mut a, 9, 0);
+        assert_eq!(value(&a, 11), 4.5);
+        assert!(a.commands.preview().unwrap().starting_offset.is_none());
+        activate(&mut a, 9, 0);
+        assert_eq!(
+            mm(a.commands
+                .preview()
+                .unwrap()
+                .starting_offset
+                .as_ref()
+                .unwrap()),
+            4.5
+        );
+        activate(&mut a, 10, 0);
+        assert!(a.commands.preview().unwrap().starting_offset.is_none());
+        activate(&mut a, 10, 0);
+        activate(&mut a, 18, 0);
+        edit(&mut a, 20, "8.9", true, true);
+        activate(&mut a, 17, 0);
+        assert!(a.commands.preview().unwrap().second_end.is_none());
+        activate(&mut a, 17, 0);
+        assert_eq!(value(&a, 20), 8.9);
+        activate(&mut a, 19, 0);
+        activate(&mut a, 22, 0);
+        edit(&mut a, 24, "2.4", false, true);
+        activate(&mut a, 28, 0);
+        let spec = committed(&a);
+        assert!(spec.second_end.is_none());
+        assert!(spec.end_offset.is_none());
+        assert_eq!(mm(spec.second_end_offset.as_ref().unwrap()), 2.4);
+    }
+    #[test]
+    fn named_local_inputs_rename_and_disjoint_source_edits_keep_stable_ids() {
+        let mut a = app();
+        let document = a.document.document().clone();
+        formula(&mut a, 4, "#Depth := 12mm");
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        let depth = a.numeric_inputs.as_ref().unwrap().bindings[&field(4)];
+        activate(&mut a, 9, 0);
+        formula(&mut a, 11, "#Depth/2");
+        assert_eq!(value(&a, 11), 6.);
+        formula(&mut a, 4, "#Renamed := 12mm");
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().bindings[&field(4)],
+            depth
+        );
+        activate(&mut a, 11, 1);
+        key(&mut a, ShellKey::Enter);
+        assert_eq!(value(&a, 11), 6.);
+        activate(&mut a, 11, 1);
+        key(&mut a, ShellKey::Backspace);
+        key(&mut a, ShellKey::Char('3'));
+        key(&mut a, ShellKey::Enter);
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        assert_eq!(value(&a, 11), 4.);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().values[&field(11)].formula,
+            "#Depth/3"
+        );
+        formula(&mut a, 11, "#Depth/3");
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        assert_eq!(value(&a, 11), 4.);
+        key(&mut a, ShellKey::Escape);
+        assert_eq!(a.document.document(), &document);
+        assert_eq!(a.document.revision(), 0);
+        activate(&mut a, 28, 1);
+        assert_eq!(a.document.document(), &document);
+    }
+    #[test]
+    fn precision_noop_direction_escape_and_formula_replacement_are_independent() {
+        let mut a = app();
+        let exact = 1.234_567_89;
+        a.numeric_inputs
+            .as_mut()
+            .unwrap()
+            .values
+            .get_mut(&field(4))
+            .unwrap()
+            .quantity = Quantity::Length(Length::millimetres(exact).unwrap());
+        let projection = a.numeric_inputs.as_ref().unwrap().project().unwrap();
+        a.shell
+            .as_mut()
+            .unwrap()
+            .set_numeric_projection(projection)
+            .unwrap();
+        for _ in 0..2 {
+            activate(&mut a, 4, 0);
+            key(&mut a, ShellKey::Enter);
+            assert_eq!(value(&a, 4), exact);
+        }
+        formula(&mut a, 4, "1.23456789mm");
+        activate(&mut a, 4, 0);
+        key(&mut a, ShellKey::Char('-'));
+        key(&mut a, ShellKey::Enter);
+        assert_eq!(value(&a, 4), exact);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().values[&field(4)].formula,
+            "1.23456789mm"
+        );
+        edit(&mut a, 4, "5.0", false, false);
+        key(&mut a, ShellKey::Escape);
+        assert_eq!(value(&a, 4), exact);
+        edit(&mut a, 4, "1.3", false, true);
+        assert_eq!(value(&a, 4), 1.3);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().values[&field(4)].formula,
+            ""
+        );
+    }
+    #[test]
+    fn same_event_formula_open_uses_accepted_literal_and_rejection_preserves_source() {
+        for incomplete in [false, true] {
+            for cancel in [false, true] {
+                let mut a = app();
+                edit(&mut a, 4, "12.3", false, true);
+                formula(&mut a, 4, "12.3mm");
+                edit(
+                    &mut a,
+                    4,
+                    if incomplete { "." } else { "7.5" },
+                    false,
+                    false,
+                );
+                activate(&mut a, 4, 1);
+                assert_eq!(
+                    a.shell.as_ref().unwrap().shell().formula().draft(),
+                    if incomplete { "12.3mm" } else { "" }
+                );
+                assert_eq!(value(&a, 4), if incomplete { 12.3 } else { 7.5 });
+                key(
+                    &mut a,
+                    if cancel {
+                        ShellKey::Escape
+                    } else {
+                        ShellKey::Enter
+                    },
+                );
+                assert_eq!(
+                    a.numeric_inputs.as_ref().unwrap().values[&field(4)].formula,
+                    if incomplete { "12.3mm" } else { "" }
+                );
+            }
+        }
+    }
+    #[test]
+    fn formula_delivery_retry_opens_once_without_reapplying_edit_or_resetting_editor() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        formula(&mut a, 4, "12.3mm");
+        edit(&mut a, 4, "7.5", false, false);
+        a.shell.as_mut().unwrap().fail_numeric_formula = 1;
+        activate(&mut a, 4, 1);
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        let pending = a.numeric_delivery.clone().unwrap();
+        let request = match pending.kind {
+            NumericDeliveryKind::Formula(request, _) => Some(request),
+            _ => None,
+        }
+        .unwrap();
+        let sequence = a.numeric_inputs.as_ref().unwrap().consumed_sequence;
+        let at = a.next_document_retry_deadline().unwrap();
+        a.poll_document_projection(at, ProjectionTrigger::RetryDeadline);
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        assert_eq!(a.shell.as_ref().unwrap().shell().formula().draft(), "");
+        key(&mut a, ShellKey::Char('x'));
+        a.complete_numeric_formula(request);
+        assert_eq!(a.shell.as_ref().unwrap().shell().formula().draft(), "x");
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().consumed_sequence,
+            sequence
+        );
+        assert_eq!(value(&a, 4), 7.5);
+    }
+    #[test]
+    fn incomplete_final_input_rejects_ok_and_explicit_retry_commits() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        edit(&mut a, 4, ".", false, false);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Editing
+        );
+        assert_eq!(value(&a, 4), 12.3);
+        assert_eq!(a.numeric_last_attempt, 1);
+        assert!(!a.extrude_latch.armed);
+        a.finish_shell_input(Update::default());
+        assert_eq!(a.document.revision(), 0);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 1);
+    }
+    #[test]
+    fn final_revision_failure_keeps_drafts_preview_document_and_panel_atomic() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        a.document.set_revision_for_test(u64::MAX);
+        let events = a.document.subscribe();
+        let original = a.document.document().clone();
+        let state = a.commands.state().clone();
+        let preview = a.commands.preview().cloned();
+        let session = a.command_inputs.as_ref().unwrap().session;
+        edit(&mut a, 4, "14.5", false, false);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.document(), &original);
+        assert_eq!(a.document.revision(), u64::MAX);
+        assert!(events.try_recv().is_err());
+        assert_eq!(a.commands.state(), &state);
+        assert_eq!(a.commands.preview(), preview.as_ref());
+        assert_eq!(value(&a, 4), 14.5);
+        assert_eq!(a.command_inputs.as_ref().unwrap().session, session);
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Editing
+        );
+        assert!(!a.extrude_latch.armed);
+        a.sync_extrude_command();
+        a.finish_shell_input(Update::default());
+        assert_eq!(a.commands.state(), &state);
+        assert_eq!(a.numeric_last_attempt, 1);
+    }
+    #[test]
+    fn committed_outcome_retries_closure_without_a_second_feature_or_notification() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        let events = a.document.subscribe();
+        a.shell.as_mut().unwrap().fail_numeric_confirm = 2;
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 1);
+        assert!(a.numeric_committed);
+        assert!(a.numeric_inputs.is_some());
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Editing
+        );
+        let at = a.next_document_retry_deadline().unwrap();
+        a.poll_document_projection(at, ProjectionTrigger::RetryDeadline);
+        assert!(a.numeric_delivery.as_ref().unwrap().retry_at.is_none());
+        a.poll_document_projection(at + Duration::from_secs(1), ProjectionTrigger::Notification);
+        assert!(a.numeric_committed);
+        key(&mut a, ShellKey::Tab);
+        assert!(a.numeric_delivery.is_none());
+        assert!(a.numeric_inputs.is_none());
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Confirmed
+        );
+        assert_eq!(a.document.document().features().len(), 1);
+        assert_eq!(events.try_iter().count(), 1);
+        a.sync_extrude_command();
+        assert_eq!(a.document.revision(), 1);
+    }
+    #[test]
+    fn caches_rebind_to_fresh_sessions_and_cancel_restores_defaults() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        let old = a.numeric_inputs.as_ref().unwrap().session;
+        click(&mut a, "Create");
+        click(&mut a, "[R]evolve");
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().operation,
+            ActionOperation::Revolve
+        );
+        assert_ne!(a.numeric_inputs.as_ref().unwrap().session, old);
+        activate(&mut a, 4, 0);
+        edit(&mut a, 6, "42.5", true, true);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        click(&mut a, "Create");
+        click(&mut a, "[E]xtrude");
+        assert_eq!(value(&a, 4), 12.3);
+        activate(&mut a, 28, 1);
+        assert_eq!(a.document.revision(), 0);
+        assert!(a.numeric_inputs.is_none());
+        click(&mut a, "Create");
+        click(&mut a, "[E]xtrude");
+        assert_eq!(value(&a, 4), 0.0);
+    }
+    #[test]
+    fn invalid_formula_stays_open_and_cancel_preserves_the_accepted_offset() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        activate(&mut a, 9, 0);
+        edit(&mut a, 11, "4.5", false, true);
+        let before = a.numeric_inputs.as_ref().unwrap().parameter_draft.clone();
+        formula(&mut a, 11, "#missing + 2mm");
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().formula().draft(),
+            "#missing + 2mm"
+        );
+        assert_eq!(value(&a, 11), 4.5);
+        assert_eq!(a.document.revision(), 0);
+        assert_eq!(a.numeric_inputs.as_ref().unwrap().parameter_draft, before);
+        key(&mut a, ShellKey::Escape);
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 1);
+        assert_eq!(mm(committed(&a).starting_offset.as_ref().unwrap()), 4.5);
+    }
+    #[test]
+    fn depth_expression_is_evaluated_and_invalid_source_is_not_accepted() {
+        let mut a = app();
+        formula(&mut a, 4, "2mm + 3mm");
+        assert_eq!(value(&a, 4), 5.);
+        activate(&mut a, 28, 0);
+        assert!(matches!(
+            committed(&a).depth,
+            newell_model::ParameterValue::Expression(_)
+        ));
+        assert_eq!(mm(&committed(&a).depth), 5.);
+        let mut a = app();
+        formula(&mut a, 4, "not-defined");
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        key(&mut a, ShellKey::Escape);
+        activate(&mut a, 3, 1);
+        activate(&mut a, 3, 1);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 1);
+        assert!(matches!(
+            committed(&a).depth,
+            newell_model::ParameterValue::Literal(_)
+        ));
+    }
+    #[test]
+    fn selection_only_retry_has_a_new_attempt_at_the_same_numeric_barrier() {
+        let mut a = live_app();
+        let base = a.document.add_base_solid("base").unwrap();
+        a.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        a.finish_shell_input(Update::default());
+        let entity = a.document.document().feature(base).unwrap().outputs()[0];
+        edit(&mut a, 4, "12.3", false, true);
+        activate(&mut a, 1, 1);
+        activate(&mut a, 26, 0);
+        let i = a.numeric_inputs.as_ref().unwrap();
+        let old = newell_ui::NumericConfirmRequest {
+            document: i.document.tree(),
+            session: i.session,
+            operation: i.operation,
+            attempt: newell_ui::NumericConfirmAttemptId(1),
+            through_sequence: i.consumed_sequence,
+        };
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 1);
+        assert_eq!(a.numeric_last_attempt, 1);
+        a.command_inputs
+            .as_mut()
+            .unwrap()
+            .values
+            .get_mut(&newell_ui::SelectionFieldKey {
+                operation: ActionOperation::Extrude,
+                key: 27,
+            })
+            .unwrap()
+            .replace([entity]);
+        a.shell.as_mut().unwrap().fail_numeric_confirm = 1;
+        activate(&mut a, 28, 0);
+        let current = match a.numeric_delivery.as_ref().unwrap().kind {
+            NumericDeliveryKind::Confirm(r, _, _, _) => Some(r),
+            _ => None,
+        }
+        .unwrap();
+        assert_eq!(old.through_sequence, current.through_sequence);
+        assert_ne!(old.attempt, current.attempt);
+        assert_eq!(a.document.revision(), 2);
+        assert!(
+            !a.shell
+                .as_mut()
+                .unwrap()
+                .finish_numeric_confirm(old, false)
+                .unwrap()
+                .any()
+        );
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Editing
+        );
+        let at = a.next_document_retry_deadline().unwrap();
+        a.poll_document_projection(at, ProjectionTrigger::RetryDeadline);
+        assert_eq!(
+            a.shell.as_ref().unwrap().shell().extrude().status,
+            ExtrudeStatus::Confirmed
+        );
+        assert_eq!(a.document.revision(), 2);
+    }
+    #[test]
+    fn every_local_panel_keeps_its_numeric_dimensions_and_closes_without_a_model_command() {
+        let mut a = app();
+        click(&mut a, "Create");
+        click(&mut a, "[R]evolve");
+        activate(&mut a, 4, 0);
+        edit(&mut a, 6, "42.5", true, true);
+        activate(&mut a, 8, 0);
+        edit(&mut a, 10, "3.2", true, true);
+        activate(&mut a, 17, 0);
+        edit(&mut a, 19, "6.7", true, true);
+        activate(&mut a, 5, 0);
+        activate(&mut a, 12, 0);
+        edit(&mut a, 14, "4.5", false, true);
+        activate(&mut a, 18, 0);
+        activate(&mut a, 22, 0);
+        edit(&mut a, 24, "2.4", false, true);
+        let d = a.numeric_inputs.as_ref().unwrap();
+        for (key, n) in [(6, 42.5), (10, 3.2), (14, 4.5), (19, 6.7), (24, 2.4)] {
+            let v = &d.values[&NumericFieldKey {
+                operation: ActionOperation::Revolve,
+                key,
+            }];
+            assert!(matches!(v.quantity, Quantity::Angle(_)));
+            assert!((v.quantity.value_in(Unit::Degree).unwrap() - n).abs() < 1e-12);
+        }
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        click(&mut a, "Create");
+        click(&mut a, "[L]oft");
+        activate(&mut a, 3, 0);
+        edit(&mut a, 5, "1.5", false, true);
+        activate(&mut a, 7, 0);
+        edit(&mut a, 9, "0.0", false, true);
+        formula(&mut a, 5, "1.5");
+        assert!(
+            a.numeric_inputs
+                .as_ref()
+                .unwrap()
+                .values
+                .values()
+                .all(|v| matches!(v.quantity, Quantity::Scalar(_)))
+        );
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        click(&mut a, "Create");
+        click(&mut a, "[S]weep");
+        activate(&mut a, 5, 0);
+        activate(&mut a, 6, 0);
+        edit(&mut a, 7, "32.1", true, true);
+        activate(&mut a, 8, 0);
+        edit(&mut a, 9, "0.0", false, true);
+        assert!(matches!(
+            a.numeric_inputs.as_ref().unwrap().values[&NumericFieldKey {
+                operation: ActionOperation::Sweep,
+                key: 7
+            }]
+                .quantity,
+            Quantity::Angle(_)
+        ));
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        click(&mut a, "Modify");
+        click(&mut a, "Boolean");
+        activate(&mut a, 0, 1);
+        activate(&mut a, 4, 0);
+        edit(&mut a, 6, "3.4", true, true);
+        activate(&mut a, 5, 0);
+        let v = &a.numeric_inputs.as_ref().unwrap().values[&NumericFieldKey {
+            operation: ActionOperation::Boolean,
+            key: 6,
+        }];
+        assert_eq!(v.quantity.value_in(Unit::Millimetre).unwrap(), 3.4);
+        assert_eq!(v.direction, Direction::Reverse);
+        activate(&mut a, 28, 0);
+        assert_eq!(a.document.revision(), 0);
+        assert_eq!(a.commands.state(), &CommandState::Idle);
+    }
+    #[test]
+    fn namespace_replacement_invalidates_old_formula_delivery_and_command_requests() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        a.shell.as_mut().unwrap().fail_numeric_formula = 1;
+        activate(&mut a, 4, 1);
+        let old = match a.numeric_delivery.as_ref().unwrap().kind {
+            NumericDeliveryKind::Formula(request, _) => Some(request),
+            _ => None,
+        }
+        .unwrap();
+        a.document
+            .replace(newell_model::Document::default())
+            .unwrap();
+        a.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        assert!(a.numeric_delivery.is_none());
+        assert!(a.numeric_cache.is_empty());
+        assert!(a.numeric_inputs.is_none());
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        click(&mut a, "Create");
+        click(&mut a, "[E]xtrude");
+        let session = a.numeric_inputs.as_ref().unwrap().session;
+        a.complete_numeric_formula(old);
+        assert_eq!(a.numeric_inputs.as_ref().unwrap().session, session);
+        assert_eq!(value(&a, 4), 0.0);
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+    }
+    #[test]
+    fn exhausted_session_allocation_installs_neither_draft_and_cannot_confirm_an_old_operation() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, true);
+        let session = a.numeric_inputs.as_ref().unwrap().session;
+        a.next_command_id = u64::MAX;
+        click(&mut a, "Create");
+        click(&mut a, "[R]evolve");
+        assert_eq!(a.numeric_inputs.as_ref().unwrap().session, session);
+        assert_eq!(a.command_inputs.as_ref().unwrap().session, session);
+        assert!(
+            a.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .numeric_session()
+                .is_none()
+        );
+        activate(&mut a, 28, 0);
+        assert!(a.shell.as_ref().unwrap().shell().command_open());
+        assert_eq!(a.document.revision(), 0);
+    }
+
+    #[test]
+    fn tab_focus_loss_and_unsigned_input_accept_or_restore_without_confirming() {
+        let mut a = app();
+        edit(&mut a, 4, "12.3", false, false);
+        key(&mut a, ShellKey::Tab);
+        assert_eq!(value(&a, 4), 12.3);
+        assert_eq!(a.document.revision(), 0);
+        edit(&mut a, 4, "7.5", false, false);
+        let update = a.shell.as_mut().unwrap().numeric_focus_lost();
+        a.finish_shell_input(update);
+        assert_eq!(value(&a, 4), 7.5);
+        assert_eq!(a.document.revision(), 0);
+        assert!(a.shell.as_ref().unwrap().shell().editing_field().is_none());
+        edit(&mut a, 4, ".", false, false);
+        let update = a.shell.as_mut().unwrap().numeric_focus_lost();
+        a.finish_shell_input(update);
+        assert_eq!(value(&a, 4), 7.5);
+        activate(&mut a, 18, 0);
+        activate(&mut a, 19, 0);
+        activate(&mut a, 22, 0);
+        edit(&mut a, 24, "2.4", true, true);
+        let v = &a.numeric_inputs.as_ref().unwrap().values[&field(24)];
+        assert_eq!(v.direction, Direction::Forward);
+        assert_eq!(v.quantity.value_in(Unit::Millimetre).unwrap(), 2.4);
     }
 }

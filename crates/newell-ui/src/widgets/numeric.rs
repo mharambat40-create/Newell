@@ -4,90 +4,60 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//! Editable numeric fields of an Action Box (M2.23): value, direction, limits and the edit
-//! session. Values are text; nothing is parsed into a CAD quantity or evaluated.
-//!
-//! A field's mock text (`+|0.0 mm`, `0.0 deg`, `0.0`) gives its direction prefix, magnitude
-//! and unit. The magnitude is `digits[.digit]` with at most 8 integer digits (7 for `deg`),
-//! so `[+|12345678.9 mm☰]` and `[+|1234567.8 deg☰]` fill the 13-cell text area exactly.
-
+//! Compact numeric text editing. Accepted quantities belong to the application.
 use super::edit::{EditKey, TextEdit};
-use crate::WidgetId;
-
-/// What a field shows, split into the parts that are drawn separately.
+use crate::{
+    NumericDirection, NumericEdit, NumericFieldDescriptor, NumericFieldView, NumericUnit, WidgetId,
+};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NumericView {
-    /// `+|`, `-|` or empty (field without direction).
     pub(crate) prefix: &'static str,
     pub(crate) body: Vec<char>,
-    /// Static text after the value (` mm`), or empty.
     pub(crate) suffix: String,
-    /// Caret index into `body` while the field is edited.
     pub(crate) caret: Option<usize>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Spec {
-    prefixed: bool,
-    negative: bool,
-    magnitude: String,
-    suffix: String,
-    int_digits: usize,
-}
-
-impl Spec {
-    fn parse(mock: &str) -> Self {
-        let (prefixed, negative, rest) = if let Some(rest) = mock.strip_prefix("+|") {
-            (true, false, rest)
-        } else if let Some(rest) = mock.strip_prefix("-|") {
-            (true, true, rest)
-        } else {
-            (false, false, mock)
-        };
-        let (magnitude, unit) = rest.split_once(' ').unwrap_or((rest, ""));
-        Self {
-            prefixed,
-            negative,
-            magnitude: magnitude.to_owned(),
-            suffix: if unit.is_empty() {
-                String::new()
-            } else {
-                format!(" {unit}")
-            },
-            int_digits: if unit == "deg" { 7 } else { 8 },
-        }
-    }
-
-    fn accepts(&self, text: &str) -> bool {
-        let (int, frac) = match text.split_once('.') {
-            Some((i, f)) => (i, f),
-            None => (text, ""),
-        };
-        let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
-        digits(int) && digits(frac) && int.len() <= self.int_digits && frac.len() <= 1
+fn suffix(d: NumericFieldDescriptor) -> &'static str {
+    match d.unit {
+        NumericUnit::Millimetres => " mm",
+        NumericUnit::Degrees => " deg",
+        NumericUnit::Unitless => "",
     }
 }
-
-/// `5` → `5.0`, `.5` → `0.5`, `007.5` → `7.5`; `None` for no digit at all.
+pub(crate) fn default_view(d: NumericFieldDescriptor) -> NumericView {
+    NumericView {
+        prefix: if d.directional { "+|" } else { "" },
+        body: d.default_magnitude.chars().collect(),
+        suffix: suffix(d).to_owned(),
+        caret: None,
+    }
+}
+fn accepts(d: NumericFieldDescriptor, text: &str) -> bool {
+    let (i, f) = text.split_once('.').unwrap_or((text, ""));
+    i.bytes().all(|c| c.is_ascii_digit())
+        && f.bytes().all(|c| c.is_ascii_digit())
+        && i.len() <= usize::from(d.integer_digits)
+        && f.len() <= 1
+}
 fn normalize(text: &str) -> Option<String> {
-    let (int, frac) = text.split_once('.').unwrap_or((text, ""));
-    if int.is_empty() && frac.is_empty() {
+    let (i, f) = text.split_once('.').unwrap_or((text, ""));
+    if i.is_empty() && f.is_empty() {
         return None;
     }
-    let int = int.trim_start_matches('0');
-    let int = if int.is_empty() { "0" } else { int };
-    let frac = if frac.is_empty() { "0" } else { frac };
-    Some(format!("{int}.{frac}"))
+    let i = i.trim_start_matches('0');
+    Some(format!(
+        "{}.{}",
+        if i.is_empty() { "0" } else { i },
+        if f.is_empty() { "0" } else { f }
+    ))
 }
-
-fn prefix_of(spec: &Spec, negative: bool) -> &'static str {
-    match (spec.prefixed, negative) {
-        (false, _) => "",
-        (true, false) => "+|",
-        (true, true) => "-|",
+fn direction(reverse: bool) -> NumericDirection {
+    if reverse {
+        NumericDirection::Reverse
+    } else {
+        NumericDirection::Forward
     }
 }
-
+/// Presentation cache only, including an optimistic view while an emitted candidate resolves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     id: u32,
@@ -95,212 +65,214 @@ struct Entry {
     magnitude: String,
     formula: String,
 }
-
+/// Raw editor and its initial rounded view, used solely to distinguish explicit changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Active {
     id: u32,
-    spec: Spec,
+    descriptor: NumericFieldDescriptor,
     negative: bool,
+    initial_negative: bool,
+    initial: String,
     edit: TextEdit,
 }
-
-/// The edited values and formula drafts of one Action Box, keyed by field id, plus the edit
-/// session. `saved` is what OK last kept, so Cancel can return to it.
+/// Per-operation text state and candidate queue. The shell supplies session identities;
+/// canonical quantities and accepted draft authority remain in the application.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NumericFields {
     entries: Vec<Entry>,
     saved: Vec<Entry>,
     active: Option<Active>,
+    pending: Vec<(WidgetId, NumericEdit)>,
 }
-
 impl NumericFields {
     pub(crate) fn editing(&self) -> Option<WidgetId> {
         self.active.as_ref().map(|a| WidgetId::new(a.id))
     }
-
     fn entry(&self, id: u32) -> Option<&Entry> {
         self.entries.iter().find(|e| e.id == id)
     }
-
-    fn entry_mut(&mut self, id: u32, spec: &Spec) -> &mut Entry {
-        let at = self
-            .entries
-            .iter()
-            .position(|e| e.id == id)
-            .unwrap_or_else(|| {
+    fn entry_mut(&mut self, id: u32, d: NumericFieldDescriptor) -> &mut Entry {
+        let at = match self.entries.iter().position(|e| e.id == id) {
+            Some(at) => at,
+            None => {
                 self.entries.push(Entry {
                     id,
-                    negative: spec.negative,
-                    magnitude: spec.magnitude.clone(),
+                    negative: false,
+                    magnitude: d.default_magnitude.to_owned(),
                     formula: String::new(),
                 });
                 self.entries.len() - 1
-            });
+            }
+        };
         &mut self.entries[at]
     }
-
-    /// Starts editing field `id` (caret at the end). `mock` is the field's default text.
-    /// Ends any other edit first; editing the same field again changes nothing.
-    pub(crate) fn begin(&mut self, id: WidgetId, mock: &str) {
+    pub(crate) fn begin(&mut self, id: WidgetId, d: NumericFieldDescriptor) {
         if self.editing() == Some(id) {
             return;
         }
         self.commit();
-        let spec = Spec::parse(mock);
         let (negative, magnitude) = self.entry(id.get()).map_or_else(
-            || (spec.negative, spec.magnitude.clone()),
+            || (false, d.default_magnitude.to_owned()),
             |e| (e.negative, e.magnitude.clone()),
         );
         self.active = Some(Active {
             id: id.get(),
-            edit: TextEdit::new(&magnitude),
+            descriptor: d,
             negative,
-            spec,
+            initial_negative: negative,
+            initial: magnitude.clone(),
+            edit: TextEdit::new(&magnitude),
         });
     }
-
-    /// Reverses the direction marker of a prefixed field (`+|` / `-|`) without changing its
-    /// magnitude or starting a text edit.
-    pub(crate) fn toggle_sign(&mut self, id: WidgetId, mock: &str) -> bool {
-        let spec = Spec::parse(mock);
-        if !spec.prefixed {
+    pub(crate) fn toggle_sign(&mut self, id: WidgetId, d: NumericFieldDescriptor) -> bool {
+        if !d.directional {
             return false;
         }
-        if let Some(active) = self.active.as_mut().filter(|active| active.id == id.get()) {
-            active.negative = !active.negative;
+        if let Some(a) = self.active.as_mut().filter(|a| a.id == id.get()) {
+            a.negative = !a.negative;
             return true;
         }
-        let entry = self.entry_mut(id.get(), &spec);
-        entry.negative = !entry.negative;
+        let e = self.entry_mut(id.get(), d);
+        e.negative = !e.negative;
+        let reverse = e.negative;
+        self.pending
+            .push((id, NumericEdit::Direction(direction(reverse))));
         true
     }
-
-    /// Keeps the edit: the text is normalised (`5` → `5.0`); text with no digit restores the
-    /// previous value.
+    /// Ends the raw edit and queues only an explicit change or incomplete acceptance attempt.
+    /// Lexical normalization here never reconstructs an untouched canonical quantity.
     pub(crate) fn commit(&mut self) {
-        let Some(active) = self.active.take() else {
+        let Some(a) = self.active.take() else { return };
+        let raw = a.edit.string();
+        if raw == a.initial && a.negative == a.initial_negative {
+            self.entry_mut(a.id, a.descriptor);
             return;
-        };
-        let entry = self.entry_mut(active.id, &active.spec);
-        entry.negative = active.negative;
-        if let Some(text) = normalize(&active.edit.string()) {
-            entry.magnitude = text;
         }
+        let edit = if raw == a.initial {
+            NumericEdit::Direction(direction(a.negative))
+        } else if let Some(text) = normalize(&raw) {
+            NumericEdit::Literal {
+                magnitude: text,
+                direction: direction(a.negative),
+            }
+        } else {
+            NumericEdit::Incomplete(raw)
+        };
+        match &edit {
+            NumericEdit::Literal { magnitude, .. } => {
+                let e = self.entry_mut(a.id, a.descriptor);
+                e.magnitude = magnitude.clone();
+                e.negative = a.negative;
+                e.formula.clear();
+            }
+            NumericEdit::Direction(_) => self.entry_mut(a.id, a.descriptor).negative = a.negative,
+            _ => {}
+        }
+        self.pending.push((WidgetId::new(a.id), edit));
     }
-
-    /// Ends the edit and keeps the previous value.
     pub(crate) fn discard(&mut self) {
         self.active = None;
     }
-
-    /// A typed character: a digit or `.` edits the magnitude; `+` / `-` set the direction of a
-    /// field that has one. Everything else, and anything over the limits, is refused.
     pub(crate) fn typed(&mut self, c: char) -> bool {
         let Some(a) = self.active.as_mut() else {
             return false;
         };
         match c {
-            '+' | '-' if a.spec.prefixed => {
-                let negative = c == '-';
-                std::mem::replace(&mut a.negative, negative) != negative
+            '+' | '-' if a.descriptor.directional => {
+                let reverse = c == '-';
+                std::mem::replace(&mut a.negative, reverse) != reverse
             }
             '0'..='9' | '.' => {
-                let spec = &a.spec;
-                a.edit.insert(c, |s| spec.accepts(s))
+                let d = a.descriptor;
+                a.edit.insert(c, |s| accepts(d, s))
             }
             _ => false,
         }
     }
-
     pub(crate) fn backspace(&mut self) -> bool {
         let Some(a) = self.active.as_mut() else {
             return false;
         };
-        let spec = &a.spec;
-        a.edit.backspace(|s| spec.accepts(s))
+        let d = a.descriptor;
+        a.edit.backspace(|s| accepts(d, s))
     }
-
-    pub(crate) fn edit_key(&mut self, key: EditKey) -> bool {
+    pub(crate) fn edit_key(&mut self, k: EditKey) -> bool {
         let Some(a) = self.active.as_mut() else {
             return false;
         };
-        let spec = &a.spec;
-        a.edit.apply(key, |s| spec.accepts(s))
+        let d = a.descriptor;
+        a.edit.apply(k, |s| accepts(d, s))
     }
-
-    /// What field `id` shows, or `None` while it was never edited (the mock text applies).
-    pub(crate) fn view(&self, id: WidgetId, mock: &str) -> Option<NumericView> {
-        if let Some(a) = self.active.as_ref().filter(|a| a.id == id.get()) {
-            return Some(NumericView {
-                prefix: prefix_of(&a.spec, a.negative),
-                body: a.edit.chars().to_vec(),
-                suffix: a.spec.suffix.clone(),
-                caret: Some(a.edit.caret()),
-            });
+    pub(crate) fn view(&self, id: WidgetId, d: NumericFieldDescriptor) -> Option<NumericView> {
+        let e = self.entry(id.get());
+        let a = self.active.as_ref().filter(|a| a.id == id.get());
+        if e.is_none() && a.is_none() {
+            return None;
         }
-        let e = self.entry(id.get())?;
-        let spec = Spec::parse(mock);
+        let reverse = a.map_or_else(|| e.is_some_and(|e| e.negative), |a| a.negative);
         Some(NumericView {
-            prefix: prefix_of(&spec, e.negative),
-            body: e.magnitude.chars().collect(),
-            suffix: spec.suffix,
-            caret: None,
+            prefix: if !d.directional {
+                ""
+            } else if reverse {
+                "-|"
+            } else {
+                "+|"
+            },
+            body: a.map_or_else(
+                || {
+                    e.map_or(d.default_magnitude, |e| e.magnitude.as_str())
+                        .chars()
+                        .collect()
+                },
+                |a| a.edit.chars().to_vec(),
+            ),
+            suffix: suffix(d).to_owned(),
+            caret: a.map(|a| a.edit.caret()),
         })
     }
-
-    /// The formula draft kept for field `id` (empty if none).
     pub(crate) fn formula(&self, id: WidgetId) -> &str {
         self.entry(id.get()).map_or("", |e| e.formula.as_str())
     }
-
-    /// The engineering expression represented by a field, without the visual `+|` / `-|`
-    /// direction marker. A confirmed formula wins over the literal editor value.
-    pub(crate) fn source(&self, id: WidgetId, mock: &str) -> String {
-        let spec = Spec::parse(mock);
-        let Some(entry) = self.entry(id.get()) else {
-            return format!("{}{}", spec.magnitude, spec.suffix);
-        };
-        if !entry.formula.is_empty() {
-            return entry.formula.clone();
-        }
-        let sign = if spec.prefixed && entry.negative {
-            "-"
-        } else {
-            ""
-        };
-        format!("{sign}{}{}", entry.magnitude, spec.suffix)
+    pub(crate) fn set_formula(&mut self, id: WidgetId, d: NumericFieldDescriptor, text: &str) {
+        self.entry_mut(id.get(), d).formula = text.to_owned();
+        self.pending
+            .push((id, NumericEdit::Formula(text.to_owned())));
     }
-
-    pub(crate) fn set_formula(&mut self, id: WidgetId, mock: &str, text: &str) {
-        let spec = Spec::parse(mock);
-        self.entry_mut(id.get(), &spec).formula = text.to_owned();
+    /// Refreshes the cached accepted view without replacing an active raw editor.
+    pub(crate) fn install(
+        &mut self,
+        id: WidgetId,
+        d: NumericFieldDescriptor,
+        v: &NumericFieldView,
+    ) {
+        let e = self.entry_mut(id.get(), d);
+        e.magnitude = v.magnitude.clone();
+        e.negative = v.direction == NumericDirection::Reverse;
+        e.formula = v.formula.clone();
     }
-
-    /// OK: the values become the ones Cancel returns to.
+    pub(crate) fn take_edits(&mut self) -> Vec<(WidgetId, NumericEdit)> {
+        std::mem::take(&mut self.pending)
+    }
     pub(crate) fn confirm(&mut self) {
         self.commit();
         self.saved = self.entries.clone();
     }
-
-    /// Cancel: back to the values of the last OK (or the defaults).
     pub(crate) fn cancel(&mut self) {
         self.active = None;
         self.entries = self.saved.clone();
+        self.pending.clear();
     }
-
-    /// The box reopens with its defaults.
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const MM: &str = "+|0.0 mm";
-    const DEG: &str = "-|0.0 deg";
-    const PLAIN: &str = "0.0";
+    const MM: NumericFieldDescriptor = crate::numeric::field(crate::ActionOperation::Extrude, 4);
+    const DEG: NumericFieldDescriptor = crate::numeric::field(crate::ActionOperation::Revolve, 6);
+    const PLAIN: NumericFieldDescriptor = crate::numeric::field(crate::ActionOperation::Loft, 5);
 
     fn id(v: u32) -> WidgetId {
         WidgetId::new(v)
@@ -310,7 +282,7 @@ mod tests {
         s.chars().map(|c| f.typed(c)).collect()
     }
 
-    fn shown(f: &NumericFields, at: u32, mock: &str) -> String {
+    fn shown(f: &NumericFields, at: u32, mock: NumericFieldDescriptor) -> String {
         let v = f.view(id(at), mock).unwrap();
         format!(
             "{}{}{}",
@@ -352,7 +324,7 @@ mod tests {
         f.begin(id(2), DEG);
         select_all_and_type(&mut f, "1234567.8");
         f.commit();
-        assert_eq!(shown(&f, 2, DEG), "-|1234567.8 deg");
+        assert_eq!(shown(&f, 2, DEG), "+|1234567.8 deg");
         f.begin(id(2), DEG);
         f.edit_key(EditKey::SelectAll);
         assert_eq!(type_str(&mut f, "12345678").last(), Some(&false));

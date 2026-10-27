@@ -934,7 +934,7 @@ fixed-width lookup preserves O(1) resolution and introduces no stored state.
 **Tree interaction amendment (2026-10-26, explicitly authorized by the human).**
 `docs/ui_design/README_UI.md` §26.1–§26.5 defines the exact tree structures.
 Features alone owns the playhead; collapse changes its presentation, never its
-logical insertion anchor. Tree row hover uses `├→╞`, leaf `╰╴→╘╸` (branch
+logical insertion anchor. Tree row hover uses `├→╞`, leaf `╰╴→╘ ` (branch
 `╰→╘` beside its unchanged handle), and right frame `║→╣` (Color on:
 `│→╡`). Selection uses row-local `│→┃`, `├→┣`, `╰→┗`, `╴→╸`.
 Selection wins at hierarchy cells when also hovered; hover still substitutes
@@ -1097,6 +1097,8 @@ To support unlimited, synchronized windows, the application architecture must st
 
 ### 4.2 Local Window State (The View/Controller)
 - **Isolated UI Context:** The Controller (`newell-ui`, `newell-app`) handles OS events via `winit` per window. There is no global UI singleton. Each window instance exclusively owns its active Workbench, selection state, Feature Tree expansion state, UI Scale choice (`ui_scale_label_percent`, mapped `scale_factor_percent`, `monitor_reference_scale` and `effective_k`, §3.1.1) and Theme plus Color (§3.6). Each new window initializes the 100% UI Scale label (factor 80%), Dark and Color unchecked independently of other windows and OS appearance. The selected label is user state; the multiplier is mapped from it, and the remaining scale values are derived from the window's current monitor and recomputed, never inherited.
+- **Projection:** Each new window starts with Orthographic selected. Perspective remains available through the View selector; projection choice is local to the window and is not inherited.
+- **Display style:** Each new window starts with Hidden Line selected. The seven display styles remain available through the View selector, and the choice is local to the window.
 - **Render Context:** The View (`newell-render`) reads states and draws them independently for each window. Each window owns its independent swapchain and command encoder to render the 3D viewport and the ASCII grid overlay.
 
 ### 4.4 3D viewport navigation
@@ -1119,9 +1121,17 @@ preserving the pivot's projected pixel without recentering at gesture start.
 
 Secondary-button drag pans in the camera-facing plane at contextual focal depth;
 middle-button drag remains a pan fallback. Primary and secondary clicks capture
-navigation only after the existing click/drag threshold. Wheel,
-DPI-normalized fractional scrolling and native pinch zoom toward a geometric
-hit or focal-plane anchor. Phased gestures retain their anchor and input owner.
+navigation only after the existing click/drag threshold. A button-free scroll
+stream pans in the screen plane when it is `PixelDelta` and begins with
+`TouchPhase::Started` over exposed viewport pixels; its frozen anchor uses the
+same contextual focal depth as mouse pan. The `winit` deltas are already in
+physical pixels and retain the OS scroll direction, so the Controller applies
+no second DPI conversion. `LineDelta` and `PixelDelta` without a captured
+`Started` phase retain cursor-anchored wheel zoom; native pinch zoom is unchanged.
+Menus, modals, trees and selection lists receive scroll first. `winit` does not
+report finger count, so routing uses the phased `PixelDelta` event pattern as a
+proxy: a phased high-resolution mouse wheel may pan, while an unphased trackpad
+scroll remains zoom. Phased gestures retain their anchor and input owner.
 The absolute minimum navigation distance is 0.001 model units; maximum distance
 is four times the aspect-aware sphere-fit distance with a 10% margin. Mesh
 replacement updates cached bounds without reframing. Home over exposed scene

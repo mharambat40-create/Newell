@@ -6,6 +6,15 @@
 // (at your option) any later version.
 //! Geometric kernel boundary over BrepKIT (Model layer, `ARCHITECTURE.md` §1, §5.1).
 
+mod extrude;
+pub use extrude::{NewellGeometry, NewellShapeKey};
+mod surface;
+pub use surface::{NewellBooleanMode, NewellSurface};
+mod profile;
+pub use profile::{
+    NewellProfile, NewellProfileEdge, NewellProfileFace, NewellProfileFrame, NewellProfileWire,
+};
+
 use brepkit_operations::primitives::make_box;
 use brepkit_operations::tessellate::sample_solid_edges_filtered;
 use brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance;
@@ -87,6 +96,7 @@ impl NewellMesh {
 pub struct NewellSolid {
     topology: Topology,
     solid: SolidId,
+    measured_volume: Option<f64>,
 }
 
 /// Errors translated from the kernel boundary into Newell-owned terms.
@@ -104,6 +114,31 @@ pub enum NewellKernelError {
 }
 
 impl NewellSolid {
+    /// Measures the actual B-Rep using the pinned kernel.
+    ///
+    /// # Errors
+    /// Propagates kernel measurement errors.
+    pub fn volume(&self) -> Result<f64, NewellKernelError> {
+        if let Some(volume) = self.measured_volume {
+            return Ok(volume);
+        }
+        brepkit_operations::measure::solid_volume(&self.topology, self.solid, 0.001)
+            .map_err(operation_error)
+    }
+    /// Checks the B-Rep manifold and geometry using the pinned kernel.
+    ///
+    /// # Errors
+    /// Returns the concrete validation issues when the solid is invalid.
+    pub fn validate(&self) -> Result<(), NewellKernelError> {
+        let report = brepkit_operations::validate::validate_solid(&self.topology, self.solid)
+            .map_err(operation_error)?;
+        if !report.is_valid() {
+            return Err(NewellKernelError::Operation {
+                message: format!("{:?}", report.issues),
+            });
+        }
+        Ok(())
+    }
     /// Constructs an axis-aligned box rooted at the model origin.
     ///
     /// # Errors
@@ -116,7 +151,11 @@ impl NewellSolid {
         }
         let mut topology = Topology::new();
         let solid = make_box(&mut topology, dx, dy, dz).map_err(operation_error)?;
-        Ok(Self { topology, solid })
+        Ok(Self {
+            topology,
+            solid,
+            measured_volume: None,
+        })
     }
 
     /// Creates a renderer-ready triangle mesh without exposing BrepKIT topology.
@@ -235,7 +274,13 @@ mod tests {
     fn cylinder_omits_periodic_seam_but_keeps_both_rims() {
         let mut topology = Topology::new();
         let solid = make_cylinder(&mut topology, 1.0, 2.0).unwrap();
-        let mesh = NewellSolid { topology, solid }.tessellate(0.05).unwrap();
+        let mesh = NewellSolid {
+            topology,
+            solid,
+            measured_volume: None,
+        }
+        .tessellate(0.05)
+        .unwrap();
         let edges = mesh.feature_edges();
         assert_eq!(edges.offsets().len(), 3);
         assert!(edges.positions().len() > 16);
@@ -263,6 +308,7 @@ mod tests {
         let filtered = NewellSolid {
             topology,
             solid: fused,
+            measured_volume: None,
         }
         .tessellate(0.1)
         .unwrap();

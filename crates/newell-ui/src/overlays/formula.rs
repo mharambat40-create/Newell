@@ -79,6 +79,9 @@ pub struct FormulaEditor {
     focus: Option<WidgetId>,
     return_focus: Option<WidgetId>,
     status: ModalStatus,
+    deferred: bool,
+    apply_pending: bool,
+    origins: Vec<Option<usize>>,
 }
 
 impl FormulaEditor {
@@ -93,6 +96,9 @@ impl FormulaEditor {
             focus: None,
             return_focus: None,
             status: ModalStatus::Closed,
+            deferred: false,
+            apply_pending: false,
+            origins: Vec::new(),
         }
     }
 
@@ -143,6 +149,13 @@ impl FormulaEditor {
         }
         self.applied = text.chars().take(MAX_LEN).collect();
         self.edit = TextEdit::new(&self.applied);
+        self.origins = self
+            .applied
+            .char_indices()
+            .map(|(byte, _)| Some(byte))
+            .collect();
+        self.apply_pending = false;
+        self.deferred = false;
         self.status = ModalStatus::Open;
         self.focus = Some(self.id(TEXT));
         inter.set_focused(self.focus);
@@ -155,7 +168,7 @@ impl FormulaEditor {
     /// and selects with the editing keys; Enter confirms. On the buttons, Enter and Space
     /// activate. Focus moves with Tab/Down and BackTab/Up.
     pub fn key(&mut self, key: ModalKey) -> bool {
-        if !self.is_open() {
+        if !self.is_open() || self.apply_pending {
             return false;
         }
         match key {
@@ -169,8 +182,11 @@ impl FormulaEditor {
                 self.confirm();
                 true
             }
-            ModalKey::Char(c) if self.on_text() => self.edit.insert(c, fits),
-            ModalKey::Backspace if self.on_text() => self.edit.backspace(fits),
+            ModalKey::Char(c) if self.on_text() => self.edit_source(Some(c), false),
+            ModalKey::Backspace if self.on_text() => self.edit_source(None, false),
+            ModalKey::Edit(crate::EditKey::Delete) if self.on_text() => {
+                self.edit_source(None, true)
+            }
             ModalKey::Edit(k) if self.on_text() => self.edit.apply(k, fits),
             ModalKey::Enter | ModalKey::Char(' ') => self.activate_focus(),
             ModalKey::Char(_) | ModalKey::Backspace | ModalKey::Edit(_) => false,
@@ -181,7 +197,7 @@ impl FormulaEditor {
     /// the editor and was handled. The text area takes focus; OK and Cancel close the editor.
     /// Ids outside the editor, and anything while closed, are refused.
     pub fn activate(&mut self, id: WidgetId) -> bool {
-        if !self.is_open() {
+        if !self.is_open() || self.apply_pending {
             return false;
         }
         match self.slot(id) {
@@ -333,6 +349,51 @@ impl FormulaEditor {
         );
     }
 
+    /// Requires application validation before a bound Formula editor can close.
+    pub fn defer_application(&mut self) {
+        self.deferred = true;
+    }
+    /// Whether an explicit OK is awaiting application validation.
+    #[must_use]
+    pub const fn application_pending(&self) -> bool {
+        self.apply_pending
+    }
+    /// Bounded edit provenance, retaining identity even after several disjoint edits.
+    #[must_use]
+    pub fn source_origins(&self) -> &[Option<usize>] {
+        &self.origins
+    }
+    /// Delivers the stored outcome. Rejection leaves the exact editable draft open.
+    pub fn finish_application(&mut self, accepted: bool) {
+        if !self.apply_pending {
+            return;
+        }
+        self.apply_pending = false;
+        if accepted {
+            self.applied = self.edit.string();
+            self.status = ModalStatus::Confirmed;
+        }
+    }
+    fn edit_source(&mut self, inserted: Option<char>, delete_forward: bool) -> bool {
+        let (mut lo, mut hi) = self.edit.selection();
+        if inserted.is_none() && lo == hi {
+            if delete_forward {
+                hi = (hi + 1).min(self.edit.chars().len());
+            } else {
+                lo = lo.saturating_sub(1);
+            }
+        }
+        let accepted = match inserted {
+            Some(c) => self.edit.insert(c, fits),
+            None if delete_forward => self.edit.apply(crate::EditKey::Delete, fits),
+            None => self.edit.backspace(fits),
+        };
+        if accepted {
+            self.origins.splice(lo..hi, inserted.map(|_| None));
+        }
+        accepted
+    }
+
     fn move_focus(&mut self, forward: bool) -> bool {
         let ring = [self.id(TEXT), self.id(OK), self.id(CANCEL)];
         self.focus = step_focus(&ring, self.focus, forward);
@@ -348,6 +409,10 @@ impl FormulaEditor {
     }
 
     fn confirm(&mut self) {
+        if self.deferred {
+            self.apply_pending = true;
+            return;
+        }
         self.applied = self.edit.string();
         self.status = ModalStatus::Confirmed;
     }
@@ -782,5 +847,41 @@ mod color_tests {
                 assert_eq!(cropped.get(x, y), grid.get(x, y));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod application_tests {
+    use super::*;
+    #[test]
+    fn deferred_ok_waits_and_rejection_preserves_edit_provenance() {
+        let mut editor = FormulaEditor::new(2000);
+        let mut interaction = InteractionState::default();
+        editor.open(&mut interaction, "#A/2");
+        editor.defer_application();
+        editor.key(ModalKey::Backspace);
+        editor.key(ModalKey::Char('3'));
+        assert_eq!(editor.source_origins(), &[Some(0), Some(1), Some(2), None]);
+        editor.key(ModalKey::Enter);
+        assert!(editor.is_open());
+        assert!(editor.application_pending());
+        assert!(!editor.key(ModalKey::Char('9')));
+        editor.finish_application(false);
+        assert!(editor.is_open());
+        assert_eq!(editor.draft(), "#A/3");
+        editor.key(ModalKey::Enter);
+        editor.finish_application(true);
+        assert_eq!(editor.status(), ModalStatus::Confirmed);
+        assert_eq!(editor.text(), "#A/3");
+    }
+    #[test]
+    fn retyping_an_identical_selected_token_discards_its_old_identity_origin() {
+        let mut editor = FormulaEditor::new(2000);
+        let mut interaction = InteractionState::default();
+        editor.open(&mut interaction, "A");
+        editor.key(ModalKey::Edit(crate::EditKey::SelectAll));
+        editor.key(ModalKey::Char('A'));
+        assert_eq!(editor.draft(), "A");
+        assert_eq!(editor.source_origins(), &[None]);
     }
 }

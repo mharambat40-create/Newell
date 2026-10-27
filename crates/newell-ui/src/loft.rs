@@ -37,7 +37,6 @@ const K_CONNECTION: u32 = 15;
 const K_CONNECTION_START: u32 = 16;
 const K_CONNECTION_END: u32 = 17;
 
-const NUMERIC_KEYS: [u32; 2] = [K_START_MAGNITUDE, K_END_MAGNITUDE];
 const SELECT_KEYS: [u32; 8] = [
     K_PROFILE,
     K_START_ENTITY,
@@ -48,9 +47,6 @@ const SELECT_KEYS: [u32; 8] = [
     K_CONNECTION_END,
     K_MERGE_TARGETS,
 ];
-
-/// Mock text of a `Magnitude` field (`[0.0          ☰]`, no unit).
-const MAGNITUDE: &str = "0.0";
 
 /// `Normal | Tengent | Match` (cyclic, in this order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -180,7 +176,10 @@ impl LoftUi {
                 self.row()
                     .contour("│")
                     .text(" ╰╴Magnitude ")
-                    .numeric(magnitude_key, MAGNITUDE)
+                    .numeric(
+                        magnitude_key,
+                        crate::numeric::field(crate::ActionOperation::Loft, magnitude_key),
+                    )
                     .end(),
             );
         }
@@ -206,7 +205,10 @@ impl LoftUi {
                 .contour("│ ")
                 .check(key, true, label, width)
                 .text(&gap)
-                .select(selection_key, selection.count())
+                .select(
+                    selection_key,
+                    self.selection_count(selection_key, selection.count()),
+                )
                 .end(),
         );
     }
@@ -228,7 +230,10 @@ impl ActionBoxUi for LoftUi {
             self.row()
                 .contour("│")
                 .text(" Profile     ")
-                .select(K_PROFILE, v.profile.count())
+                .select(
+                    K_PROFILE,
+                    self.selection_count(K_PROFILE, v.profile.count()),
+                )
                 .end(),
         );
         self.end_type(
@@ -272,19 +277,30 @@ impl ActionBoxUi for LoftUi {
                 self.row()
                     .contour("│")
                     .text(" │ Start     ")
-                    .select(K_CONNECTION_START, v.connection_start.count())
+                    .select(
+                        K_CONNECTION_START,
+                        self.selection_count(K_CONNECTION_START, v.connection_start.count()),
+                    )
                     .end(),
             );
             b.push(
                 self.row()
                     .contour("│")
                     .text(" ╰╴End       ")
-                    .select(K_CONNECTION_END, v.connection_end.count())
+                    .select(
+                        K_CONNECTION_END,
+                        self.selection_count(K_CONNECTION_END, v.connection_end.count()),
+                    )
                     .end(),
             );
         }
         if v.result != ExtrudeResultMode::New {
-            push_merge(&mut b, self.base(), v.merge_with_all, v.merge_targets);
+            push_merge(
+                &mut b,
+                self.base(),
+                v.merge_with_all,
+                self.selection_count(K_MERGE_TARGETS, v.merge_targets.count()),
+            );
         }
         push_footer(&mut b, self.base());
         Some(b)
@@ -335,10 +351,37 @@ impl ActionBoxUi for LoftUi {
         self.reopen();
     }
 
-    fn numeric_keys(&self) -> &'static [u32] {
-        &NUMERIC_KEYS
+    fn numeric_operation(&self) -> crate::ActionOperation {
+        crate::ActionOperation::Loft
     }
 
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor> {
+        use crate::SelectionFieldRole::*;
+        if !SELECT_KEYS.contains(&key) {
+            return None;
+        }
+        let role = match key {
+            K_MERGE_TARGETS => MergeScope,
+            K_GUIDE_SELECTION | K_PATH_SELECTION => Path,
+            _ => EntityReference,
+        };
+        Some(crate::SelectionFieldDescriptor {
+            field: crate::SelectionFieldKey {
+                operation: crate::ActionOperation::Loft,
+                key,
+            },
+            role,
+            ordered: false,
+            max_count: if matches!(role, MergeScope | Bodies) {
+                None
+            } else {
+                Some(1)
+            },
+        })
+    }
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>) {
+        self.selection_counts = Some(counts.clone());
+    }
     fn select_keys(&self) -> &'static [u32] {
         &SELECT_KEYS
     }

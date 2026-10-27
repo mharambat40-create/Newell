@@ -170,8 +170,22 @@ fn cancelling_active_trackpad_blocks_tail_but_idle_cancel_allows_moved_only_plat
     let mut gesture = NavigationGesture::default();
     gesture.cancel();
     assert!(gesture.update(TouchPhase::Moved, true));
+    // Only an observed start creates a stream whose tail must remain rejected.
+    assert!(gesture.update(TouchPhase::Started, true));
     gesture.cancel();
     assert!(!gesture.update(TouchPhase::Moved, true));
     assert!(!gesture.update(TouchPhase::Ended, true));
     assert!(gesture.update(TouchPhase::Started, true));
+}
+
+#[test]
+fn unphased_scroll_events_do_not_latch_ownership_or_rejection() {
+    use newell_app::input::NavigationGesture;
+    use winit::event::TouchPhase;
+    let mut gesture = NavigationGesture::default();
+    assert!(gesture.update(TouchPhase::Moved, true));
+    gesture.cancel();
+    assert!(gesture.update(TouchPhase::Moved, true));
+    assert!(!gesture.update(TouchPhase::Moved, false));
+    assert!(gesture.update(TouchPhase::Moved, true));
 }

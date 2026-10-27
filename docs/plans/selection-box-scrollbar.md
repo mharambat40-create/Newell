@@ -343,3 +343,221 @@ unverified. No code, tests, specifications, snapshot files or index entries were
 changed, and no builds, tests or application commands were run in this
 correction. No unresolved product or architectural decision is introduced.
 Stop here. Challenger and Executor require a separate human instruction.
+
+
+## Executor implementation report — revision 2 — 2026-10-26
+
+Executor / Codex. The human approved revision 2 and requested implementation on
+main. The selection-box implementation and its automated checks are complete;
+the workspace is not green, and physical-device acceptance remains pending.
+No other role was started.
+
+### Implemented behavior and files
+
+- `crates/newell-ui/src/overlays/list.rs`: shared five-row list geometry and
+  conditional one-column gutter; exact six-half-slot thumb calculation with
+  half-up integer rounding; fully clipped glyph/ownership writes and cleared
+  surplus/gutter cells; stale offsets clamped before signed deltas. Generic
+  ScrollState retains its explicit-window API and gets an internal wide-delta
+  path for overflow-safe wheel direction reversal.
+- `crates/newell-ui/src/overlays/selection.rs`: both presentations consume the
+  shared geometry and scrollbar writer. Profile composition accepts explicit
+  borrowed item IDs/labels; nine-item production IDs remain unchanged. Offset,
+  focus and arrows reconcile consistently. The anchored whole-row inverse
+  preserves quantized offsets on press and exact endpoints. The opaque grab
+  also records its panel identity and opening epoch, rejecting grabs after
+  close/reopen or from another panel; epoch exhaustion safely disables new
+  captures instead of recycling identity.
+- `crates/newell-ui/src/overlays/mod.rs` and `crates/newell-ui/src/lib.rs`:
+  re-export the Newell-owned opaque grab value.
+- `crates/newell-ui/src/shell/mod.rs`: forward and validate anchors, reconcile
+  selection state during sync, preserve modal routing, and negate wheel steps
+  only after widening. No wheel action is admitted while controller capture
+  consumes the event.
+- `crates/newell-app/src/controller.rs`: certify only a matching selection
+  drag's own publication so moving list hit targets do not cancel that drag;
+  retain external invalidation, separator safeguards and current OS cursors.
+- Inline tests in list.rs/selection.rs,
+  `crates/newell-ui/src/overlays/tests.rs`,
+  `crates/newell-ui/src/shell/tests.rs`, and
+  `crates/newell-app/tests/it/controller.rs`: canonical states, fitting/empty
+  lists, N=11 quantization, large/extreme counts, rounding, invalid offsets,
+  growth/shrink, clipping, IDs, ink/theme/hover, arrows/keyboard/wheel and capture
+  lifecycle. Old eight-row/full-cell assertions were replaced only where
+  superseded by §21.
+- `crates/newell-ui/tests/it/snapshots/it__snapshots__selection_panel_open.snap`:
+  manually changed the approved list area to five rows and blank surplus rows,
+  with automatic updates disabled. No unrelated snapshot cells were changed by
+  this Executor. A later external tree-stroke update to the same snapshot was
+  preserved. The existing snapshot assertion passes.
+
+The title/footer, generic 30x12 and profile 31x11 footprints, selection identity,
+draft/apply/cancel semantics, palette, glyph thickness and input gestures are
+preserved. No dependency, renderer, model or kernel change was made for this
+implementation. The current report is the only plan amendment in this stage;
+the functional specification remains revision 2's read-only input.
+
+### Starting state and concurrent external changes
+
+Execution began on main at HEAD
+`1eb4a9a4b9fb45a4bbfaa223e348c0e5e9a69f1b`, with the extensive dirty/untracked
+inputs recorded above and an empty index. Other work changed sources and HEAD
+while this task was running: HEAD subsequently became
+`b0d86850f6c78f8dcff5b20c3fef3caee744fa56`, then
+`a2d457292fd612de56651ddfd8b07f120c06fda3`. That external commit included much of
+the in-progress selection implementation along with other UI/tree/camera work.
+This Executor did not commit, stage, reset, restore, stash, create a branch or
+worktree, or dispatch agents. The index remained empty when inspected at the
+end; externally committed/modified work was preserved.
+
+In particular, external UI Scale/tree edits temporarily caused compilation
+failures and removed/reintroduced an untracked Interface_Exemple.txt. Those
+sources were not repaired or restored by this task. The human's final
+clarification supersedes the earlier mistaken answer: five UI Scale values are
+intended, and Interface_Exemple.txt is no longer authoritative. Existing legacy
+tests were executed as required, but that document was not used to define this
+implementation. Current out-of-scope scale code/architecture still describe four
+labels; that separate inconsistency is not resolved by selection scrolling.
+
+Because the checkout changed during execution, the final global failures cannot
+all be classified as the original baseline failures. No claim of an unchanged
+workspace baseline or a green workspace is made.
+
+### Checks actually run
+
+All test runs used `INSTA_UPDATE=no`; no automatic snapshot regeneration was
+used. Logs are local diagnostic text in `/tmp/newell-scroll-*.log`, not source
+snapshots.
+
+| Check | Initial baseline | Final observed result |
+|---|---|---|
+| `cargo check --workspace --locked` | Passed | Passed after the external missing-method compilation errors were resolved externally. Log: `/tmp/newell-scroll-resume-check.log`. |
+| `cargo fmt --all -- --check` | Passed | Failed on externally changed tree/hover/reference code, including tree-related sections of controller.rs and shell/tests.rs. No unrelated formatting was applied. Log: `/tmp/newell-scroll-final-fmt2.log`. |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed | Passed after fixing one collapsible-if warning in the new clipping test. Log: `/tmp/newell-scroll-final-clippy2.log`. |
+| `cargo nextest run --workspace --all-features --locked` | First run stopped after two glyph failures | Re-run with `--no-fail-fast`: 852 run, 818 passed, 34 failed, 13 skipped. Log: `/tmp/newell-scroll-final-workspace.log`. |
+| Baseline nextest with `--no-fail-fast` | 831 run, 826 passed, 5 failed, 13 skipped | Baseline failures were three glyph-reference/atlas checks and two tree/reference comparisons. Log: `/tmp/newell-scroll-baseline-all.log`. |
+| Focused overlay/selection/controller/profile tests and existing selection snapshot | Existing selection snapshot passed | **107 passed, 0 failed**, 678 filtered/skipped. Exact filter and command are below. Log: `/tmp/newell-scroll-final-selection.log`. |
+| `cargo test --workspace --doc --locked` | Passed | Passed; all crates currently report zero doctests. Log: `/tmp/newell-scroll-final-doc.log`. |
+| Scoped `git diff --check` | Documentation stage recorded separately | Passed for the implementation files and approved snapshot. |
+
+Focused command:
+
+```sh
+INSTA_UPDATE=no cargo nextest run -p newell-ui -p newell-app --all-features --locked --no-fail-fast -E 'test(overlays::) | test(shell::tests::selection_) | test(shell::tests::profile_) | test(shell::tests::every_profile_) | test(shell::tests::centered_selection_) | test(controller::selection_) | test(snapshots::selection_panel_open)'
+```
+
+The final full suite's 34 failures concern glyph reference coverage, tree
+selection/hover/playhead and navigation-width/drag contracts, their app-level
+consequences, stale command-bar/reference expectations, and UI Scale tests.
+The earlier broad targeted filter also admitted a tree-selection test; its
+failure was retained in the report, not hidden by weakening any assertion.
+The final focused filter isolates the approved selection-box paths; the complete
+workspace run above still reports every failure. Every new selection/list test
+and the existing selection snapshot passed in the complete run as well.
+
+### Remaining limits and handoff
+
+Manual pointer/wheel/trackpad/keyboard inspection and physical-screen visual
+acceptance were not performed; they remain pending as specified above. Ignored
+GPU tests were not run because no rendering/atlas code was changed by this task.
+The unrelated global failures, formatting differences and five-versus-four scale
+inconsistency remain for their respective work. This implementation is ready
+for human inspection of the scoped result, with these verification limits.
+No commit, external publication or subsequent role is authorized by this report.
+
+## Executor follow-up — green workspace — 2026-10-26
+
+The human explicitly expanded the Executor scope to repair the remaining global
+failures and formatting, preserving existing work and the index on main, with
+no commit or role transition. This supersedes the earlier selection-only write
+allowlist for this follow-up. The preceding report remains a historical record
+of that implementation's checks; its red-workspace conclusion is superseded by
+the results below.
+
+The human resolved the scale question by choosing the four currently documented
+values (80/100/120/140); the earlier five-value clarification is superseded.
+Interface_Exemple.txt remains retired and is not used as an expected UI reference.
+No architecture or accepted ADR was edited by this follow-up.
+
+### Repairs and preserved work
+
+The checkout began at HEAD
+`a2d457292fd612de56651ddfd8b07f120c06fda3` with an empty index and extensive
+existing UI/tree/shared-selection/renderer edits. Work continued to change in
+place during the first checks, including the selection migration from Copy
+arrays/objects to identity-bearing dynamic data. The initial check compiled
+production but the test build exposed stale field/Copy assumptions; after those
+interfaces were reconciled, successive complete runs had 15, then 4, then 2
+failures, then none. Existing implementation work was preserved throughout.
+
+Targeted follow-up changes include:
+
+- `crates/newell-ui/tests/it/action_boxes.rs`: clone the Sweep state for the
+  before/after comparison instead of attempting to copy a dynamic ActionState.
+- `crates/newell-ui/src/window.rs`: the unknown-monitor extreme-input test now
+  checks the documented maximum factor 120 (k=6), rather than the removed 140
+  factor (k=7). All four bounded scale states and their original factors remain
+  covered by the menu tests.
+- `crates/newell-render/tests/it/glyph.rs`: required-symbol scans exclude the
+  retired shell example. Current-reference equality, fixed glyph count, font
+  coverage and atlas coverage checks remain enforced; no atlas glyph was
+  removed or added to conceal a failure.
+- `docs/ui_design/Command_Bar.txt`: restore the README_UI §28 canonical Datum /
+  Utilities header and their missing popup reference blocks, retaining the
+  existing commands and fixed width. The implementation already used those
+  higher-priority specified names.
+- `docs/ui_design/Application_Menu_Bar.txt`, `docs/ui_design/README_UI.md`, and
+  `crates/newell-ui/tests/it/menu_bar.rs`: retain the blank disabled arrow cell
+  at the maximum scale state, correcting its one-cell-short textual reference.
+  The selector never changes popup width at an endpoint.
+- New test helper `crates/newell-ui/tests/support/reference_shell.rs`: read the
+  existing golden base-shell glyph fixture, require exactly 30 rows of 82 cells,
+  and explicitly verify/remove only the two documented blank rows for 28-row
+  comparisons. It does not derive expected output from the implementation.
+- `crates/newell-ui/tests/it/status.rs` and
+  `crates/newell-ui/src/shell/tree_tests.rs`: retain full cell-by-cell shell /
+  tree comparisons using that existing golden fixture, with no dependency on
+  the retired document.
+- `crates/newell-ui/src/shell/tests.rs`: use the canonical Extrude reference
+  directly for its 16-row box; assert the playhead stroke through R-1, matching
+  the current tree specification.
+- `crates/newell-ui/tests/it/hover.rs`: retain the exact canonical Starting
+  Offset hover assertion and unchanged ownership/ink checks without reading the
+  retired shell example.
+- Tree tests explicitly establish the expanded fixture when testing collapse,
+  retain both logical anchor and structural gap location, route marker input
+  to the intended semantic folder, and expect the documented selected hierarchy
+  after Rename. Truncated labels do not substitute for semantic identities.
+- `crates/newell-app/src/app.rs` test input helper: require a matching text cell
+  to have current routing ownership before clicking, so an occluded underlying
+  OK button cannot steal a modal test click. The multi-output selection fixture
+  uses a name that fits its narrow pane; separate long-name round-trip coverage
+  remains intact. The field transaction still asserts draft isolation, exact
+  committed entity identity, unchanged command session and untouched unrelated
+  selection/inputs.
+- Rust formatting was applied across the workspace as explicitly requested.
+  Existing shared-selection, tree, camera and renderer changes and their tests
+  were retained. No lint was disabled, no test was skipped to hide a failure,
+  and no snapshot regeneration command or automatic snapshot update was used.
+
+### Final executed checks
+
+| Command | Result | Diagnostic log |
+|---|---|---|
+| `cargo check --workspace --locked` | Passed | `/tmp/newell-green-final-check.log` |
+| `cargo fmt --all -- --check` | Passed | `/tmp/newell-green-final-format.log` |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed | `/tmp/newell-green-final-clippy.log` |
+| `INSTA_UPDATE=no cargo nextest run --workspace --all-features --locked --no-fail-fast` | **870 passed, 0 failed; 14 GPU tests excluded from this normal run** | `/tmp/newell-green-final-tests.log` |
+| `cargo test --workspace --doc --locked` | Passed (currently zero doctests) | `/tmp/newell-green-final-doc.log` |
+| `cargo test -p newell-render --locked -- --ignored` | **14 GPU tests passed**: 4 unit + 10 integration tests | `/tmp/newell-green-final-gpu.log` |
+| `git diff --check` | Passed | Command output empty |
+
+All 884 executed tests passed across the normal and explicit GPU runs. No
+required check remains failing. GPU tests include selection brightness across
+display modes and UI palette/role/rendering checks; they do not constitute
+physical-device manual interaction or visual acceptance.
+
+At final inspection HEAD was unchanged from this follow-up's starting HEAD and
+the index was still empty. No commit, branch, worktree, source snapshot,
+publication or subsequent role was created by this Executor. Existing dirty and
+untracked work remains available for the human's integration.

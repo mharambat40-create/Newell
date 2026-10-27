@@ -4,14 +4,14 @@
 // it under the terms of the GNU Affero General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-//! M2.20: the NavigationPanel trees compared with `Interface_Exemple.txt`, the Features /
+//! M2.20: the NavigationPanel golden fixture, the Features /
 //! Elements divider, the playhead and the Rename flow.
 use super::data::{self, Line, Node, NodeKind, child_count, full_label};
 use super::*;
 use crate::{CellContent, CellGrid, GridMetrics, UiPoint, hit_test};
 
-/// The canonical reference, read from `docs/ui_design/` (never edited here).
-const REFERENCE: &str = include_str!("../../../../docs/ui_design/Interface_Exemple.txt");
+#[path = "../../tests/support/reference_shell.rs"]
+mod reference_shell;
 
 fn metrics() -> GridMetrics {
     GridMetrics::new(6, 10).unwrap()
@@ -58,6 +58,9 @@ pub(super) fn respond_fixture(shell: &mut ShellState) {
     let Some((target, edit)) = shell.take_tree_edit() else {
         return;
     };
+    if matches!(edit, TreeIntentKind::Select { .. }) {
+        return;
+    }
     let mut projection = shell.tree_projection().clone();
     let mut supported = true;
     match (target.kind, edit) {
@@ -146,6 +149,20 @@ fn click_text(s: &mut ShellState, needle: &str) -> bool {
     s.fixture_click(hit_at(&g, col, row))
 }
 
+fn click_tree_marker(s: &mut ShellState, target: TreeTarget) -> bool {
+    let grid = s.compose().unwrap();
+    let hit = (0..grid.rows())
+        .find_map(|row| {
+            (0..grid.cols()).find_map(|col| {
+                let hit = hit_at(&grid, col, row)?;
+                let token = s.tree_hit(hit.widget_id?, ProjectionGeneration::new(0))?;
+                (token.target == target && token.part == TreePart::Marker).then_some(hit)
+            })
+        })
+        .expect("the semantic expansion marker is visible");
+    s.fixture_click(Some(hit))
+}
+
 /// The id under the first cell of `needle`.
 fn id_of(s: &ShellState, needle: &str) -> WidgetId {
     let g = s.compose().unwrap();
@@ -165,8 +182,8 @@ fn panel(g: &CellGrid, row: u32) -> String {
 }
 
 fn reference_panel() -> Vec<String> {
-    REFERENCE
-        .lines()
+    reference_shell::rows(28)
+        .iter()
         .skip(4)
         .take(22)
         .map(|l| l.chars().take(25).collect())
@@ -343,7 +360,7 @@ fn insertion_anchor_and_structural_location_are_distinct_at_folder_boundaries() 
 fn projection_reorder_and_removal_reconcile_selection_focus_cursor_and_rename_by_identity() {
     let mut s = live_shell(live_projection(4));
     click_text(&mut s, "operation_1");
-    let target = s.selected.unwrap();
+    let target = s.tree_focus.unwrap();
     let gap = s
         .projection
         .placed_gap(GapDisplayLocation::BeforeNode(FeatureNodeId::Operation(
@@ -354,7 +371,10 @@ fn projection_reorder_and_removal_reconcile_selection_focus_cursor_and_rename_by
     let mut reordered = s.projection.clone();
     reordered.features.swap(1, 3);
     s.set_tree_projection(reordered).unwrap();
-    assert_eq!(s.selected, Some(target));
+    assert!(
+        s.entity_selection.entities.is_empty(),
+        "a zero-output operation selects no entity"
+    );
     assert_eq!(s.tree_focus, Some(target));
     assert_eq!(s.playhead(), gap);
     assert!(s.begin_rename(id_of(&s, "operation_1")));
@@ -365,7 +385,7 @@ fn projection_reorder_and_removal_reconcile_selection_focus_cursor_and_rename_by
     s.set_tree_projection(removed).unwrap();
     assert!(!s.rename().is_open());
     assert!(s.take_tree_edit().is_none());
-    assert!(s.selected.is_none() && s.tree_focus.is_none());
+    assert!(s.entity_selection.entities.is_empty() && s.tree_focus.is_none());
     assert_eq!(
         s.playhead(),
         PlacedHistoryGap::default(),
@@ -382,8 +402,8 @@ fn replacement_does_not_reuse_semantics_or_presentation_even_when_raw_ids_repeat
     let mut replaced = live_projection(3);
     replaced.document = TreeDocumentId::new(2);
     s.set_tree_projection(replaced).unwrap();
-    assert_eq!(s.nav_width(), 30);
-    assert!(s.selected.is_none() && s.tree_focus.is_none());
+    assert_eq!(s.nav_width(), 18);
+    assert!(s.entity_selection.entities.is_empty() && s.tree_focus.is_none());
     assert!(!s.rename().is_open());
     assert!(s.take_tree_edit().is_none());
     assert_eq!(s.playhead(), PlacedHistoryGap::default());
@@ -393,7 +413,7 @@ fn replacement_does_not_reuse_semantics_or_presentation_even_when_raw_ids_repeat
 fn scrolling_reuses_bounded_visible_slots_without_losing_semantic_state() {
     let mut s = live_shell(live_projection(200));
     click_text(&mut s, "operation_0");
-    let selected = s.selected;
+    let selected = s.entity_selection.entities.clone();
     let old = s.projection.target(TreeTargetKind::FeaturesRoot);
     assert_eq!(
         s.tree_hit(tree_id(Tree::Features, 0), ProjectionGeneration::new(0))
@@ -406,7 +426,7 @@ fn scrolling_reuses_bounded_visible_slots_without_losing_semantic_state() {
         s.interaction.focused.is_none(),
         "wheel may leave semantic focus offscreen"
     );
-    assert_eq!(s.selected, selected);
+    assert_eq!(s.entity_selection.entities, selected);
     assert!(s.tree_slots[0].len() <= s.layout().features.inset(1).height() as usize);
     let current = s
         .tree_hit(tree_id(Tree::Features, 0), ProjectionGeneration::new(1))
@@ -414,7 +434,7 @@ fn scrolling_reuses_bounded_visible_slots_without_losing_semantic_state() {
         .target;
     assert_ne!(current, old);
     s.key(ShellKey::Enter);
-    assert_eq!(s.selected, selected);
+    assert_eq!(s.entity_selection.entities, selected);
     s.key(ShellKey::Tab);
     assert_eq!(s.tree_focus, Some(current));
     let old_top = s.nodes[0][s.tree_slots[0][0]].target;
@@ -469,7 +489,7 @@ fn invalid_projection_is_rejected_without_changing_any_state() {
 }
 
 #[test]
-fn nested_separator_uses_ancestor_guides_and_collapse_moves_it_after_the_folder() {
+fn nested_separator_uses_ancestor_guides_and_collapse_retains_internal_anchor() {
     let mut projection = live_projection(1);
     let folder = FeatureNodeId::Folder(OpaqueTreeId::new(10));
     projection.features[0].depth = 2;
@@ -488,16 +508,124 @@ fn nested_separator_uses_ancestor_guides_and_collapse_moves_it_after_the_folder(
         )))
         .unwrap();
     let mut s = live_shell(projection);
+    let folder_target = s
+        .projection
+        .target(TreeTargetKind::Folder(OpaqueTreeId::new(10)));
+    s.expanded.insert(folder_target);
     s.set_playhead(gap).unwrap();
     assert!(has_text(&s, "   │ ─"));
-    click_text(&mut s, "[-] last_folder");
-    assert_eq!(
-        s.playhead().display,
-        GapDisplayLocation::AfterSubtree(folder)
-    );
-    assert_eq!(s.playhead().insertion, HistoryGap::End);
+    assert!(click_tree_marker(&mut s, folder_target));
+    assert_eq!(s.playhead(), gap);
     assert!(!has_text(&s, "operation_0"));
-    assert!(s.tree_lines(Tree::Features).contains(&Line::Playhead));
+    assert!(!s.tree_lines(Tree::Features).contains(&Line::Playhead));
+    // The current content-based width cap leaves six label cells in this fixture.
+    assert!(has_text(&s, "last_… ───║"));
+}
+
+#[test]
+fn collapse_distinguishes_internal_last_child_gap_from_external_folder_boundary() {
+    let mut projection = live_projection(2);
+    let a = FeatureNodeId::Folder(OpaqueTreeId::new(10));
+    let b = FeatureNodeId::Folder(OpaqueTreeId::new(11));
+    for item in &mut projection.features {
+        item.depth = 2;
+    }
+    for (index, id, name) in [(1, b, "folder_b"), (0, a, "folder_a")] {
+        projection.features.insert(
+            index,
+            FeatureTreeItem {
+                id,
+                name: name.into(),
+                depth: 1,
+                visibility: None,
+            },
+        );
+    }
+    for (display, internal) in [
+        (
+            GapDisplayLocation::AfterSubtree(FeatureNodeId::Operation(OpaqueTreeId::new(0))),
+            true,
+        ),
+        (GapDisplayLocation::AfterSubtree(a), false),
+        (GapDisplayLocation::BeforeNode(b), false),
+    ] {
+        let gap = projection.placed_gap(display).unwrap();
+        assert_eq!(gap.insertion, HistoryGap::Before(OpaqueTreeId::new(1)));
+        let mut shell = live_shell(projection.clone());
+        let a_target = shell
+            .projection
+            .target(TreeTargetKind::Folder(OpaqueTreeId::new(10)));
+        shell.expanded.insert(a_target);
+        shell.set_playhead(gap).unwrap();
+        shell.rebuild_tree_slots();
+        assert!(click_tree_marker(&mut shell, a_target));
+        assert_eq!(shell.playhead(), gap, "collapse retains both components");
+        assert_eq!(shell.inline_playhead_host(), internal.then_some(a_target));
+        assert_eq!(
+            shell.tree_lines(Tree::Features).contains(&Line::Playhead),
+            !internal
+        );
+        assert!(click_tree_marker(&mut shell, a_target));
+        assert_eq!(
+            shell.playhead(),
+            gap,
+            "expansion restores the original location"
+        );
+        assert_eq!(shell.inline_playhead_host(), None);
+        assert!(shell.tree_lines(Tree::Features).contains(&Line::Playhead));
+    }
+}
+
+#[test]
+fn refresh_scroll_anchor_skips_surviving_rows_hidden_by_new_folders() {
+    for case in 0..3 {
+        let mut shell = live_shell(live_projection(45));
+        let anchor = if case == 2 { 40 } else { 12 };
+        shell.tree_scroll[Tree::Features.slot()] = anchor + 1; // Features root precedes operations.
+        assert!(shell.tree_focus.is_none());
+        let mut projection = shell.projection.clone();
+        let folder_index = if case == 1 {
+            projection.features.remove(anchor);
+            anchor
+        } else {
+            anchor
+        };
+        let hidden_count = if case == 2 { 5 } else { 1 };
+        for item in &mut projection.features[folder_index..folder_index + hidden_count] {
+            item.depth = 2;
+        }
+        projection.features.insert(
+            folder_index,
+            FeatureTreeItem {
+                id: FeatureNodeId::Folder(OpaqueTreeId::new(100)),
+                name: "new_collapsed_folder".into(),
+                depth: 1,
+                visibility: None,
+            },
+        );
+        shell.set_tree_projection(projection).unwrap();
+        let expected = match case {
+            0 => 13,
+            1 => 14,
+            _ => 39,
+        };
+        let lines = shell.tree_lines(Tree::Features);
+        let expected_line = lines
+            .iter()
+            .position(|line| {
+                matches!(line,
+            Line::Node(row) if shell.nodes[Tree::Features.slot()][row.index].target.kind
+                == TreeTargetKind::Operation(OpaqueTreeId::new(expected)))
+            })
+            .unwrap();
+        let height = shell.layout().features.inset(1).height() as usize;
+        assert_eq!(
+            shell.tree_scroll[Tree::Features.slot()],
+            expected_line.min(lines.len().saturating_sub(height)),
+            "case {case}"
+        );
+        assert!(shell.tree_focus.is_none());
+    }
 }
 
 #[test]
@@ -569,7 +697,7 @@ fn every_state_keeps_the_reference_vocabulary_of_glyphs() {
     let line = |s: &str| format!("║{s:<23}║");
     assert_eq!(rows[3], line(" ├[+] Hub_Features"));
     assert_eq!(rows[4], line(" ├ Fillet_Inner"));
-    assert_eq!(rows[5], line(" │ ─────────────────── "));
+    assert_eq!(rows[5], line(" │ ────────────────────"));
     assert_eq!(rows[17], line(" ├ Surfaces(0)"));
     assert_eq!(rows[18], line(" ╰[-]Construct"));
     assert_eq!(rows[19], line("   ╰╴□ Plane_XY"));
@@ -773,7 +901,7 @@ fn rows_of(s: &ShellState, from: u32, to: u32) -> Vec<String> {
     (from..=to).map(|r| panel(&g, r)).collect()
 }
 
-const PLAYHEAD_ROW: &str = "║ │ ─────────────────── ║";
+const PLAYHEAD_ROW: &str = "║ │ ────────────────────║";
 
 #[test]
 fn the_playhead_is_a_line_between_two_features_and_not_a_node() {
@@ -793,7 +921,8 @@ fn the_playhead_is_a_line_between_two_features_and_not_a_node() {
     // Pressing it selects nothing and takes no focus.
     let mut s = ref_shell();
     assert!(!s.fixture_click(Some(hit)));
-    assert_eq!((s.selected, s.interaction().focused), (None, None));
+    assert!(s.entity_selection.entities.is_empty());
+    assert_eq!(s.interaction().focused, None);
     // Tab never lands on it.
     let ring = s.focus_ring(&s.compose().unwrap());
     assert!(!ring.contains(&WidgetId::new(PLAYHEAD_ID)));
@@ -894,8 +1023,12 @@ fn marker_checkbox_and_name_are_separate_targets() {
 
     // The name selects and does not expand.
     assert!(click_text(&mut s, "Hub_Features"));
+    assert!(
+        s.entity_selection.entities.is_empty(),
+        "folders only receive focus"
+    );
     assert_eq!(
-        s.selected,
+        s.tree_focus,
         Some(
             s.projection
                 .target(TreeTargetKind::Folder(OpaqueTreeId::new(1)))
@@ -908,13 +1041,13 @@ fn marker_checkbox_and_name_are_separate_targets() {
         )
     );
     // The marker expands and leaves the selection alone.
-    s.selected = None;
+    s.entity_selection.entities.clear();
     assert!(click_text(&mut s, "[-] Hub_Features"));
     assert!(
         !s.expanded.contains(
             &s.projection
                 .target(TreeTargetKind::Folder(OpaqueTreeId::new(1)))
-        ) && s.selected.is_none()
+        ) && s.entity_selection.entities.is_empty()
     );
     click_text(&mut s, "[+] Hub_Features");
 
@@ -922,7 +1055,7 @@ fn marker_checkbox_and_name_are_separate_targets() {
     assert!(click_text(&mut s, "□ Sketch_Profile"));
     let g = s.compose().unwrap();
     assert!(panel(&g, 6).starts_with("║ ├ ■ Sketch_Profile"));
-    assert!(s.selected.is_none());
+    assert!(s.entity_selection.entities.is_empty());
     click_text(&mut s, "■ Sketch_Profile");
     assert!(panel(&s.compose().unwrap(), 6).starts_with("║ ├ □ Sketch_Profile"));
     // A row without a checkbox has none to flip.
@@ -932,7 +1065,7 @@ fn marker_checkbox_and_name_are_separate_targets() {
 }
 
 #[test]
-fn selection_and_focus_draw_no_marker_in_the_trees() {
+fn selection_uses_canonical_hierarchy_while_focus_keeps_the_same_glyphs() {
     let mut s = ref_shell();
     let glyphs = |s: &ShellState| {
         let g = s.compose().unwrap();
@@ -940,8 +1073,11 @@ fn selection_and_focus_draw_no_marker_in_the_trees() {
     };
     let base = glyphs(&s);
     click_text(&mut s, "Rim_Body");
+    let selected = glyphs(&s);
+    assert_ne!(selected, base);
+    assert!(selected.iter().any(|row| row.contains("┣ ■ Rim_Body")));
     s.fixture_key(ShellKey::Tab);
-    assert_eq!(glyphs(&s), base);
+    assert_eq!(glyphs(&s), selected);
 }
 
 #[test]
@@ -1045,19 +1181,13 @@ fn rename_ok_changes_the_name_and_keeps_ids_and_focus() {
     assert!(!s.rename().is_open() && !s.modal_open());
     let g = s.compose().unwrap();
     assert!(
-        panel(&g, 20).starts_with("║ │ ╰╴□ Hub_Body_3"),
+        panel(&g, 20).starts_with("║ ┃ ┗╸□ Hub_Body_3"),
         "{}",
         panel(&g, 20)
     );
     assert_eq!(id_of(&s, "Hub_Body_3"), name_id, "the id is stable");
     assert_eq!(s.interaction().focused, Some(row_id), "focus is restored");
-    assert_eq!(
-        s.selected,
-        Some(
-            s.projection
-                .target(TreeTargetKind::Entity(OpaqueTreeId::new(2)))
-        )
-    );
+    assert_eq!(s.entity_selection.entities, vec![OpaqueTreeId::new(2)]);
 
     // Renaming again starts from the new full name.
     s.begin_rename(name_id);
@@ -1116,14 +1246,17 @@ fn rename_is_modal_and_never_empties_a_name() {
     let mut s = ref_shell();
     let id = id_of(&s, "Hub_Body");
     s.begin_rename(id);
-    let before = (s.expanded.clone(), s.selected);
+    let before = (s.expanded.clone(), s.entity_selection.entities.clone());
     // The base shell is blocked, for pointer and keyboard.
     let g = s.compose().unwrap();
     let (col, row) = find(&g, "Hub_Features").unwrap();
     assert_eq!(hit_at(&g, col, row).unwrap().widget_id, None);
     assert!(!s.fixture_click(hit_at(&g, col, row)));
     assert!(!s.fixture_key(ShellKey::MenuBar) && !s.fixture_key(ShellKey::Alt('f')));
-    assert_eq!(before, (s.expanded.clone(), s.selected));
+    assert_eq!(
+        before,
+        (s.expanded.clone(), s.entity_selection.entities.clone())
+    );
     assert!(!s.begin_rename(id_of_modal_free()), "no second modal");
 
     for _ in 0.."Hub_Body".len() {

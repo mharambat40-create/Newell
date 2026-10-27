@@ -12,7 +12,12 @@ pub mod picking;
 
 mod app;
 mod document;
-pub use document::{DocumentInstanceId, DocumentNotification, DocumentSession, project_document};
+pub mod geometry_worker;
+mod parameters;
+mod selection;
+pub use document::{
+    DocumentInstanceId, DocumentNotification, DocumentSession, DocumentVersion, project_document,
+};
 pub mod controller;
 pub mod input;
 pub mod pacing;
@@ -23,12 +28,22 @@ pub mod window;
 /// Fatal application errors. Crate-local by design (no global error type).
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    #[error("geometry transport: {0}")]
+    GeometryTransport(String),
+    #[error(transparent)]
+    Formula(#[from] newell_model::formula::FormulaError),
     #[error(transparent)]
     Model(#[from] newell_model::ModelError),
     #[error("document identity or revision capacity exhausted")]
     DocumentCounterExhausted,
     #[error("inconsistent document projection")]
     InvalidDocumentProjection,
+    /// Invalid/stale numeric identity, field contract, orientation, or Formula source length.
+    #[error("numeric field request does not match its active command draft")]
+    InvalidNumericRequest,
+    /// An active command destination lacks a Formula binding beyond the supported depth path.
+    #[error("formula is not supported for numeric field {0:?}")]
+    UnsupportedNumericFormula(newell_ui::NumericFieldKey),
     #[error("event loop failed: {0}")]
     EventLoop(#[from] winit::error::EventLoopError),
     #[error("window creation failed: {0}")]

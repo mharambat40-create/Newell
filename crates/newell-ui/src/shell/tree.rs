@@ -7,7 +7,8 @@
 //! Model-independent document projections and semantic tree presentation.
 
 use crate::UiError;
-use std::collections::BTreeSet;
+use crate::create_box::ActionBoxUi;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! identity {
     ($name:ident, $documentation:literal) => {
@@ -204,6 +205,9 @@ pub struct TreeHitToken {
 /// Model edit request with the source value needed to reject stale changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeIntentKind {
+    Select {
+        edit: crate::SelectionEdit,
+    },
     Rename {
         source_name: String,
         name: String,
@@ -344,6 +348,202 @@ impl ModelTreeProjection {
 }
 
 impl super::ShellState {
+    pub fn command_open(&self) -> bool {
+        self.panel().showing()
+    }
+    pub fn take_command_start(&mut self) -> Option<super::ActionOperation> {
+        std::mem::take(&mut self.command_started).then_some(self.operation)
+    }
+    pub fn field_descriptors(&self) -> Vec<crate::SelectionFieldDescriptor> {
+        let panels: [&dyn crate::create_box::ActionBoxUi; 5] = [
+            &self.extrude,
+            &self.revolve,
+            &self.loft,
+            &self.sweep,
+            &self.boolean,
+        ];
+        panels
+            .into_iter()
+            .flat_map(|panel| {
+                panel
+                    .select_keys()
+                    .iter()
+                    .filter_map(|key| panel.selection_descriptor(*key))
+            })
+            .collect()
+    }
+    pub fn selection_field_visible(&self, field: crate::SelectionFieldKey) -> bool {
+        field.operation == self.operation
+            && self.panel().showing()
+            && self.panel().shows(field.key)
+            && self.panel().selection_descriptor(field.key).is_some()
+    }
+    pub fn set_selection_fields(
+        &mut self,
+        fields: &[crate::SelectionFieldCount],
+    ) -> Result<bool, UiError> {
+        let descriptors = self.field_descriptors();
+        let mut values = std::collections::BTreeMap::new();
+        for item in fields {
+            if !descriptors.iter().any(|d| d.field == item.field)
+                || values.insert(item.field, item.count).is_some()
+            {
+                return Err(UiError::InvalidSelection);
+            }
+        }
+        let changed = values != self.selection_field_counts;
+        self.reference_fixture = false;
+        self.selection_field_counts = values;
+        for operation in [
+            super::ActionOperation::Extrude,
+            super::ActionOperation::Revolve,
+            super::ActionOperation::Loft,
+            super::ActionOperation::Sweep,
+            super::ActionOperation::Boolean,
+        ] {
+            let counts = fields
+                .iter()
+                .filter(|f| f.field.operation == operation)
+                .map(|f| (f.field.key, f.count))
+                .collect();
+            match operation {
+                super::ActionOperation::Extrude => self.extrude.set_selection_counts(&counts),
+                super::ActionOperation::Revolve => self.revolve.set_selection_counts(&counts),
+                super::ActionOperation::Loft => self.loft.set_selection_counts(&counts),
+                super::ActionOperation::Sweep => self.sweep.set_selection_counts(&counts),
+                super::ActionOperation::Boolean => self.boolean.set_selection_counts(&counts),
+            }
+        }
+        Ok(changed)
+    }
+    pub fn take_selection_request(&mut self) -> Option<crate::SelectionUiRequest> {
+        self.selection_request.take().or_else(|| {
+            self.selection
+                .take_completion()
+                .map(crate::SelectionUiRequest::Complete)
+        })
+    }
+    pub fn open_selection(&mut self, request: crate::SelectionOpen) -> Result<(), UiError> {
+        if request.document != self.projection.document
+            || request
+                .rows
+                .iter()
+                .any(|r| !self.projection.elements.iter().any(|e| e.id == r.entity))
+        {
+            return Err(UiError::InvalidSelection);
+        }
+        self.selection.open_with(request, &mut self.interaction)?;
+        self.sync();
+        Ok(())
+    }
+    pub fn reconcile_selection_rows(
+        &mut self,
+        rows: Vec<crate::SelectionRow>,
+    ) -> Result<bool, UiError> {
+        let changed = self.selection.reconcile_rows(rows)?;
+        self.sync();
+        Ok(changed)
+    }
+    pub fn entity_selection(&self) -> &crate::EntitySelectionView {
+        &self.entity_selection
+    }
+    pub fn selection_field_count(&self, field: crate::SelectionFieldKey) -> usize {
+        self.selection_field_counts
+            .get(&field)
+            .copied()
+            .unwrap_or(0)
+    }
+    pub fn set_entity_selection(
+        &mut self,
+        view: crate::EntitySelectionView,
+    ) -> Result<bool, UiError> {
+        view.validate(&self.projection)?;
+        let changed = self.entity_selection != view;
+        self.entity_selection = view;
+        Ok(changed)
+    }
+    pub fn operation_selection(&self, id: OpaqueTreeId) -> (usize, usize) {
+        let outputs: Vec<_> = self
+            .projection
+            .elements
+            .iter()
+            .filter(|e| e.source_feature == id)
+            .collect();
+        (
+            outputs
+                .iter()
+                .filter(|e| self.entity_selection.entities.contains(&e.id))
+                .count(),
+            outputs.len(),
+        )
+    }
+    pub fn is_entity_target_selected(&self, target: TreeTarget) -> bool {
+        if target.document != self.entity_selection.document {
+            return false;
+        }
+        match target.kind {
+            TreeTargetKind::Entity(id) => self.entity_selection.entities.contains(&id),
+            TreeTargetKind::Operation(id) => {
+                let (selected, total) = self.operation_selection(id);
+                total > 0 && selected == total
+            }
+            _ => false,
+        }
+    }
+    pub fn set_selection_modifiers(&mut self, shift: bool, toggle: bool) {
+        self.selection_edit = crate::SelectionEdit::modifiers(shift, toggle);
+    }
+    pub(super) fn request_entity_selection(&mut self, target: TreeTarget) {
+        if !matches!(
+            target.kind,
+            TreeTargetKind::Entity(_) | TreeTargetKind::Operation(_)
+        ) {
+            return;
+        }
+        self.pending_tree_edit = Some((
+            target,
+            TreeIntentKind::Select {
+                edit: self.selection_edit,
+            },
+        ));
+        // The explicit artwork fixture has its own fake document responder. Live windows
+        // only receive a copy from their application owner after consuming this intent.
+        if self.reference_fixture {
+            let ids: Vec<_> = self
+                .projection
+                .elements
+                .iter()
+                .filter(|e| match target.kind {
+                    TreeTargetKind::Entity(id) => e.id == id,
+                    TreeTargetKind::Operation(id) => e.source_feature == id,
+                    _ => false,
+                })
+                .map(|e| e.id)
+                .collect();
+            let selected = &mut self.entity_selection.entities;
+            match self.selection_edit {
+                crate::SelectionEdit::Replace => *selected = ids,
+                crate::SelectionEdit::Add => {
+                    for id in ids {
+                        if !selected.contains(&id) {
+                            selected.push(id);
+                        }
+                    }
+                }
+                crate::SelectionEdit::Toggle => {
+                    for id in ids {
+                        if let Some(i) = selected.iter().position(|v| *v == id) {
+                            selected.remove(i);
+                        } else {
+                            selected.push(id);
+                        }
+                    }
+                }
+                crate::SelectionEdit::Remove => selected.retain(|id| !ids.contains(id)),
+                crate::SelectionEdit::Clear => selected.clear(),
+            }
+        }
+    }
     pub(super) fn playhead_depth(&self) -> u32 {
         match self.playhead.display {
             GapDisplayLocation::BeforeNode(id) | GapDisplayLocation::AfterSubtree(id) => self
@@ -365,16 +565,24 @@ impl super::ShellState {
         let items = &self.projection.features;
         let mut ancestors: Vec<usize> = Vec::new();
         for (index, item) in items.iter().enumerate() {
-            while ancestors.last().is_some_and(|i| items[*i].depth >= item.depth) {
+            while ancestors
+                .last()
+                .is_some_and(|i| items[*i].depth >= item.depth)
+            {
                 ancestors.pop();
             }
             if item.id == id {
                 ancestors.push(index);
-                return ancestors.iter().map(|i| {
-                    (*i == index && before) || items[*i + 1..].iter()
-                        .find(|next| next.depth <= items[*i].depth)
-                        .is_some_and(|next| next.depth == items[*i].depth)
-                }).collect();
+                return ancestors
+                    .iter()
+                    .map(|i| {
+                        (*i == index && before)
+                            || items[*i + 1..]
+                                .iter()
+                                .find(|next| next.depth <= items[*i].depth)
+                                .is_some_and(|next| next.depth == items[*i].depth)
+                    })
+                    .collect();
             }
             ancestors.push(index);
         }
@@ -383,7 +591,10 @@ impl super::ShellState {
 
     /// The outermost collapsed strict ancestor is the only visible inline host.
     pub(super) fn inline_playhead_host(&self) -> Option<TreeTarget> {
-        if !self.expanded.contains(&self.projection.target(TreeTargetKind::FeaturesRoot)) {
+        if !self
+            .expanded
+            .contains(&self.projection.target(TreeTargetKind::FeaturesRoot))
+        {
             return None;
         }
         let id = match self.playhead.display {
@@ -392,12 +603,17 @@ impl super::ShellState {
         };
         let mut ancestors: Vec<&FeatureTreeItem> = Vec::new();
         for item in &self.projection.features {
-            while ancestors.last().is_some_and(|parent| parent.depth >= item.depth) {
+            while ancestors
+                .last()
+                .is_some_and(|parent| parent.depth >= item.depth)
+            {
                 ancestors.pop();
             }
             if item.id == id {
                 return ancestors.into_iter().find_map(|parent| {
-                    let FeatureNodeId::Folder(folder) = parent.id else { return None; };
+                    let FeatureNodeId::Folder(folder) = parent.id else {
+                        return None;
+                    };
                     let target = self.projection.target(TreeTargetKind::Folder(folder));
                     (!self.expanded.contains(&target)).then_some(target)
                 });
@@ -408,25 +624,36 @@ impl super::ShellState {
     }
 
     pub(super) fn update_tree_content_max(&mut self) {
-        let natural = self.nodes.iter().map(|nodes| {
-            nodes.iter().enumerate().map(|(index, node)| {
-                let kind = if super::data::has_children(nodes, index) {
-                    crate::TreeNodeKind::Branch
-                } else { crate::TreeNodeKind::Leaf };
-                let prefix = crate::TreeRow::prefix_width(node.depth, kind,
-                    node.kind == super::data::NodeKind::Named, node.check.is_some());
-                prefix.saturating_add(crate::widgets::text_len(&super::data::full_label(nodes, index, None)))
-            }).max().unwrap_or(0)
-        }).max().unwrap_or(0);
+        let natural = self
+            .nodes
+            .iter()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| {
+                        let kind = if super::data::has_children(nodes, index) {
+                            crate::TreeNodeKind::Branch
+                        } else {
+                            crate::TreeNodeKind::Leaf
+                        };
+                        let prefix = crate::TreeRow::prefix_width(
+                            node.depth,
+                            kind,
+                            node.kind == super::data::NodeKind::Named,
+                            node.check.is_some(),
+                        );
+                        prefix.saturating_add(crate::widgets::text_len(&super::data::full_label(
+                            nodes, index, None,
+                        )))
+                    })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
         self.tree_content_max = natural.saturating_add(4);
         self.widths.nav = self.widths.nav.min(self.tree_content_max);
-    }
-
-    /// Resolves a reusable slot to semantic identity in constant time for publication checks.
-    #[must_use]
-    pub fn tree_hover_target(&self, id: crate::WidgetId) -> Option<TreeTarget> {
-        let (tree, index, _) = self.decode_tree(id)?;
-        self.input_free().then_some(self.nodes[tree.slot()][index].target)
     }
 
     #[must_use]
@@ -490,7 +717,21 @@ impl super::ShellState {
         self.expanded = initial.expanded;
         self.playhead = initial.playhead;
         self.gap_policy = initial.gap_policy;
-        self.selected = None;
+        self.entity_selection = crate::EntitySelectionView {
+            document: self.projection.document,
+            entities: Vec::new(),
+        };
+        if !self.reference_fixture && self.panel().showing() {
+            let cancel = crate::WidgetId::new(
+                super::ACTION_BASE
+                    + crate::create_box::K_ACTIONS * crate::action_box::KEY_SLOTS
+                    + 1,
+            );
+            self.panel_mut().activate_id(cancel);
+            self.numeric[self.operation.slot()].reset();
+        }
+        self.selection.dismiss();
+        self.selection_request = None;
         self.tree_focus = None;
         self.tree_scroll = [0, 0];
         self.rename.cancel();
@@ -507,6 +748,31 @@ impl super::ShellState {
         }
         let mut candidate = self.clone();
         candidate.reconcile_tree_projection(projection)?;
+        if let Some(request) = candidate.selection.request().cloned()
+            && candidate.selection.is_open()
+        {
+            if request.document != candidate.projection.document
+                || matches!(request.destination, crate::SelectionDestination::Field { field, .. } if !candidate.selection_field_visible(field))
+            {
+                candidate.selection.dismiss();
+                candidate.sync();
+            } else {
+                let rows = candidate
+                    .projection
+                    .elements
+                    .iter()
+                    .filter(|e| {
+                        matches!(request.destination, crate::SelectionDestination::Window)
+                            || request.rows.iter().any(|r| r.entity == e.id)
+                    })
+                    .map(|e| crate::SelectionRow {
+                        entity: e.id,
+                        label: e.name.clone(),
+                    })
+                    .collect();
+                candidate.reconcile_selection_rows(rows)?;
+            }
+        }
         *self = candidate;
         Ok(true)
     }
@@ -554,7 +820,9 @@ impl super::ShellState {
                 .map(|node| node.target)
                 .collect();
             self.expanded.retain(|target| targets.contains(target));
-            self.selected = self.selected.filter(|target| targets.contains(target));
+            self.entity_selection
+                .entities
+                .retain(|id| self.projection.elements.iter().any(|e| e.id == *id));
             let previous_focus = self.tree_focus;
             self.tree_focus = self.tree_focus.filter(|target| targets.contains(target));
             if previous_focus.is_some() && self.tree_focus.is_none() {
@@ -601,20 +869,24 @@ impl super::ShellState {
                 let slot = tree.slot();
                 if let Some(index) = anchors[slot] {
                     let old = &old_visible[slot];
-                    let target = old[index..]
-                        .iter()
-                        .chain(old[..index].iter().rev())
-                        .find(|target| targets.contains(target))
-                        .copied();
-                    self.tree_scroll[slot] = self
+                    // A surviving semantic row can now be hidden by a collapsed folder.
+                    // Only visible rows can anchor the new frame; otherwise continue in
+                    // the old visible order before falling back to a predecessor.
+                    let visible_positions: BTreeMap<_, _> = self
                         .tree_lines(tree)
                         .iter()
-                        .position(|line| match line {
+                        .enumerate()
+                        .filter_map(|(position, line)| match line {
                             super::data::Line::Node(row) => {
-                                Some(self.nodes[slot][row.index].target) == target
+                                Some((self.nodes[slot][row.index].target, position))
                             }
-                            _ => false,
+                            _ => None,
                         })
+                        .collect();
+                    self.tree_scroll[slot] = old[index..]
+                        .iter()
+                        .chain(old[..index].iter().rev())
+                        .find_map(|target| visible_positions.get(target).copied())
                         .unwrap_or(0);
                 }
             }
@@ -772,15 +1044,18 @@ impl super::ShellState {
         self.activate_tree(
             tree,
             index,
-            if keyboard && part == TreePart::Row {
+            if keyboard
+                && part == TreePart::Row
+                && !matches!(
+                    token.target.kind,
+                    TreeTargetKind::Operation(_) | TreeTargetKind::Entity(_)
+                )
+            {
                 TreePart::Marker
             } else {
                 part
             },
         );
-        if keyboard {
-            self.selected = Some(token.target);
-        }
         self.sync();
         true
     }

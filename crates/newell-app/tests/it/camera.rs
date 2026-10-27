@@ -44,6 +44,12 @@ fn camera() -> Camera {
         SceneViewport::new(20, 10, 800, 600),
     )
 }
+
+#[test]
+fn default_camera_uses_orthographic_projection() {
+    assert!(!Camera::default().perspective);
+}
+
 fn level(camera: Camera) {
     let (r, u, f) = camera.basis();
     for v in [r, u, f] {

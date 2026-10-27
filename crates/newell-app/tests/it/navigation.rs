@@ -423,6 +423,37 @@ fn fit_recovers_after_pan_and_contains_all_vertices_beside_action_box() {
 }
 
 #[test]
+fn startup_scene_center_is_restored_after_final_viewport_layout_without_refitting() {
+    let mut nav = nav();
+    nav.set_perspective(false);
+    nav.set_layout(SceneViewport::new(180, 72, 920, 648), Vec::new());
+
+    let layout_camera = nav.camera();
+    let viewport = layout_camera.viewport;
+    let centre = nav.scene().bounds().unwrap().centre();
+    let before = nav.camera().project(centre).unwrap();
+    let viewport_centre = (
+        f64::from(viewport.x) + f64::from(viewport.width) * 0.5,
+        f64::from(viewport.y) + f64::from(viewport.height) * 0.5,
+    );
+    assert_ne!(
+        before, viewport_centre,
+        "layout shift reproduces the startup offset"
+    );
+
+    assert!(nav.center_scene());
+    let centered = nav.camera();
+    pixel(centered.project(centre).unwrap(), viewport_centre);
+    assert_eq!(centered.orientation, layout_camera.orientation);
+    assert_eq!(centered.focal_distance, layout_camera.focal_distance);
+    assert_eq!(
+        centered.orthographic_height,
+        layout_camera.orthographic_height
+    );
+    assert_eq!(centered.viewport, viewport);
+}
+
+#[test]
 fn missing_scene_and_fully_occluded_scene_have_safe_fallbacks() {
     let mut nav = Navigation::new(camera());
     assert!(nav.begin(DragKind::Orbit, (10.0, 10.0), 1.0, true));
@@ -756,6 +787,346 @@ fn secondary_binding_leaves_wheel_and_pinch_zoom_available() {
         0.5,
         Some((ZoomSource::Pinch, TouchPhase::Moved)),
         true
+    ));
+    nav.zoom(
+        point,
+        0.0,
+        Some((ZoomSource::Pinch, TouchPhase::Ended)),
+        true,
+    );
+    assert_ne!(nav.camera(), after_wheel);
+}
+
+#[test]
+fn unphased_zoom_wheel_and_pan_can_follow_each_other_without_capture() {
+    let start = (400.0, 300.0);
+    let mut nav = nav();
+    for _ in 0..3 {
+        assert_eq!(
+            nav.advance_trackpad_pan_scroll((0.0, 10.0), TouchPhase::Moved, start, 1.0, true),
+            None
+        );
+        assert!(nav.zoom(
+            start,
+            0.1,
+            Some((ZoomSource::Scroll, TouchPhase::Moved)),
+            true
+        ));
+        assert!(nav.zoom(start, -0.1, None, true));
+        assert!(nav.begin_secondary_pan(start, 1.0, true));
+        assert!(nav.advance_pointer((420.0, 310.0)));
+        nav.release(DragKind::SecondaryPan);
+        assert_eq!(
+            nav.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Started, start, 1.0, true),
+            Some(false)
+        );
+        assert_eq!(
+            nav.advance_trackpad_pan_scroll((5.0, -2.0), TouchPhase::Moved, start, 1.0, true),
+            Some(true)
+        );
+        nav.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Ended, start, 1.0, true);
+        assert!(nav.zoom(start, -0.1, None, true));
+    }
+}
+
+#[test]
+fn unphased_zoom_recovers_after_cancel_ui_rejection_and_mouse_drag() {
+    let start = (400.0, 300.0);
+    for source in [ZoomSource::Scroll, ZoomSource::Pinch] {
+        let mut nav = nav();
+        let stream = Some((source, TouchPhase::Moved));
+        assert!(nav.zoom(start, 0.1, stream, true));
+        nav.cancel();
+        assert!(nav.zoom(start, 0.1, stream, true));
+        let before = nav.camera();
+        assert!(!nav.zoom(start, 0.1, stream, false));
+        assert_eq!(nav.camera(), before);
+        assert!(nav.zoom(start, -0.1, stream, true));
+        assert!(nav.begin_secondary_pan(start, 1.0, true));
+        assert!(!nav.zoom(start, 0.1, stream, true));
+        nav.release(DragKind::SecondaryPan);
+        assert!(nav.zoom(start, -0.1, stream, true));
+        assert!(nav.zoom(start, 0.1, None, true));
+    }
+}
+
+#[test]
+fn phased_zoom_keeps_exclusivity_and_recovers_after_end_or_cancelled_tail() {
+    let start = (400.0, 300.0);
+    for source in [ZoomSource::Scroll, ZoomSource::Pinch] {
+        for terminal in [TouchPhase::Ended, TouchPhase::Cancelled] {
+            let mut nav = nav();
+            nav.zoom(start, 0.0, Some((source, TouchPhase::Started)), true);
+            assert!(nav.zoom(start, 0.1, Some((source, TouchPhase::Moved)), true));
+            assert!(!nav.zoom(start, 0.1, None, true));
+            assert!(!nav.begin_secondary_pan(start, 1.0, true));
+            nav.cancel();
+            let before = nav.camera();
+            assert!(!nav.zoom(start, 0.1, Some((source, TouchPhase::Moved)), true));
+            assert!(!nav.zoom(start, 0.1, Some((source, terminal)), true));
+            assert_eq!(nav.camera(), before);
+            assert!(nav.zoom(start, 0.1, Some((source, TouchPhase::Moved)), true));
+            assert!(nav.zoom(start, -0.1, None, true));
+            assert!(nav.begin_secondary_pan(start, 1.0, true));
+        }
+    }
+}
+
+#[test]
+fn secondary_scroll_terminal_releases_rejection_for_next_unphased_zoom() {
+    let start = (400.0, 300.0);
+    for terminal in [TouchPhase::Ended, TouchPhase::Cancelled] {
+        let mut nav = nav();
+        assert!(nav.begin_secondary_pan(start, 1.0, true));
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((10.0, 0.0), TouchPhase::Started, start),
+            Some(true)
+        );
+        nav.release(DragKind::SecondaryPan);
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((5.0, 0.0), TouchPhase::Moved, start),
+            Some(false)
+        );
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((0.0, 0.0), terminal, start),
+            Some(false)
+        );
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((0.0, 10.0), TouchPhase::Moved, start),
+            None
+        );
+        assert!(nav.zoom(
+            start,
+            0.1,
+            Some((ZoomSource::Scroll, TouchPhase::Moved)),
+            true
+        ));
+        assert!(nav.zoom(start, -0.1, None, true));
+    }
+}
+
+#[test]
+fn unphased_secondary_scroll_does_not_hold_next_scroll_after_release_or_cancel() {
+    let start = (400.0, 300.0);
+    for cancel in [false, true] {
+        let mut nav = nav();
+        assert!(nav.begin_secondary_pan(start, 1.0, true));
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((10.0, 0.0), TouchPhase::Moved, start),
+            Some(true)
+        );
+        if cancel {
+            nav.cancel();
+        } else {
+            nav.release(DragKind::SecondaryPan);
+        }
+        assert_eq!(
+            nav.advance_secondary_pan_scroll((0.0, 10.0), TouchPhase::Moved, start),
+            None
+        );
+        assert!(nav.zoom(
+            start,
+            0.1,
+            Some((ZoomSource::Scroll, TouchPhase::Moved)),
+            true
+        ));
+    }
+}
+
+#[test]
+fn phased_button_free_trackpad_scroll_pans_fractionally_on_both_screen_axes() {
+    let start = (400.25, 300.5);
+    let mut trackpad = nav();
+    let mut expected_pan = nav();
+    let pose = trackpad.camera();
+    assert_eq!(
+        trackpad.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Started, start, 2.0, true,),
+        Some(false)
+    );
+    assert_eq!(trackpad.camera(), pose);
+    assert!(expected_pan.begin(DragKind::Pan, start, 2.0, true));
+    let mut offset = (0.0, 0.0);
+    for (delta, pointer) in [
+        ((1.25, -2.5), (401.0, 300.0)),
+        ((-0.5, 3.75), (400.5, 301.0)),
+    ] {
+        offset.0 += delta.0;
+        offset.1 += delta.1;
+        assert_eq!(
+            trackpad.advance_trackpad_pan_scroll(delta, TouchPhase::Moved, pointer, 2.0, true,),
+            Some(true)
+        );
+        assert!(expected_pan.navigate((start.0 + offset.0, start.1 + offset.1)));
+        assert_eq!(trackpad.camera(), expected_pan.camera());
+        assert_eq!(trackpad.camera().orientation, pose.orientation);
+    }
+    assert_ne!(trackpad.camera(), pose);
+    assert_eq!(
+        trackpad.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Ended, start, 2.0, true,),
+        Some(false)
+    );
+    assert!(!trackpad.is_dragging());
+}
+
+#[test]
+fn trackpad_repeated_start_preserves_capture_anchor_and_accumulated_displacement() {
+    let start = (400.25, 300.5);
+    for scale in [1.0, 2.0] {
+        let mut trackpad = nav();
+        let mut expected = nav();
+        assert!(expected.begin(DragKind::Pan, start, scale, true));
+        let mut offset = (0.0, 0.0);
+        // macOS MayBegin and Began both arrive as Started, possibly with a delta.
+        for (phase, delta, pointer) in [
+            (TouchPhase::Started, (0.0, 0.0), start),
+            (TouchPhase::Started, (1.25, -2.5), (410.0, 310.0)),
+            (TouchPhase::Moved, (2.0, 3.0), start),
+            (TouchPhase::Started, (-0.5, 1.0), (420.0, 320.0)),
+            (TouchPhase::Moved, (4.0, -1.0), start),
+        ] {
+            let changed = trackpad.advance_trackpad_pan_scroll(delta, phase, pointer, scale, true);
+            offset.0 += delta.0;
+            offset.1 += delta.1;
+            let expected_changed = expected.navigate((start.0 + offset.0, start.1 + offset.1));
+            assert_eq!(changed, Some(expected_changed));
+            assert_eq!(trackpad.camera(), expected.camera());
+            assert!(trackpad.is_dragging());
+        }
+        assert_eq!(
+            trackpad.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Ended, start, scale, true),
+            Some(false)
+        );
+        assert!(!trackpad.is_dragging());
+        // Ending the stream must still allow a fresh capture.
+        trackpad.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Started, start, scale, true);
+        assert_eq!(
+            trackpad.advance_trackpad_pan_scroll((1.0, 0.0), TouchPhase::Moved, start, scale, true),
+            Some(true)
+        );
+    }
+}
+
+#[test]
+fn trackpad_cursor_events_do_not_move_camera_between_scroll_events() {
+    let start = (400.25, 300.5);
+    let mut trackpad = nav();
+    let mut expected = nav();
+    assert!(expected.begin(DragKind::Pan, start, 2.0, true));
+    let mut offset = (0.0, 0.0);
+    for (phase, delta, pointer) in [
+        (TouchPhase::Started, (0.0, 0.0), start),
+        (TouchPhase::Moved, (1.25, -2.5), start),
+        (TouchPhase::Moved, (2.0, 3.0), (410.0, 310.0)),
+        (TouchPhase::Ended, (0.5, -1.0), start),
+    ] {
+        // winit emits CursorMoved before each macOS scroll event, even if stationary.
+        let before = trackpad.camera();
+        assert!(!trackpad.advance_pointer(pointer));
+        assert_eq!(trackpad.camera(), before);
+        let changed = trackpad.advance_trackpad_pan_scroll(delta, phase, pointer, 2.0, true);
+        offset.0 += delta.0;
+        offset.1 += delta.1;
+        let expected_changed = expected.navigate((start.0 + offset.0, start.1 + offset.1));
+        assert_eq!(changed, Some(expected_changed));
+        assert_eq!(trackpad.camera(), expected.camera());
+    }
+    assert!(!trackpad.is_dragging());
+}
+
+#[test]
+fn trackpad_scroll_ownership_stays_with_its_start_and_cancels_cleanly() {
+    let start = (400.0, 300.0);
+    let mut camera_nav = nav();
+    // UI scroll routing rejects the start before any scene camera change.
+    camera_nav.reject_trackpad_pan_scroll(TouchPhase::Started);
+    let before = camera_nav.camera();
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((8.0, 3.0), TouchPhase::Moved, start, 1.0, true),
+        Some(false)
+    );
+    assert_eq!(camera_nav.camera(), before);
+    camera_nav.reject_trackpad_pan_scroll(TouchPhase::Ended);
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Moved, start, 1.0, true),
+        None
+    );
+
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Started, start, 1.0, true),
+        Some(false)
+    );
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((8.0, 3.0), TouchPhase::Moved, start, 1.0, true),
+        Some(true)
+    );
+    let moved = camera_nav.camera();
+    camera_nav.cancel(); // Focus loss, pointer exit, layout and scene changes use this cancellation path.
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((5.0, 5.0), TouchPhase::Moved, start, 1.0, true),
+        Some(false)
+    );
+    assert_eq!(camera_nav.camera(), moved);
+    camera_nav.reject_trackpad_pan_scroll(TouchPhase::Ended);
+    assert_eq!(
+        camera_nav.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Moved, start, 1.0, true),
+        None
+    );
+
+    let mut occluded = nav();
+    occluded.set_layout(viewport(), vec![SceneViewport::new(380, 200, 100, 200)]);
+    let before = occluded.camera();
+    assert_eq!(
+        occluded.advance_trackpad_pan_scroll((0.0, 0.0), TouchPhase::Started, start, 1.0, true),
+        Some(false)
+    );
+    assert_eq!(
+        occluded.advance_trackpad_pan_scroll(
+            (8.0, 3.0),
+            TouchPhase::Moved,
+            (300.0, 300.0),
+            1.0,
+            true,
+        ),
+        Some(false)
+    );
+    assert_eq!(occluded.camera(), before);
+    occluded.reject_trackpad_pan_scroll(TouchPhase::Ended);
+}
+
+#[test]
+fn unstarted_pixel_scroll_remains_wheel_zoom_and_pinch_is_unchanged() {
+    let point = (400.0, 300.0);
+    let mut nav = nav();
+    assert_eq!(
+        nav.advance_trackpad_pan_scroll((0.5, -0.25), TouchPhase::Moved, point, 2.0, true),
+        None
+    );
+    let before_wheel = nav.camera();
+    assert!(nav.zoom(
+        point,
+        0.01,
+        Some((ZoomSource::Scroll, TouchPhase::Moved)),
+        true,
+    ));
+    assert_ne!(nav.camera(), before_wheel);
+    assert!(!nav.zoom(
+        point,
+        0.0,
+        Some((ZoomSource::Scroll, TouchPhase::Ended)),
+        true,
+    ));
+    let after_wheel = nav.camera();
+    assert!(!nav.zoom(
+        point,
+        0.0,
+        Some((ZoomSource::Pinch, TouchPhase::Started)),
+        true,
+    ));
+    assert!(nav.zoom(
+        point,
+        0.5,
+        Some((ZoomSource::Pinch, TouchPhase::Moved)),
+        true,
     ));
     nav.zoom(
         point,

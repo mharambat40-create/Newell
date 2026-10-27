@@ -20,8 +20,10 @@ mod layout;
 mod loft;
 mod menu;
 mod metrics;
+mod numeric;
 mod overlays;
 mod revolve;
+mod selection;
 mod shell;
 mod style;
 mod sweep;
@@ -52,12 +54,18 @@ pub use menu::{
     draw_menu_bar, draw_menu_popup, popup_size, title_rect,
 };
 pub use metrics::{DEFAULT_K, GridMetrics};
+pub use numeric::{
+    FormulaApplyRequest, FormulaAttemptId, NumericConfirmAttemptId, NumericConfirmRequest,
+    NumericDestination, NumericDirection, NumericEdit, NumericFieldDescriptor, NumericFieldKey,
+    NumericFieldView, NumericFormulaOpenRequest, NumericProjection, NumericRequest, NumericUnit,
+};
 pub use overlays::{
     FormulaEditor, ListItem, ModalKey, ModalLayout, ModalStatus, Overlay, OverlayKind,
     OverlayStack, RenameModal, ScrollList, ScrollState, SelectionPanel, SelectionThumbGrab,
     center_modal, compose_overlays, draw_ok_cancel, draw_scroll_list, modal_layout, place_popup,
 };
 pub use revolve::{RevolveUi, RevolveValues};
+pub use selection::*;
 pub use shell::{ActionOperation, Separator, ShellKey, ShellState, ThemeChoice};
 pub use shell::{
     ElementGroup, ElementTreeItem, FeatureNodeId, FeatureTreeItem, GapDisplayLocation, HistoryGap,

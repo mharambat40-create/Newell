@@ -129,12 +129,14 @@ fn ink_columns(atlas: &GlyphAtlas, ch: char) -> Option<(u32, u32)> {
     Some((first, last))
 }
 
-/// The characters of every `docs/ui_design/*.txt` outside ASCII.
+/// Non-ASCII characters in current references; the retired shell example is excluded.
 fn reference_symbols() -> std::collections::BTreeSet<char> {
     let mut scanned = std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(UI_DESIGN_DIR).expect("docs/ui_design must exist") {
         let path = entry.expect("readable directory entry").path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("txt")
+            && path.file_name().and_then(|name| name.to_str()) != Some("Interface_Exemple.txt")
+        {
             let text = std::fs::read_to_string(&path).expect("reference file is UTF-8");
             scanned.extend(text.chars().filter(|ch| !ch.is_ascii()));
         }
@@ -270,7 +272,9 @@ fn canonical_set_covers_every_ui_reference_symbol() {
     let glyphs = canonical_glyphs();
     for entry in std::fs::read_dir(UI_DESIGN_DIR).expect("docs/ui_design must exist") {
         let path = entry.expect("readable directory entry").path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("txt") {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("txt")
+            || path.file_name().and_then(|name| name.to_str()) == Some("Interface_Exemple.txt")
+        {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("reference file is UTF-8");
@@ -543,6 +547,20 @@ fn block_elements_tile_horizontally_and_cover_the_line_box() {
                     "k = {k}: █ at ({x}, {y})"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn approved_tree_glyphs_have_font_and_atlas_coverage_at_every_scale() {
+    let font = load_font(font_bytes()).expect("bundled font");
+    for k in KS {
+        let atlas = build_atlas(k);
+        for ch in "─│├╰╴╞╘╸┃┣┗║╣╡…".chars() {
+            assert_ne!(font.glyph_id(ch).0, 0, "font: {ch}");
+            assert!(canonical_glyphs().contains(&ch), "canonical: {ch}");
+            assert!(atlas.get(ch).is_some(), "atlas k={k}: {ch}");
+            assert!(ink_columns(&atlas, ch).is_some(), "ink k={k}: {ch}");
         }
     }
 }

@@ -2,6 +2,7 @@ struct SceneUniforms {
     view_projection: mat4x4<f32>,
     light: vec4<f32>,
     viewport: vec4<f32>,
+    selection: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -39,11 +40,11 @@ fn is_visible(position: vec4<f32>) -> bool {
 @fragment
 fn fs_visible(in: VertexOut) -> @location(0) vec4<f32> {
     if (!is_visible(in.position)) { discard; }
-    return vec4<f32>(0.35, 0.75, 0.95, 1.0);
+    return vec4<f32>(min(vec3<f32>(0.35, 0.75, 0.95) * scene.selection.x, vec3<f32>(1.0)), 1.0);
 }
 
 @fragment
 fn fs_hidden(in: VertexOut) -> @location(0) vec4<f32> {
     if (is_visible(in.position) || (in.screen_distance % 10.0) >= 6.0) { discard; }
-    return vec4<f32>(0.35, 0.75, 0.95, 1.0);
+    return vec4<f32>(min(vec3<f32>(0.35, 0.75, 0.95) * scene.selection.x, vec3<f32>(1.0)), 1.0);
 }

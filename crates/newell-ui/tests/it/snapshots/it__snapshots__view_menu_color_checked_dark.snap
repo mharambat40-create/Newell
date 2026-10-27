@@ -5,8 +5,8 @@ expression: snapshot(&s)
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │ File │ Edit │ View │ Help                                          [-] [□] [X] │
 ├──────────────╭─View──────────────╮─────────────────────────────────────────────┤
-│ Workbench │ D│ ◀  Perspective  ▶ │ │ Modify │ Pattern │ Utilities              │
-├──────────────│ ◀  Wireframe    ▶ │─────────────────────────────────────────────┤
+│ Workbench │ D│ ◀ Orthographic  ▶ │ │ Modify │ Pattern │ Utilities              │
+├──────────────│ ◀  Hidden Line  ▶ │─────────────────────────────────────────────┤
 │[-]Features   │ UI Scale ◀ 100% ▶ │t                                   ╭NavCube╮│
 │ ├ □ Sketch_Pr│ Theme [ ◑ Dark  ] │                                    │       ││
 │ ├[-] Hub_Feat│ ■ Color           │                                    │       ││

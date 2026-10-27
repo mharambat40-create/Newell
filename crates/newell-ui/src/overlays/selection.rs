@@ -79,9 +79,9 @@ const UP: u32 = 1;
 const DOWN: u32 = 2;
 const OK: u32 = 3;
 const CANCEL: u32 = 4;
-const THUMB: u32 = 14;
-const FIRST_ITEM: u32 = 5;
-const SPAN: u32 = THUMB + 1;
+const THUMB: u32 = 5;
+const FIRST_ITEM: u32 = 6;
+const SPAN: u32 = FIRST_ITEM + crate::MAX_CELLS;
 
 /// What a widget id of this panel refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,9 +221,16 @@ impl SelectionThumbGrab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionPanel {
     base_id: u32,
-    applied: [bool; ITEM_COUNT],
-    profile_applied: [bool; ITEM_COUNT],
-    draft: [bool; ITEM_COUNT],
+    applied: Vec<bool>,
+    profile_applied: Vec<bool>,
+    draft: Vec<bool>,
+    reference: bool,
+    rows: Vec<crate::SelectionRow>,
+    runtime: Option<crate::SelectionOpen>,
+    completion: Option<crate::SelectionCompletion>,
+    draft_order: Vec<crate::OpaqueTreeId>,
+    item_slots: Vec<u32>,
+    slot_rows: Vec<Option<usize>>,
     scroll: ScrollState,
     grab_epoch: Option<u64>,
     focus: Option<WidgetId>,
@@ -233,15 +240,170 @@ pub struct SelectionPanel {
 }
 
 impl SelectionPanel {
+    pub const ID_SPAN: u32 = SPAN;
+
+    /// Explicit historical artwork fixture, never used by the application.
+    pub fn reference(base_id: u32) -> Self {
+        let mut panel = Self::new(base_id);
+        panel.reference = true;
+        panel.applied = INITIAL.to_vec();
+        panel.profile_applied = INITIAL.to_vec();
+        panel.draft = INITIAL.to_vec();
+        panel
+    }
+
+    pub fn request(&self) -> Option<&crate::SelectionOpen> {
+        self.runtime.as_ref()
+    }
+    pub fn draft_entities(&self) -> &[crate::OpaqueTreeId] {
+        &self.draft_order
+    }
+    pub fn take_completion(&mut self) -> Option<crate::SelectionCompletion> {
+        self.completion.take()
+    }
+    fn complete(&mut self, outcome: crate::SelectionOutcome) {
+        if let Some(r) = &self.runtime {
+            self.completion = Some(crate::SelectionCompletion {
+                session: r.session,
+                document: r.document,
+                destination: r.destination,
+                outcome,
+            });
+        }
+    }
+    pub fn dismiss(&mut self) {
+        self.status = ModalStatus::Cancelled;
+        self.runtime = None;
+        self.completion = None;
+    }
+    pub fn open_with(
+        &mut self,
+        request: crate::SelectionOpen,
+        inter: &mut InteractionState,
+    ) -> Result<(), crate::UiError> {
+        request.validate()?;
+        self.base_id
+            .checked_add(SPAN)
+            .ok_or(crate::UiError::InvalidSelection)?;
+        if self.is_open() {
+            return Err(crate::UiError::InvalidSelection);
+        }
+        self.reference = false;
+        self.rows = request.rows.clone();
+        self.applied = self
+            .rows
+            .iter()
+            .map(|row| request.applied.contains(&row.entity))
+            .collect();
+        self.item_slots = (0..self.rows.len() as u32).collect();
+        self.slot_rows = (0..self.rows.len()).map(Some).collect();
+        self.completion = None;
+        self.open_kind(inter, SelectionKind::Generic);
+        self.draft_order = request.applied.clone();
+        self.runtime = Some(request);
+        Ok(())
+    }
+    pub fn reconcile_rows(
+        &mut self,
+        rows: Vec<crate::SelectionRow>,
+    ) -> Result<bool, crate::UiError> {
+        let Some(request) = self.runtime.as_ref() else {
+            return Ok(false);
+        };
+        if self.rows == rows {
+            return Ok(false);
+        }
+        let mut candidate = request.clone();
+        candidate.rows = rows.clone();
+        candidate
+            .applied
+            .retain(|id| rows.iter().any(|r| r.entity == *id));
+        candidate.validate()?;
+        let old_slots: std::collections::BTreeMap<_, _> = self
+            .rows
+            .iter()
+            .zip(&self.item_slots)
+            .map(|(r, s)| (r.entity, *s))
+            .collect();
+        let mut next = self.slot_rows.len() as u32;
+        let mut slots = Vec::new();
+        for row in &rows {
+            let slot = if let Some(slot) = old_slots.get(&row.entity) {
+                *slot
+            } else {
+                let slot = next;
+                next = next
+                    .checked_add(1)
+                    .ok_or(crate::UiError::InvalidSelection)?;
+                slot
+            };
+            if slot >= crate::MAX_CELLS {
+                return Err(crate::UiError::InvalidSelection);
+            }
+            slots.push(slot);
+        }
+        let changed_routes = slots != self.item_slots
+            || self
+                .rows
+                .iter()
+                .map(|r| r.entity)
+                .ne(rows.iter().map(|r| r.entity));
+        self.draft_order
+            .retain(|id| rows.iter().any(|r| r.entity == *id));
+        self.applied = rows
+            .iter()
+            .map(|r| candidate.applied.contains(&r.entity))
+            .collect();
+        self.draft = rows
+            .iter()
+            .map(|r| self.draft_order.contains(&r.entity))
+            .collect();
+        self.rows = rows;
+        self.item_slots = slots;
+        self.slot_rows = vec![None; next as usize];
+        for (index, slot) in self.item_slots.iter().enumerate() {
+            self.slot_rows[*slot as usize] = Some(index);
+        }
+        self.runtime = Some(candidate);
+        if changed_routes {
+            self.grab_epoch = self.grab_epoch.and_then(|v| v.checked_add(1));
+        }
+        Ok(true)
+    }
+    /// Semantic routes supplement the grid's reusable widget ids during publication.
+    pub fn same_routes(&self, other: &Self) -> bool {
+        self.is_open() == other.is_open()
+            && self
+                .runtime
+                .as_ref()
+                .map(|r| (r.session, r.document, r.destination))
+                == other
+                    .runtime
+                    .as_ref()
+                    .map(|r| (r.session, r.document, r.destination))
+            && self.item_slots == other.item_slots
+            && self
+                .rows
+                .iter()
+                .map(|r| r.entity)
+                .eq(other.rows.iter().map(|r| r.entity))
+    }
     /// A closed panel. `base_id` is the id of the modal surface; the controls use the ids
     /// that follow it (`base_id + 1 ..= base_id + 13`).
     #[must_use]
-    pub const fn new(base_id: u32) -> Self {
+    pub fn new(base_id: u32) -> Self {
         Self {
             base_id,
-            applied: INITIAL,
-            profile_applied: INITIAL,
-            draft: INITIAL,
+            applied: Vec::new(),
+            profile_applied: Vec::new(),
+            draft: Vec::new(),
+            reference: false,
+            rows: Vec::new(),
+            runtime: None,
+            completion: None,
+            draft_order: Vec::new(),
+            item_slots: Vec::new(),
+            slot_rows: Vec::new(),
             scroll: ScrollState { offset: 0 },
             grab_epoch: Some(0),
             focus: None,
@@ -320,15 +482,19 @@ impl SelectionPanel {
             self.return_focus = inter.focused;
         }
         self.draft = match kind {
-            SelectionKind::Generic => self.applied,
-            SelectionKind::Profiles => self.profile_applied,
+            SelectionKind::Generic => self.applied.clone(),
+            SelectionKind::Profiles => self.profile_applied.clone(),
         };
         self.kind = kind;
         // Exhaustion disables new grabs rather than letting an old anchor become valid.
         self.grab_epoch = self.grab_epoch.and_then(|epoch| epoch.checked_add(1));
         self.scroll = ScrollState::default();
         self.status = ModalStatus::Open;
-        self.focus = Some(self.item_id(0));
+        self.focus = Some(if self.len() == 0 {
+            self.id(OK)
+        } else {
+            self.item_id(0)
+        });
         inter.set_focused(self.focus);
     }
 
@@ -409,15 +575,22 @@ impl SelectionPanel {
         self.scroll.offset != before
     }
 
-    fn labels(&self) -> &[&str] {
+    fn labels(&self) -> Vec<&str> {
+        if !self.reference {
+            return self.rows.iter().map(|row| row.label.as_str()).collect();
+        }
         match self.kind {
-            SelectionKind::Generic => &MOCK_ITEMS,
-            SelectionKind::Profiles => &PROFILE_ITEMS,
+            SelectionKind::Generic => MOCK_ITEMS.to_vec(),
+            SelectionKind::Profiles => PROFILE_ITEMS.to_vec(),
         }
     }
 
     fn len(&self) -> u32 {
-        u32::try_from(self.labels().len()).unwrap_or(u32::MAX)
+        if self.reference {
+            ITEM_COUNT as u32
+        } else {
+            self.rows.len() as u32
+        }
     }
 
     pub(crate) fn reconcile(&mut self, bounds: GridRect, profile_frame: GridRect) {
@@ -431,14 +604,43 @@ impl SelectionPanel {
             return false;
         }
         self.settle(geometry);
-        if !self.ring(geometry).contains(&id) {
+        let enabled = match self.slot(id) {
+            Some(Slot::Item(i)) => i < geometry.len as usize,
+            Some(Slot::Up) => geometry.bar && self.offset(geometry.window) > 0,
+            Some(Slot::Down) => {
+                geometry.bar
+                    && self.offset(geometry.window)
+                        < ScrollState::max_offset(geometry.len, geometry.window)
+            }
+            Some(Slot::Ok | Slot::Cancel) => true,
+            _ => false,
+        };
+        if !enabled {
             return false;
         }
         self.focus = Some(id);
         match self.slot(id) {
             Some(Slot::Item(i)) => {
                 if let Some(checked) = self.draft.get_mut(i) {
-                    *checked = !*checked;
+                    let checking = !*checked;
+                    if checking
+                        && self
+                            .runtime
+                            .as_ref()
+                            .is_some_and(|r| r.max_count == Some(1))
+                    {
+                        self.draft.fill(false);
+                        self.draft_order.clear();
+                    }
+                    if let Some(checked) = self.draft.get_mut(i) {
+                        *checked = checking;
+                    }
+                    if let Some(row) = self.rows.get(i) {
+                        self.draft_order.retain(|id| *id != row.entity);
+                        if checking {
+                            self.draft_order.push(row.entity);
+                        }
+                    }
                 }
             }
             Some(Slot::Up) => self.scroll.scroll_by(-1, geometry.len, geometry.window),
@@ -758,7 +960,8 @@ impl SelectionPanel {
             self.kind.title(),
             ctx.styles.normal,
         );
-        let items: Vec<ListItem<'_>> = MOCK_ITEMS
+        let labels = self.labels();
+        let items: Vec<ListItem<'_>> = labels
             .iter()
             .zip(self.draft.iter())
             .enumerate()
@@ -842,17 +1045,30 @@ impl SelectionPanel {
     }
 
     fn confirm(&mut self) {
+        if self.runtime.is_some() {
+            self.complete(crate::SelectionOutcome::Confirmed(self.draft_order.clone()));
+            self.status = ModalStatus::Confirmed;
+            return;
+        }
         match self.kind {
-            SelectionKind::Generic => self.applied = self.draft,
-            SelectionKind::Profiles => self.profile_applied = self.draft,
+            SelectionKind::Generic => self.applied = self.draft.clone(),
+            SelectionKind::Profiles => self.profile_applied = self.draft.clone(),
         }
         self.status = ModalStatus::Confirmed;
     }
 
     fn cancel(&mut self) {
+        if self.runtime.is_some() {
+            self.complete(crate::SelectionOutcome::Cancelled);
+            self.draft_order = self
+                .runtime
+                .as_ref()
+                .map(|r| r.applied.clone())
+                .unwrap_or_default();
+        }
         self.draft = match self.kind {
-            SelectionKind::Generic => self.applied,
-            SelectionKind::Profiles => self.profile_applied,
+            SelectionKind::Generic => self.applied.clone(),
+            SelectionKind::Profiles => self.profile_applied.clone(),
         };
         self.status = ModalStatus::Cancelled;
     }
@@ -862,7 +1078,14 @@ impl SelectionPanel {
     }
 
     fn item_id(&self, index: usize) -> WidgetId {
-        let offset = u32::try_from(index).unwrap_or(u32::MAX);
+        let offset = if self.runtime.is_some() {
+            self.item_slots
+                .get(index)
+                .copied()
+                .unwrap_or(crate::MAX_CELLS)
+        } else {
+            u32::try_from(index).unwrap_or(u32::MAX)
+        };
         self.id(FIRST_ITEM.saturating_add(offset))
     }
 
@@ -883,10 +1106,107 @@ impl SelectionPanel {
             CANCEL => Slot::Cancel,
             THUMB => Slot::Thumb,
             r if (FIRST_ITEM..SPAN).contains(&r) => {
-                Slot::Item(usize::try_from(r - FIRST_ITEM).unwrap_or(usize::MAX))
+                let slot = usize::try_from(r - FIRST_ITEM).ok()?;
+                Slot::Item(if self.runtime.is_some() {
+                    self.slot_rows.get(slot).copied().flatten()?
+                } else {
+                    (slot < self.len() as usize).then_some(slot)?
+                })
             }
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+    use crate::{
+        OpaqueTreeId, SelectionDestination, SelectionOpen, SelectionOutcome, SelectionRow,
+        SelectionSessionId, TreeDocumentId,
+    };
+    fn request(n: u64) -> SelectionOpen {
+        SelectionOpen {
+            session: SelectionSessionId(1),
+            document: TreeDocumentId::new(4),
+            destination: SelectionDestination::Window,
+            rows: (1..=n)
+                .map(|id| SelectionRow {
+                    entity: OpaqueTreeId::new(id),
+                    label: "duplicate label".into(),
+                })
+                .collect(),
+            applied: Vec::new(),
+            max_count: None,
+        }
+    }
+    #[test]
+    fn model_free_transaction_order_commit_cancel_and_single_cardinality() {
+        let mut panel = SelectionPanel::new(500);
+        let bounds = GridRect::new(0, 0, 40, 14);
+        let mut inter = InteractionState::default();
+        let mut r = request(12);
+        r.applied = vec![OpaqueTreeId::new(2), OpaqueTreeId::new(1)];
+        panel.open_with(r.clone(), &mut inter).unwrap();
+        let id = panel.item_id(0);
+        assert!(panel.activate(id, bounds));
+        assert_eq!(panel.draft_entities(), &[OpaqueTreeId::new(2)]);
+        assert_eq!(panel.request().unwrap().applied, r.applied);
+        panel.activate(panel.id(OK), bounds);
+        let c = panel.take_completion().unwrap();
+        assert_eq!(
+            c.outcome,
+            SelectionOutcome::Confirmed(vec![OpaqueTreeId::new(2)])
+        );
+        assert!(panel.take_completion().is_none());
+        panel.open_with(r.clone(), &mut inter).unwrap();
+        panel.activate(panel.item_id(0), bounds);
+        panel.key(ModalKey::Escape, bounds);
+        assert_eq!(
+            panel.take_completion().unwrap().outcome,
+            SelectionOutcome::Cancelled
+        );
+        assert_eq!(panel.draft, panel.applied);
+        r.applied.clear();
+        r.max_count = Some(1);
+        panel.open_with(r, &mut inter).unwrap();
+        panel.activate(panel.item_id(0), bounds);
+        panel.activate(panel.item_id(1), bounds);
+        assert_eq!(panel.draft_entities(), &[OpaqueTreeId::new(2)]);
+        panel.activate(panel.item_id(1), bounds);
+        assert!(panel.draft_entities().is_empty());
+    }
+    #[test]
+    fn reconciliation_retains_identity_focus_order_and_rejects_invalid_open_atomically() {
+        let mut panel = SelectionPanel::new(500);
+        let mut inter = InteractionState::default();
+        let bounds = GridRect::new(0, 0, 40, 14);
+        panel.open_with(request(12), &mut inter).unwrap();
+        let stable = panel.item_id(1);
+        panel.activate(stable, bounds);
+        let mut rows = panel.rows.clone();
+        rows.swap(0, 1);
+        rows[0].label = "renamed".into();
+        panel.reconcile_rows(rows.clone()).unwrap();
+        assert_eq!(panel.item_id(0), stable);
+        assert_eq!(panel.draft_entities(), &[OpaqueTreeId::new(2)]);
+        assert_eq!(panel.focus, Some(stable));
+        rows.retain(|r| r.entity != OpaqueTreeId::new(2));
+        panel.reconcile_rows(rows).unwrap();
+        panel.reconcile(bounds, bounds);
+        assert!(panel.draft_entities().is_empty());
+        assert_eq!(panel.focus, Some(panel.id(OK)));
+        panel.dismiss();
+        let before = panel.clone();
+        let mut invalid = request(2);
+        invalid.rows[1].entity = invalid.rows[0].entity;
+        assert_eq!(
+            panel.open_with(invalid, &mut inter),
+            Err(crate::UiError::InvalidSelection)
+        );
+        assert_eq!(panel, before);
+        panel.open_with(request(0), &mut inter).unwrap();
+        assert_eq!(panel.focus, Some(panel.id(OK)));
     }
 }
 
@@ -902,7 +1222,7 @@ mod tests {
     const BACKGROUND: u32 = 900;
 
     fn panel() -> SelectionPanel {
-        SelectionPanel::new(BASE)
+        SelectionPanel::reference(BASE)
     }
 
     /// Frame of 30x12 centred in a 40x14 grid: interior 28x10 at (6, 2);
@@ -1180,7 +1500,7 @@ mod tests {
             assert!(owned.iter().all(|v| (BASE..BASE + SPAN).contains(v)));
         }
         assert_eq!(p.surface(), id(BASE));
-        assert_eq!(item(0), id(BASE + 5));
+        assert_eq!(item(0), id(BASE + FIRST_ITEM));
         assert_eq!(ok(), id(BASE + 3));
     }
 
@@ -1266,7 +1586,7 @@ mod color_tests {
     fn action_box_title_frames_footer_hover_and_clipping_keep_roles_and_owners() {
         let styles = WidgetStyles::default();
         let mut inter = InteractionState::default();
-        let mut panel = SelectionPanel::new(2000);
+        let mut panel = SelectionPanel::reference(2000);
         panel.open_profiles(&mut inter);
         for width in [31, 12, 7] {
             let frame = GridRect::new(1, 1, width, 12);
@@ -1348,7 +1668,7 @@ mod scrollbar_tests {
 
     #[test]
     fn profile_writer_matches_every_state_with_disjoint_item_and_control_ids() {
-        let panel = SelectionPanel::new(500);
+        let panel = SelectionPanel::reference(500);
         let styles = WidgetStyles::default();
         let inter = InteractionState::default();
         let ctx = WidgetContext {
@@ -1398,7 +1718,7 @@ mod scrollbar_tests {
 
     #[test]
     fn profile_fitting_empty_and_shrinking_lists_clear_controls_and_reclaim_gutter() {
-        let panel = SelectionPanel::new(500);
+        let panel = SelectionPanel::reference(500);
         let styles = WidgetStyles::default();
         let inter = InteractionState::default();
         let ctx = WidgetContext {
@@ -1464,11 +1784,11 @@ mod scrollbar_tests {
     #[test]
     fn reconciliation_clamps_count_changes_preserving_draft_and_focus_identity() {
         let bounds = GridRect::new(0, 0, 40, 14);
-        let mut panel = SelectionPanel::new(500);
+        let mut panel = SelectionPanel::reference(500);
         panel.open(&mut InteractionState::default());
         panel.scroll.offset = 4;
         panel.focus = Some(panel.id(DOWN));
-        let original = panel.draft;
+        let original = panel.draft.clone();
         panel.settle(Geometry::of(bounds, 6));
         assert_eq!(panel.scroll.offset, 1);
         assert_eq!(panel.focus, Some(panel.id(OK)));
@@ -1491,7 +1811,7 @@ mod scrollbar_tests {
     fn wheel_extremes_and_duplicate_profiles_keep_selection_and_item_identity() {
         let bounds = GridRect::new(0, 0, 40, 14);
         for profiles in [false, true] {
-            let mut panel = SelectionPanel::new(500);
+            let mut panel = SelectionPanel::reference(500);
             let mut inter = InteractionState::default();
             if profiles {
                 panel.open_profiles(&mut inter);
@@ -1499,7 +1819,7 @@ mod scrollbar_tests {
                 panel.open(&mut inter);
             }
             assert!(panel.activate_in(panel.item_id(2), panel.geometry(bounds, bounds)));
-            let draft = panel.draft;
+            let draft = panel.draft.clone();
             assert!(panel.scroll_wheel(i32::MIN, bounds, bounds));
             assert_eq!(panel.scroll.offset, 4);
             assert!(!panel.scroll_wheel(i32::MIN, bounds, bounds));
@@ -1517,5 +1837,33 @@ mod scrollbar_tests {
                 draft
             );
         }
+    }
+
+    #[test]
+    fn old_grabs_are_rejected_after_close_reopen_or_capture_epoch_exhaustion() {
+        let bounds = GridRect::new(0, 0, 40, 14);
+        let mut panel = SelectionPanel::reference(500);
+        let mut inter = InteractionState::default();
+        panel.open(&mut inter);
+        let row = panel.geometry(bounds, bounds).layout.body.row() + 1;
+        let grab = panel
+            .thumb_grab(panel.id(THUMB), row, bounds, bounds)
+            .unwrap();
+        assert!(panel.thumb_grab_valid(grab, bounds, bounds));
+        panel.cancel();
+        assert!(!panel.thumb_grab_valid(grab, bounds, bounds));
+        panel.open(&mut inter);
+        assert!(!panel.thumb_grab_valid(grab, bounds, bounds));
+        let mut other = SelectionPanel::reference(600);
+        other.open(&mut inter);
+        assert!(!other.thumb_grab_valid(grab, bounds, bounds));
+        panel.grab_epoch = Some(u64::MAX);
+        panel.open(&mut inter);
+        assert!(
+            panel
+                .thumb_grab(panel.id(THUMB), row, bounds, bounds)
+                .is_none()
+        );
+        assert!(panel.key(ModalKey::Down, bounds));
     }
 }

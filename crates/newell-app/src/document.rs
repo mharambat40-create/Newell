@@ -28,6 +28,12 @@ impl DocumentInstanceId {
         TreeDocumentId::new(self.0)
     }
 }
+/// Complete accepted document version; revision numbers are never compared across namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentVersion {
+    pub instance: DocumentInstanceId,
+    pub revision: u64,
+}
 /// Notification sent after a successful persistent mutation or document replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentNotification {
@@ -52,6 +58,8 @@ pub struct DocumentSession {
     identity: DocumentInstanceId,
     revision: u64,
     senders: Vec<Sender<DocumentNotification>>,
+    geometry_token: Option<crate::geometry_worker::NewellGeometryToken>,
+    worker_epoch: Option<u64>,
 }
 impl Default for DocumentSession {
     fn default() -> Self {
@@ -60,6 +68,8 @@ impl Default for DocumentSession {
             identity: DocumentInstanceId(1),
             revision: 0,
             senders: Vec::new(),
+            geometry_token: None,
+            worker_epoch: None,
         }
     }
 }
@@ -76,6 +86,63 @@ impl DocumentSession {
     pub const fn revision(&self) -> u64 {
         self.revision
     }
+    /// Source certificate for a frozen worker request.
+    #[must_use]
+    pub const fn version(&self) -> DocumentVersion {
+        DocumentVersion {
+            instance: self.identity,
+            revision: self.revision,
+        }
+    }
+    /// Selects the current worker lifetime; old tokens cannot authorize a later acceptance.
+    ///
+    /// # Errors
+    /// Rejects zero or a reused/older worker epoch.
+    pub fn bind_geometry_worker(&mut self, epoch: u64) -> Result<(), AppError> {
+        if epoch == 0 || self.worker_epoch.is_some_and(|old| epoch <= old) {
+            return Err(AppError::InvalidDocumentProjection);
+        }
+        self.worker_epoch = Some(epoch);
+        self.geometry_token = None;
+        Ok(())
+    }
+    /// Currently accepted native geometry association, independent of UI delivery retries.
+    #[must_use]
+    pub const fn geometry_token(&self) -> Option<crate::geometry_worker::NewellGeometryToken> {
+        self.geometry_token
+    }
+    /// Consumes finalized model authority and its exact retained worker token once.
+    ///
+    /// # Errors
+    /// Checks version, lifetime, sealed validation inputs and revision capacity before mutation.
+    pub fn accept_prepared(
+        &mut self,
+        expected: DocumentVersion,
+        prepared: newell_model::geometry::PreparedDocument,
+        token: crate::geometry_worker::NewellGeometryToken,
+    ) -> Result<newell_model::geometry::CommitReceipt, AppError> {
+        if expected != self.version()
+            || self.worker_epoch != Some(token.worker_epoch())
+            || !token.matches(self.identity, prepared.manifest().generation())
+        {
+            return Err(AppError::InvalidDocumentProjection);
+        }
+        let revision = self.next_revision()?;
+        self.document.validate_prepared(&prepared)?;
+        let feature = prepared.manifest().feature();
+        let receipt = newell_model::geometry::CommitReceipt {
+            feature,
+            outputs: feature
+                .and_then(|feature| prepared.manifest().outputs().get(&feature).cloned())
+                .unwrap_or_default(),
+            generation: prepared.manifest().generation(),
+        };
+        let document = prepared.accept(&self.document)?;
+        self.document = document;
+        self.geometry_token = Some(token);
+        self.changed(revision);
+        Ok(receipt)
+    }
     /// Subscribes to future changes; callers seed their initial projection from current state.
     pub fn subscribe(&mut self) -> Receiver<DocumentNotification> {
         let (sender, receiver) = mpsc::channel();
@@ -90,6 +157,10 @@ impl DocumentSession {
     fn publish(&mut self, notification: DocumentNotification) {
         self.senders
             .retain(|sender| sender.send(notification).is_ok());
+    }
+    #[cfg(test)]
+    pub(crate) fn set_revision_for_test(&mut self, revision: u64) {
+        self.revision = revision;
     }
     fn changed(&mut self, revision: u64) {
         self.revision = revision;
@@ -108,6 +179,7 @@ impl DocumentSession {
                 .ok_or(AppError::DocumentCounterExhausted)?,
         );
         self.document = document;
+        self.geometry_token = None;
         self.identity = identity;
         self.revision = 0;
         self.publish(DocumentNotification::Replaced {
@@ -118,14 +190,10 @@ impl DocumentSession {
     }
     /// Appends a base operation with one visible body bearing the same initial name.
     pub fn add_base_solid(&mut self, name: &str) -> Result<FeatureId, AppError> {
-        self.add_base_feature(
-            name.into(),
-            vec![NewEntity {
-                name: name.into(),
-                kind: EntityKind::Body,
-                visible: true,
-            }],
-        )
+        let revision = self.next_revision()?;
+        let id = self.document.add_base_solid(name)?;
+        self.changed(revision);
+        Ok(id)
     }
     /// Appends a base operation with outputs in the supplied order, including an empty list.
     pub fn add_base_feature(
@@ -376,8 +444,15 @@ pub(crate) enum ProjectionTrigger {
     LayoutPublished,
 }
 impl ProjectionSync {
+    /// Last acknowledged complete document projection version.
+    #[must_use]
+    pub fn acknowledged_version(&self) -> Option<DocumentVersion> {
+        self.acknowledged
+            .map(|(instance, revision)| DocumentVersion { instance, revision })
+    }
     pub(crate) fn acknowledged_document(&self) -> Option<TreeDocumentId> {
-        self.acknowledged.map(|(document, _)| document.tree())
+        self.acknowledged_version()
+            .map(|version| version.instance.tree())
     }
     pub(crate) fn deadline(&self) -> Option<Instant> {
         self.pending.as_ref().and_then(|pending| pending.retry_at)
@@ -499,7 +574,7 @@ mod tests {
     }
     fn draft() -> ExtrudeSpec {
         ExtrudeSpec {
-            depth: ParameterValue::Literal("10 mm".into()),
+            depth: ParameterValue::literal(newell_model::Length::millimetres(10.0).unwrap()),
             ..ExtrudeSpec::default()
         }
     }

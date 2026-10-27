@@ -90,7 +90,7 @@ fn nav_width_is_clamped() {
     assert!(s.set_nav_width(1));
     assert_eq!(s.nav_width(), 14, "the minimum is 14 cells");
     assert!(s.set_nav_width(999));
-    assert_eq!(s.nav_width(), 41, "at most half the grid");
+    assert_eq!(s.nav_width(), 28, "natural content cap wins");
     assert!(!s.set_nav_width(41), "no change reports false");
     // A grid smaller than the minimum caps it at half.
     let mut small = ShellState::new(10, 25);
@@ -142,21 +142,21 @@ fn the_action_box_has_no_draggable_border() {
 fn dragging_snaps_to_character_columns() {
     let mut s = ShellState::new(82, 25);
     assert!(s.drag_separator(Separator::Navigation, 30, 0));
-    assert_eq!(s.nav_width(), 31);
+    assert_eq!(s.nav_width(), 28);
     let g = s.compose().unwrap();
     assert!(
         separator_cells(&s, Separator::Navigation)
             .iter()
-            .all(|&(c, _)| c == 30)
+            .all(|&(c, _)| c == 27)
     );
-    assert!(glyph(&g, 30, 10).is_some());
+    assert!(glyph(&g, 27, 10).is_some());
     assert!(
         !s.drag_separator(Separator::Navigation, 30, 0),
         "same column: no change"
     );
     // Far past either edge clamps instead of failing.
     s.drag_separator(Separator::Navigation, u32::MAX, 0);
-    assert_eq!(s.nav_width(), 41);
+    assert_eq!(s.nav_width(), 28);
     s.drag_separator(Separator::Navigation, 0, 0);
     assert_eq!(s.nav_width(), 14);
 }

@@ -217,11 +217,10 @@ fn motion_over_widgets_that_are_not_targets_changes_nothing() {
     )
     .unwrap();
     let before = c.grid().clone();
-    // MenuBar title, CommandBar label, a tree row, the viewport and the window control.
+    // Inert MenuBar title, viewport and window control; tree rows now hover.
     let (fc, fr) = cell_of(c.grid(), "File", "File");
-    let (tc, tr) = cell_of(c.grid(), "Hub_Features", "Hub");
     let (xc, xr) = cell_of(c.grid(), "[X]", "[X]");
-    for (col, row) in [(fc, fr), (tc, tr), (xc, xr), (40, 12)] {
+    for (col, row) in [(fc, fr), (xc, xr), (40, 12)] {
         assert_eq!(c.pointer_moved(at(col, row)), NOTHING, "({col}, {row})");
         assert_eq!(c.grid(), &before);
     }

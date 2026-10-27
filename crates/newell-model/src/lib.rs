@@ -14,6 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
+pub mod formula;
+pub mod geometry;
+pub mod parameters;
+mod quantity;
+pub use quantity::{Angle, Direction, Length, Quantity, QuantityKind, Scalar, Unit};
+
 /// Stable identifier of a parametric feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FeatureId(u64);
@@ -40,45 +46,74 @@ impl EntityId {
     }
 }
 
-/// A length stored in millimetres, the document's canonical engineering unit.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Length(f64);
-impl Length {
-    pub fn millimetres(value: f64) -> Result<Self, ModelError> {
-        if value.is_finite() {
-            Ok(Self(value))
-        } else {
-            Err(ModelError::NonFiniteLength)
-        }
-    }
-    #[must_use]
-    pub const fn as_millimetres(self) -> f64 {
-        self.0
-    }
-    #[must_use]
-    pub fn display(self) -> String {
-        format!("{:.1} mm", self.0)
-    }
-}
-
-/// A parameter is either a literal length or a small expression evaluated against named values.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A typed literal or transitional source adapter delegating to the typed formula parser.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParameterValue {
-    Literal(String),
+    /// Full-precision canonical data; formatting is never part of literal construction.
+    Literal(Quantity),
+    /// Stable definition identity; direction remains field metadata.
+    Bound(formula::ParameterId),
+    /// Preserved source text; delegated to the same parser as stable registry definitions.
     Expression(String),
 }
 impl ParameterValue {
+    /// Wraps a length directly, retaining its original canonical value.
     #[must_use]
     pub fn literal(length: Length) -> Self {
-        Self::Literal(length.display())
+        Self::Literal(Quantity::Length(length))
     }
-    pub fn evaluate(&self, parameters: &BTreeMap<String, Length>) -> Result<Length, ModelError> {
-        evaluate_length(
-            match self {
-                Self::Literal(source) | Self::Expression(source) => source,
+    /// Evaluates the length-only compatibility API without reparsing typed literals.
+    ///
+    /// # Errors
+    /// Rejects non-length literals and propagates errors from the existing length evaluator.
+    pub fn evaluate(
+        &self,
+        parameters: &parameters::ParameterRegistry,
+    ) -> Result<Length, ModelError> {
+        match self {
+            Self::Literal(Quantity::Length(length)) => Ok(*length),
+            Self::Literal(_) => Err(ModelError::DimensionMismatch),
+            Self::Expression(source) => evaluate_length(source, parameters),
+            Self::Bound(id) => match parameters
+                .definition(*id)
+                .map(|definition| definition.value)
+            {
+                Some(Quantity::Length(length)) => Ok(length),
+                Some(_) => Err(ModelError::DimensionMismatch),
+                None => Err(ModelError::Formula(formula::FormulaError {
+                    code: formula::FormulaErrorCode::MissingParameter,
+                    span: formula::SourceSpan { start: 0, end: 0 },
+                })),
             },
-            parameters,
-        )
+        }
+    }
+    /// Evaluates a parameter and checks the destination's required dimension.
+    ///
+    /// # Errors
+    /// Rejects dimension mismatch, unsupported non-length expressions, and invalid length
+    /// expressions. Command-specific magnitude and range validation happens separately.
+    pub fn evaluate_quantity(
+        &self,
+        expected: QuantityKind,
+        parameters: &parameters::ParameterRegistry,
+    ) -> Result<Quantity, ModelError> {
+        let value = match self {
+            Self::Literal(q) => *q,
+            Self::Bound(id) => parameters
+                .definition(*id)
+                .map(|definition| definition.value)
+                .ok_or_else(|| {
+                    ModelError::Formula(formula::FormulaError {
+                        code: formula::FormulaErrorCode::MissingParameter,
+                        span: formula::SourceSpan { start: 0, end: 0 },
+                    })
+                })?,
+            Self::Expression(source) => evaluate_expression(source, expected, parameters)?,
+        };
+        if value.kind() != expected {
+            return Err(ModelError::DimensionMismatch);
+        }
+        Ok(value)
     }
 }
 
@@ -130,31 +165,56 @@ pub enum ExtrudeTermination {
 }
 
 /// Semantic values supplied by the Extrude Action Panel.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeSpec {
+    /// Generation-qualified real supporting face/boundary for prepared geometry.
+    pub profile_geometry: Option<geometry::ProfileRef>,
     pub profile: Option<EntityId>,
     pub geometry: ExtrudeGeometry,
     pub result: ExtrudeResult,
     pub termination: ExtrudeTermination,
+    /// Retained primary magnitude/source; evaluated only for Blind termination.
     pub depth: ParameterValue,
+    /// Active Blind starting displacement, or `None` for an inactive/selection branch.
     pub starting_offset: Option<ParameterValue>,
+    /// Active Blind end displacement, or `None` for an inactive/selection branch.
     pub end_offset: Option<ParameterValue>,
+    /// Unsigned nested offset under second-side UpTo, independent of `second_end`.
+    pub second_end_offset: Option<ParameterValue>,
+    /// Separate orientations; unused numeric destinations project as Forward.
+    pub directions: ExtrudeDirections,
     pub symmetric: bool,
+    /// Active second-side Blind magnitude; its reference orientation belongs to that side.
     pub second_end: Option<ParameterValue>,
     pub invert: bool,
     pub merge_with_all: bool,
     pub merge_scope: Vec<EntityId>,
 }
+/// Independent numeric orientations, all Forward by default; quantities remain magnitudes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExtrudeDirections {
+    /// Primary Blind extent orientation.
+    pub depth: Direction,
+    /// Starting displacement orientation.
+    pub starting_offset: Direction,
+    /// End displacement orientation.
+    pub end_offset: Direction,
+    /// Orientation relative to the second-side reference.
+    pub second_end: Direction,
+}
 impl Default for ExtrudeSpec {
     fn default() -> Self {
         Self {
+            profile_geometry: None,
             profile: None,
             geometry: ExtrudeGeometry::Solid,
             result: ExtrudeResult::New,
             termination: ExtrudeTermination::Blind,
-            depth: ParameterValue::Literal("0.0 mm".to_owned()),
+            depth: ParameterValue::literal(Length::ZERO),
             starting_offset: None,
             end_offset: None,
+            second_end_offset: None,
+            directions: ExtrudeDirections::default(),
             symmetric: false,
             second_end: None,
             invert: false,
@@ -176,7 +236,10 @@ pub struct ExtrudeFeature {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
     features: Vec<(FeatureId, Feature)>,
-    parameters: BTreeMap<String, Length>,
+    parameter_registry: parameters::ParameterRegistry,
+    base_geometry: BTreeMap<EntityId, geometry::BaseGeometryRecipe>,
+    entity_geometry: BTreeMap<EntityId, geometry::EntityGeometry>,
+    geometry_generation: geometry::GeometryGeneration,
     next_feature: u64,
     next_entity: u64,
     next_folder: u64,
@@ -283,11 +346,37 @@ impl Document {
             .find_map(|(current, feature)| (*current == id).then_some(feature))
     }
     #[must_use]
-    pub fn parameters(&self) -> &BTreeMap<String, Length> {
-        &self.parameters
+    pub fn parameters(&self) -> &parameters::ParameterRegistry {
+        &self.parameter_registry
     }
-    pub fn set_parameter(&mut self, name: impl Into<String>, value: Length) {
-        self.parameters.insert(name.into(), value);
+    /// Stages a document-owned named literal on this private document value.
+    ///
+    /// # Errors
+    /// Rejects invalid names or invalidated dependencies without changing definitions.
+    pub fn set_parameter(
+        &mut self,
+        name: impl Into<String>,
+        value: Length,
+    ) -> Result<(), ModelError> {
+        let order = self
+            .features
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (*id, i))
+            .collect();
+        let candidate = self.parameter_registry.stage_edit(
+            parameters::ParameterEdit {
+                parameter: None,
+                owner: parameters::ParameterOwner::Document,
+                source: format!("#{} := {}mm", name.into(), value.as_millimetres()),
+                destination: QuantityKind::Length,
+                source_edit: None,
+                source_origins: None,
+            },
+            &order,
+        )?;
+        self.parameter_registry = candidate.into_registry();
+        Ok(())
     }
     #[must_use]
     pub fn entity(&self, id: EntityId) -> Option<&Entity> {
@@ -304,14 +393,26 @@ impl Document {
 
     pub fn add_base_solid(&mut self, name: impl Into<String>) -> Result<FeatureId, ModelError> {
         let name = name.into();
-        self.add_base_feature(
+        let unit = Length::millimetres(1.)?;
+        let id = self.add_base_feature(
             name.clone(),
             vec![NewEntity {
                 name,
                 kind: EntityKind::Body,
                 visible: true,
             }],
-        )
+        )?;
+        if let Some(entity) = self
+            .feature(id)
+            .and_then(|feature| feature.outputs().first())
+            .copied()
+        {
+            self.base_geometry.insert(
+                entity,
+                geometry::BaseGeometryRecipe::Box { size: [unit; 3] },
+            );
+        }
+        Ok(id)
     }
     pub fn add_base_feature(
         &mut self,
@@ -493,7 +594,7 @@ impl Document {
                 });
             }
         }
-        validate_extrude(spec, &self.parameters)?;
+        validate_extrude(spec, self.parameters())?;
         self.capacity(1)
     }
     pub fn commit_extrude_before(
@@ -583,6 +684,20 @@ impl Selection {
             }
         }
     }
+    pub fn add(&mut self, entities: impl IntoIterator<Item = EntityId>) {
+        for entity in entities {
+            if !self.entities.contains(&entity) {
+                self.entities.push(entity);
+            }
+        }
+    }
+    pub fn remove(&mut self, entities: impl IntoIterator<Item = EntityId>) {
+        let removed: Vec<_> = entities.into_iter().collect();
+        self.entities.retain(|entity| !removed.contains(entity));
+    }
+    pub fn clear(&mut self) {
+        self.entities.clear();
+    }
     pub fn toggle(&mut self, entity: EntityId) {
         if let Some(index) = self.entities.iter().position(|current| *current == entity) {
             self.entities.remove(index);
@@ -658,6 +773,18 @@ impl CommandController {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelError {
+    /// Geometry finalization did not prove the frozen request and complete output inventory.
+    #[error("invalid prepared geometry manifest")]
+    InvalidGeometryManifest,
+    /// A subshape is absent, stale, or incompatible with its exact supporting face.
+    #[error("invalid or stale geometry reference")]
+    InvalidGeometryReference,
+    /// Typed parser/registry diagnostic with the preserved source span.
+    #[error(transparent)]
+    Formula(#[from] formula::FormulaError),
+    /// A private parameter reservation belongs to an older accepted document state.
+    #[error("parameter draft source has changed; start a fresh command session")]
+    StaleParameterDraft,
     #[error("document identity capacity exhausted")]
     IdentityExhausted,
     #[error("unknown feature {0:?}")]
@@ -688,6 +815,33 @@ pub enum ModelError {
     },
     #[error("a length must be finite")]
     NonFiniteLength,
+    /// Text does not match the supported numeric literal grammar.
+    #[error("invalid numeric literal: {0}")]
+    InvalidLiteral(String),
+    /// A literal uses a suffix outside the supported unit set.
+    #[error("unsupported unit: {0}")]
+    UnsupportedUnit(String),
+    /// A typed value or recognized suffix has the wrong dimension, including at zero.
+    #[error("quantity dimension does not match the destination")]
+    DimensionMismatch,
+    /// A quantity constructor or literal receives NaN or infinity.
+    #[error("quantity must be finite")]
+    NonFiniteQuantity,
+    /// Parsing or unit conversion cannot produce a finite canonical/result value.
+    #[error("quantity conversion overflowed")]
+    QuantityOverflow,
+    /// Nonzero source data would silently become zero during parsing or conversion.
+    #[error("nonzero quantity underflowed to zero")]
+    QuantityUnderflow,
+    /// The existing expression evaluator does not support the requested non-length dimension.
+    #[error("expressions are supported only for lengths")]
+    UnsupportedExpression,
+    /// A command field received a negative magnitude; orientation is separate data.
+    #[error("negative magnitudes are not allowed")]
+    NegativeMagnitude,
+    /// A magnitude exceeds its command-field range, independently of display precision.
+    #[error("quantity is outside the field range")]
+    ParameterOutOfRange,
     #[error("invalid length expression: {0}")]
     InvalidExpression(String),
     #[error("an extrusion depth must be greater than zero")]
@@ -716,11 +870,22 @@ fn rename(old: &mut String, name: String) -> Result<bool, ModelError> {
 
 fn validate_extrude(
     spec: &ExtrudeSpec,
-    parameters: &BTreeMap<String, Length>,
+    parameters: &parameters::ParameterRegistry,
 ) -> Result<(), ModelError> {
-    let depth = spec.depth.evaluate(parameters)?;
-    if spec.termination == ExtrudeTermination::Blind && depth.as_millimetres() <= 0.0 {
-        return Err(ModelError::NonPositiveDepth);
+    if spec.termination == ExtrudeTermination::Blind {
+        validate_active_length(&spec.depth, parameters, true)?;
+    }
+    if let Some(value) = &spec.starting_offset {
+        validate_active_length(value, parameters, false)?;
+    }
+    if let Some(value) = &spec.end_offset {
+        validate_active_length(value, parameters, false)?;
+    }
+    if let Some(value) = &spec.second_end {
+        validate_active_length(value, parameters, true)?;
+    }
+    if let Some(value) = &spec.second_end_offset {
+        validate_active_length(value, parameters, false)?;
     }
     if spec.termination == ExtrudeTermination::UpTo && spec.profile.is_none() {
         return Err(ModelError::MissingTarget("Up to"));
@@ -734,37 +899,46 @@ fn validate_extrude(
     Ok(())
 }
 
+fn validate_active_length(
+    value: &ParameterValue,
+    parameters: &parameters::ParameterRegistry,
+    positive: bool,
+) -> Result<(), ModelError> {
+    let Quantity::Length(length) = value.evaluate_quantity(QuantityKind::Length, parameters)?
+    else {
+        return Err(ModelError::DimensionMismatch);
+    };
+    let n = length.as_millimetres();
+    if n < 0.0 {
+        return Err(ModelError::NegativeMagnitude);
+    }
+    if n > 99_999_999.9 {
+        return Err(ModelError::ParameterOutOfRange);
+    }
+    if positive && n <= 0.0 {
+        return Err(ModelError::NonPositiveDepth);
+    }
+    Ok(())
+}
+
+fn evaluate_expression(
+    source: &str,
+    destination: QuantityKind,
+    parameters: &parameters::ParameterRegistry,
+) -> Result<Quantity, ModelError> {
+    Ok(
+        formula::parse_expression(source, destination, parameters.names())?
+            .evaluate(|id| parameters.definition(id).map(|definition| definition.value))?,
+    )
+}
+
 fn evaluate_length(
     source: &str,
-    parameters: &BTreeMap<String, Length>,
+    parameters: &parameters::ParameterRegistry,
 ) -> Result<Length, ModelError> {
-    let compact = source.trim().trim_end_matches("mm").trim();
-    if let Ok(value) = compact.parse::<f64>() {
-        return Length::millimetres(value);
-    }
-    let mut total = 0.0;
-    let mut sign = 1.0;
-    for token in compact.split_whitespace() {
-        match token {
-            "+" => sign = 1.0,
-            "-" => sign = -1.0,
-            name => {
-                let value = name
-                    .parse::<f64>()
-                    .ok()
-                    .or_else(|| parameters.get(name).map(|length| length.as_millimetres()));
-                let Some(value) = value else {
-                    return Err(ModelError::InvalidExpression(source.to_owned()));
-                };
-                total += sign * value;
-                sign = 1.0;
-            }
-        }
-    }
-    if total.is_finite() {
-        Length::millimetres(total)
-    } else {
-        Err(ModelError::InvalidExpression(source.to_owned()))
+    match evaluate_expression(source, QuantityKind::Length, parameters)? {
+        Quantity::Length(length) => Ok(length),
+        _ => Err(ModelError::DimensionMismatch),
     }
 }
 
@@ -773,7 +947,7 @@ mod tests {
     use super::*;
     fn draft() -> ExtrudeSpec {
         ExtrudeSpec {
-            depth: ParameterValue::Literal("10 mm".to_owned()),
+            depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
             ..ExtrudeSpec::default()
         }
     }
@@ -992,11 +1166,13 @@ mod tests {
     #[test]
     fn expression_parameter_drives_a_committed_feature() {
         let mut document = Document::default();
-        document.set_parameter("wall", Length::millimetres(2.5).unwrap());
+        document
+            .set_parameter("wall", Length::millimetres(2.5).unwrap())
+            .unwrap();
         let mut command = CommandController::default();
         command.begin_extrude(&Selection::default());
         let draft = ExtrudeSpec {
-            depth: ParameterValue::Expression("wall + 7.5 mm".to_owned()),
+            depth: ParameterValue::Expression("#wall + 7.5 mm".to_owned()),
             ..ExtrudeSpec::default()
         };
         command.edit_extrude(draft, &document).unwrap();
@@ -1013,7 +1189,7 @@ mod tests {
         command
             .edit_extrude(
                 ExtrudeSpec {
-                    depth: ParameterValue::Literal("10 mm".to_owned()),
+                    depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
                     ..ExtrudeSpec::default()
                 },
                 &document,
@@ -1031,12 +1207,80 @@ mod tests {
         let draft = ExtrudeSpec {
             result: ExtrudeResult::Add,
             merge_with_all: false,
-            depth: ParameterValue::Literal("10 mm".to_owned()),
+            depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
             ..ExtrudeSpec::default()
         };
         assert_eq!(
             command.edit_extrude(draft, &document),
             Err(ModelError::MissingMergeTarget)
+        );
+    }
+}
+
+#[cfg(test)]
+mod quantity_parameter_tests {
+    use super::*;
+    #[test]
+    fn literal_precision_and_all_extrude_destinations_validate_without_display_roundtrip() {
+        let parameters = parameters::ParameterRegistry::default();
+        for n in [1.234_567_89, 1.245_678_9] {
+            let value = ParameterValue::literal(Length::millimetres(n).unwrap());
+            assert_eq!(value.evaluate(&parameters).unwrap().as_millimetres(), n);
+        }
+        let good = ParameterValue::literal(Length::millimetres(12.3).unwrap());
+        let zero = ParameterValue::literal(Length::ZERO);
+        let mut spec = ExtrudeSpec {
+            depth: good.clone(),
+            starting_offset: Some(zero.clone()),
+            end_offset: Some(zero.clone()),
+            second_end: Some(good.clone()),
+            second_end_offset: Some(zero.clone()),
+            ..ExtrudeSpec::default()
+        };
+        assert!(validate_extrude(&spec, &parameters).is_ok());
+        for bad in [
+            ParameterValue::literal(Length::millimetres(-1.0).unwrap()),
+            ParameterValue::Expression("-1 mm".to_owned()),
+            ParameterValue::Literal(Quantity::Angle(Angle::degrees(0.0).unwrap())),
+            ParameterValue::Literal(Quantity::Scalar(Scalar::new(0.0).unwrap())),
+            ParameterValue::literal(Length::millimetres(100_000_000.0).unwrap()),
+        ] {
+            for destination in 0..5 {
+                let mut candidate = spec.clone();
+                match destination {
+                    0 => candidate.depth = bad.clone(),
+                    1 => candidate.starting_offset = Some(bad.clone()),
+                    2 => candidate.end_offset = Some(bad.clone()),
+                    3 => candidate.second_end = Some(bad.clone()),
+                    _ => candidate.second_end_offset = Some(bad.clone()),
+                };
+                assert!(
+                    validate_extrude(&candidate, &parameters).is_err(),
+                    "destination {destination}"
+                );
+            }
+        }
+        spec.second_end = Some(zero.clone());
+        assert_eq!(
+            validate_extrude(&spec, &parameters),
+            Err(ModelError::NonPositiveDepth)
+        );
+        spec.second_end = None;
+        spec.depth = ParameterValue::Expression("not-yet-defined".to_owned());
+        spec.termination = ExtrudeTermination::ThroughAll;
+        assert!(validate_extrude(&spec, &parameters).is_ok());
+        spec.termination = ExtrudeTermination::Blind;
+        spec.depth = good;
+        spec.directions = ExtrudeDirections {
+            depth: Direction::Reverse,
+            starting_offset: Direction::Reverse,
+            end_offset: Direction::Forward,
+            second_end: Direction::Reverse,
+        };
+        assert!(validate_extrude(&spec, &parameters).is_ok());
+        assert_eq!(
+            spec.depth.evaluate(&parameters).unwrap().as_millimetres(),
+            12.3
         );
     }
 }

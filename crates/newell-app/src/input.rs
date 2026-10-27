@@ -172,6 +172,11 @@ pub struct NavigationGesture {
 }
 
 impl NavigationGesture {
+    /// Whether an observed start still owns this stream, including a rejected tail.
+    pub(crate) const fn is_active(&self) -> bool {
+        self.admitted.is_some()
+    }
+
     /// Rejects the remainder of the current stream until a new start or an end.
     pub fn cancel(&mut self) {
         if self.admitted.is_some() {
@@ -179,8 +184,8 @@ impl NavigationGesture {
         }
     }
 
-    /// Claims a new gesture only over visible scene pixels. Crossing UI cancels it
-    /// until a new start (or end), while platforms without Started can begin on Moved.
+    /// Claims a stream only on Started. Crossing UI rejects its remaining phases.
+    /// A Moved event without an observed start is independent and retains no owner.
     pub fn update(&mut self, phase: winit::event::TouchPhase, visible: bool) -> bool {
         use winit::event::TouchPhase;
         if phase == TouchPhase::Cancelled {
@@ -190,7 +195,9 @@ impl NavigationGesture {
         if phase == TouchPhase::Started {
             self.admitted = Some(visible);
         }
-        let allowed = self.admitted.get_or_insert(visible);
+        let Some(allowed) = &mut self.admitted else {
+            return phase == TouchPhase::Moved && visible;
+        };
         *allowed &= visible;
         let result = *allowed;
         if phase == TouchPhase::Ended {

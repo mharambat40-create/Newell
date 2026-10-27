@@ -1,0 +1,210 @@
+HISTORICAL REFERENCE - recovered during Desktop cleanup on 2026-10-26.
+This saved version contains earlier scrollbar/tree annotations. It does not
+replace docs/ui_design/Interface_Elements.txt or README_UI.md.
+Original text follows unchanged.
+
+"Progress Bar"
+
+Progress [     ] 0%
+Progress [░    ] 5%
+Progress [▒    ] 10%
+Progress [▓    ] 15%
+Progress [█    ] 20%
+Progress [█░   ] 25%
+Progress [█▒   ] 30%
+Progress [█▓   ] 35%
+Progress [██   ] 40%
+Progress [██░  ] 45%
+Progress [██▒  ] 50%
+Progress [██▓  ] 55%
+Progress [███  ] 60%
+Progress [███░ ] 65%
+Progress [███▒ ] 70%
+Progress [███▓ ] 75%
+Progress [████ ] 80%
+Progress [████░] 85%
+Progress [████▒] 90%
+Progress [████▓] 95%
+Progress [█████] 100%
+
+"Selecting text variants"
+[Select…       ] [1 Element    ☰] [N Elements   ☰]
+
+"Selection box — N=3, no scrollbar (README_UI.md §21)"
+╭─Selection───────────────────╮
+│┌───────────────────────────┐│
+││ □ Rim_Body                ││
+││ ■ Hub_Body                ││
+││ □ Inner_Surface           ││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+
+"Profile Selection box — N=9, offset 0 (README_UI.md §21)"
+╭─Profils─────────────────────╮
+│┌───────────────────────────┐│
+││ ☰ Spline_1             × ▲││
+││ ☰ Profil_3             × ┃││
+││ ☰ Profil_4             ×  ││
+││ ☰ Profil_4             ×  ││
+││ ☰ Compound_line_1      × ▼││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+
+"Invert variants"
+Angle   [+|0.0 deg      ☰]
+
+Angle   [-|0.0 deg      ☰]
+
+"Selection-box scrollbar states — README_UI.md §21"
+Track strings are top-to-bottom; quoted spaces are significant.
+Every state has ▲ above its three track cells and ▼ below (five rows total).
+N=0: blank list, no scrollbar; N=1–5: all items, no scrollbar.
+N=6:  ["┃┃╹", "╻┃┃"]
+N=7:  ["┃┃ ", "╻┃╹", " ┃┃"]
+N=8:  ["┃╹ ", "╻┃ ", " ┃╹", " ╻┃"]
+N=9:  ["┃  ", "╻╹ ", " ┃ ", " ╻╹", "  ┃"]
+N=10: ["╹  ", "╻  ", " ╹ ", " ╻ ", "  ╹", "  ╻"]
+N>10: one occupied half-cell, p=round_half_up(5*s/(N-5)).
+These states apply only to selection-box content lists.
+
+"Head Action Box variants"
+╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮╭─Operation───┬───────────────╮
+│    Solid    │    Surface    ││    Solid    │    Surface    ││    Solid    │    Surface    ││    Solid    │    Surface    ││    Solid    │    Surface    ││    Solid    │    Surface    │
+├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤├───────┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤├───────┬─────┘╴╴╴┬───────────┤├───────┐╴╴╴╴╴┴───┬───────────┤│╴╴╴╴╴╴╴┬─────┴───┬───────────┤│╴╴╴╴╴╴╴┐╴╴╴╴╴┴───┬───────────┤
+│  New  │   Add   ┆  Remove   ││  New  │   Add   │  Remove   ││  New  ┆   Add   │  Remove   ││  New  │   Add   ┆  Remove   ││  New  │   Add   │  Remove   ││  New  ┆   Add   │  Remove   │
+├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
+
+"☰ variants"                       
+╭─Formula─────────────────────────╮
+│┌───────────────────────────────┐│
+││Fx = (#EntraxeA - 2mm ) / 5 * 3││
+││* sin(#Angle1 - #Angle2 + 3deg)││
+│└───────────────────────────────┘│
+│─────────────────────────────────│
+│       OK       │     Cancel     │
+╰─────────────────────────────────╯
+
+"Validation Operation Box"
+╭─Enter Name──────────────╮
+│[none                   ]│
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+╭─Rename──────────────────╮
+│[Rim_Body               ]│
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+
+"Effet Hover"
+│ Projected Curve │
+╞ Bridging Curve  ╡
+│ Composit Curve  │
+Remplacer "│ Bridging Curve  │" par "╞ Bridging Curve  ╡"
+
+Remplacer "│ │ Along     [Select…       ]│" par "│ ╞ Along     [Select…       ]╡"
+
+Remplacer "│ ╰╴□ End Offset              │" par "│ ╘ □ End Offset              ╡"
+
+Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    Cancel    │"
+
+"Tree View — canonical amendment 2026-10-26"
+README_UI.md §26.1–§26.5 defines coordinates, width/hit policy and glyphs.
+Features only: Elements has no playhead or insertion target.
+Normal examples below use outer width 25, interior width 23.
+Hover examples show alternative single-row hovers, not simultaneous hovers.
+
+"Top-level gap: offset 3; stroke ends against preserved right border"
+╠═══════════════════════╦
+║[-]Features            ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ├ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ │ ╰╴Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ │ ────────────────────║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
+
+"Nested gap: offset 5; continuing guides at offsets 1 and 3"
+╠═══════════════════════╦
+║[-]Features            ║
+║ ├ □ Sketch_Profile_Ma…║
+║ ├[-] Hub_Features     ║
+║ │ ├ Extrude_Base      ║
+║ │ ├ ■ Sketch_Hole     ║
+║ │ │ ──────────────────║
+║ │ ╰╴Extrude_Cut_Center║
+║ ├ Fillet_Inner        ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
+
+"Collapsed inline"
+╠═══════════════════════╦
+║[-]Features            ║
+║ ├[+] Hub_Features ────║
+║ ├ Fillet_Inner        ║
+║ ├ Chamfer_Edges       ║
+║ ╰╴Pattern_Circular    ║
+╠═══════════════════════╣
+
+"Collapsed inline: ellipsis and three dashes"
+╠════════════════════╦
+║[-]Features         ║
+║ ├[+] Hub_Featu… ───║
+║ ├ Fillet_Inner     ║
+║ ├ Chamfer_Edges    ║
+║ ╰╴Pattern_Circular ║
+╠════════════════════╣
+
+"Content cap: full natural maximum 24 + two padding + two borders"
+╠══════════════════════════╦
+║[-]Features               ║
+║ ├[+] Hub_Features ───────║
+║ ├ Fillet_Inner           ║
+║ ├ Chamfer_Edges          ║
+║ ╰╴Pattern_Circular       ║
+╠══════════════════════════╣
+
+"Width measurement: full untruncated Sketch row sets reference cap"
+╠══════════════════════════╦
+║[-]Features               ║
+║ ├ □ Sketch_Profile_Main  ║
+║ ├[-] Hub_Features        ║
+║ │ ├ Extrude_Base         ║
+║ │ ├ ■ Sketch_Hole        ║
+║ │ │ ─────────────────────║
+║ │ ╰╴Extrude_Cut_Center   ║
+║ ├ Fillet_Inner           ║
+║ ├ Chamfer_Edges          ║
+║ ╰╴Pattern_Circular       ║
+╠══════════════════════════╣
+
+"Normal"
+║ │ ├ Extrude_Base      ║
+║ │ ╰╴Extrude_Cut_Center║
+
+"Hovered (each row independently)"
+║ │ ╞ Extrude_Base      ╣
+║ │ ╘╸Extrude_Cut_Center╣
+
+"Selected"
+║ ┃ ┣ Extrude_Base      ║
+║ ┃ ┗╸Extrude_Cut_Center║
+
+"Selected + hovered (each row independently)"
+║ ┃ ┣ Extrude_Base      ╣
+║ ┃ ┗╸Extrude_Cut_Center╣
+
+Selection wins hierarchy cells; hover supplies the right border.
+Color checked uses right frame │ normally and ╡ while hovered.
+Hierarchy/playhead stays Text; frame stays Contour; controls stay Action.
+On pointer exit restore Selected or Normal from current semantic state.
+Action Box hover remains ╰╴→╘ ; the tree-only mapping is ╰╴→╘╸.

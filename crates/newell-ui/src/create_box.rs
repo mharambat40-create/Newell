@@ -13,9 +13,7 @@
 
 use crate::WidgetId;
 use crate::action_box::{ActionBox, KEY_SLOTS, Row};
-use crate::extrude::{
-    ExtrudeGeometryType, ExtrudeOffsetMode, ExtrudeResultMode, ExtrudeStatus, MockSelection,
-};
+use crate::extrude::{ExtrudeGeometryType, ExtrudeOffsetMode, ExtrudeResultMode, ExtrudeStatus};
 
 pub(crate) const K_GEOMETRY: u32 = 0;
 pub(crate) const K_RESULT: u32 = 1;
@@ -147,7 +145,7 @@ pub(crate) fn push_footer(b: &mut ActionBox, base: u32) {
 }
 
 /// `Merge with all`, and `Targets` while it is unchecked.
-pub(crate) fn push_merge(b: &mut ActionBox, base: u32, on: bool, targets: MockSelection) {
+pub(crate) fn push_merge(b: &mut ActionBox, base: u32, on: bool, targets: u32) {
     b.push(
         Row::new(base)
             .contour("│ ")
@@ -159,7 +157,7 @@ pub(crate) fn push_merge(b: &mut ActionBox, base: u32, on: bool, targets: MockSe
             Row::new(base)
                 .contour("│")
                 .text(" ╰╴Targets   ")
-                .select(K_MERGE_TARGETS, targets.count())
+                .select(K_MERGE_TARGETS, targets)
                 .end(),
         );
     }
@@ -188,16 +186,16 @@ pub(crate) fn offset_head(
     );
 }
 
-/// The child of an expanded offset: the `blind` row (`label` then a numeric field showing
-/// `text`) for `Blind`, `Target` for `Up to`. `prefix` ends with the branch glyphs.
+/// The child of an expanded offset: `label` and explicit numeric metadata for `Blind`,
+/// or `Target` for `Up to`. `prefix` ends with the branch glyphs.
 pub(crate) fn offset_children(
     b: &mut ActionBox,
     base: u32,
     prefix: &str,
     keys: (u32, u32),
     mode: ExtrudeOffsetMode,
-    target: MockSelection,
-    (label, text): (&str, &str),
+    target: u32,
+    (label, descriptor): (&str, crate::NumericFieldDescriptor),
 ) {
     match mode {
         ExtrudeOffsetMode::Blind => b.push(
@@ -207,7 +205,7 @@ pub(crate) fn offset_children(
                     "{}{label}",
                     prefix.chars().skip(1).collect::<String>()
                 ))
-                .numeric(keys.0, text)
+                .numeric(keys.0, descriptor)
                 .end(),
         ),
         ExtrudeOffsetMode::UpTo => b.push(
@@ -217,21 +215,21 @@ pub(crate) fn offset_children(
                     "{}Target  ",
                     prefix.chars().skip(1).collect::<String>()
                 ))
-                .select(keys.1, target.count())
+                .select(keys.1, target)
                 .end(),
         ),
     }
 }
 
 /// The `End Offset` nested in `2nd side = Up to`: collapsed, or expanded with `Dist` / `Angle`
-/// (`blind` = label and field text) or `Target`.
+/// (`blind` supplies the label and numeric descriptor) or `Target`.
 pub(crate) fn push_nested_end(
     b: &mut ActionBox,
     base: u32,
     on: bool,
     mode: ExtrudeOffsetMode,
-    target: MockSelection,
-    (label, text): (&str, &str),
+    target: u32,
+    (label, descriptor): (&str, crate::NumericFieldDescriptor),
 ) {
     if !on {
         b.push(
@@ -256,14 +254,14 @@ pub(crate) fn push_nested_end(
             Row::new(base)
                 .contour("│")
                 .text(&format!("     ╰╴{label}"))
-                .numeric(K_NESTED_DIST, text)
+                .numeric(K_NESTED_DIST, descriptor)
                 .end(),
         ),
         ExtrudeOffsetMode::UpTo => b.push(
             Row::new(base)
                 .contour("│")
                 .text("     ╰╴Target")
-                .select(K_NESTED_TARGET, target.count())
+                .select(K_NESTED_TARGET, target)
                 .end(),
         ),
     }
@@ -272,9 +270,10 @@ pub(crate) fn push_nested_end(
 /// UI state of one Action Box other than Extrude: plain values, the values the box opened
 /// with (restored by Cancel) and whether it is still being edited. The operation modules
 /// implement `ActionBoxUi` for their instantiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionState<V> {
     base_id: u32,
+    pub(crate) selection_counts: Option<std::collections::BTreeMap<u32, usize>>,
     pub values: V,
     opened: V,
     pub status: ExtrudeStatus,
@@ -287,6 +286,7 @@ impl<V: Copy + Default + PartialEq> ActionState<V> {
         let values = V::default();
         Self {
             base_id,
+            selection_counts: None,
             values,
             opened: values,
             status: ExtrudeStatus::Editing,
@@ -301,13 +301,20 @@ impl<V: Copy + Default + PartialEq> ActionState<V> {
 
     /// Reopens with default values.
     pub fn reopen(&mut self) {
+        let counts = self.selection_counts.take();
         *self = Self::new(self.base_id);
+        self.selection_counts = counts;
     }
 
     pub(crate) const fn base(&self) -> u32 {
         self.base_id
     }
 
+    pub(crate) fn selection_count(&self, key: u32, fallback: u32) -> u32 {
+        self.selection_counts.as_ref().map_or(fallback, |counts| {
+            u32::try_from(counts.get(&key).copied().unwrap_or(0)).unwrap_or(u32::MAX)
+        })
+    }
     pub(crate) fn row(&self) -> Row {
         Row::new(self.base_id)
     }
@@ -335,10 +342,27 @@ pub(crate) trait ActionBoxUi {
     fn showing(&self) -> bool;
     /// Reopens with default values.
     fn restart(&mut self);
-    /// Keys of the numeric rows (field slot 0, formula `☰` slot 1).
-    fn numeric_keys(&self) -> &'static [u32];
+    /// Operation owning this panel's stable numeric contracts.
+    fn numeric_operation(&self) -> crate::ActionOperation;
+    /// Finds a known numeric contract even when its branch is currently inactive.
+    fn numeric_descriptor(&self, key: u32) -> Option<crate::NumericFieldDescriptor> {
+        crate::numeric::descriptor(self.numeric_operation(), key)
+    }
+    /// Complete numeric inventory, independent of current composition visibility.
+    fn numeric_descriptors(&self) -> Vec<crate::NumericFieldDescriptor> {
+        crate::numeric::descriptors(self.numeric_operation())
+    }
+    /// Derives the field/formula keys from the contracts, without a second inventory.
+    fn numeric_keys(&self) -> Vec<u32> {
+        self.numeric_descriptors()
+            .iter()
+            .map(|d| d.field.key)
+            .collect()
+    }
     /// Keys of the selection fields (slot 0 the field, slot 1 the `☰` of a populated one).
     fn select_keys(&self) -> &'static [u32];
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor>;
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>);
 
     /// `(key, slot)` of `id` if it lies in this box's id range.
     fn decode(&self, id: WidgetId) -> Option<(u32, u32)> {

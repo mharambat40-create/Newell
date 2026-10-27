@@ -14,7 +14,7 @@ expression: snapshot(&s)
 ║ │ ├ ■ Sketch_Hole     ║ ╔════════════════════════════╗ude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║ ║Selection                   ║olid    │    Surface    │║
 ║ ├ Fillet_Inner        ║ ║□ Rim_Body                 ▲║──┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ─────────────────── ║ ║■ Hub_Body                 ┃║  │   Add   │  Remove   │║
+║ │ ────────────────────║ ║■ Hub_Body                 ┃║  │   Add   │  Remove   │║
 ║ ├ Chamfer_Edges       ║ ║□ Inner_Surface             ║╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║ ║□ Flange_Body               ║ile     [Select…       ]│║
 ║                       ║ ║□ Shaft_Body               ▼║nd   ◀     Blind     ▶  │║

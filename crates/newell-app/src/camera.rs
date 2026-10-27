@@ -176,7 +176,9 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Self::look_at([3.4, 3.0, 3.2], [0.5; 3], SceneViewport::default())
+        let mut camera = Self::look_at([3.4, 3.0, 3.2], [0.5; 3], SceneViewport::default());
+        camera.set_perspective(false);
+        camera
     }
 }
 

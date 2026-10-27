@@ -66,7 +66,7 @@ const TREE_SPAN: u32 = NODE_IDS + 1;
 const ACTION_BASE: u32 = TREE_BASE + TREE_SPAN;
 const SELECTION_BASE: u32 = ACTION_BASE + ID_SPAN;
 /// The SelectionPanel uses 14 ids from its base.
-const FORMULA_BASE: u32 = SELECTION_BASE + 16;
+const FORMULA_BASE: u32 = SELECTION_BASE + SelectionPanel::ID_SPAN;
 /// The Rename modal uses 4 ids from its base.
 const RENAME_BASE: u32 = FORMULA_BASE + 16;
 /// The three window controls `[-] [□] [X]`, in that order.
@@ -82,7 +82,7 @@ const BAR_IDS: MenuIds = MenuIds::new(MENU_BAR_BASE);
 const COMMAND_IDS: MenuIds = MenuIds::new(COMMAND_BAR_BASE);
 
 /// The operation whose Action Box is shown in the ActionPanel (`Create` and `Modify` menus).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum ActionOperation {
     #[default]
     Extrude,
@@ -193,7 +193,12 @@ pub struct ShellState {
     nodes: [Vec<data::Node>; 2],
     tree_content_max: u32,
     expanded: BTreeSet<TreeTarget>,
-    selected: Option<TreeTarget>,
+    entity_selection: crate::EntitySelectionView,
+    reference_fixture: bool,
+    selection_edit: crate::SelectionEdit,
+    selection_request: Option<crate::SelectionUiRequest>,
+    command_started: bool,
+    selection_field_counts: std::collections::BTreeMap<crate::SelectionFieldKey, usize>,
     tree_focus: Option<TreeTarget>,
     playhead: PlacedHistoryGap,
     gap_policy: HistoryGapPolicy,
@@ -213,7 +218,28 @@ pub struct ShellState {
     /// Edited numeric fields and formula drafts of each Action Box, by [`ActionOperation::slot`].
     numeric: [NumericFields; 5],
     /// The numeric field the open FormulaEditor belongs to.
-    formula_target: Option<WidgetId>,
+    formula_target: Option<(WidgetId, Option<crate::NumericDestination>)>,
+    numeric_retired_session: Option<(TreeDocumentId, crate::CommandInputSessionId)>,
+    numeric_identity: Option<(
+        TreeDocumentId,
+        crate::CommandInputSessionId,
+        ActionOperation,
+    )>,
+    numeric_origin: ProjectionGeneration,
+    numeric_sequence: u64,
+    numeric_accepted_sequence: u64,
+    numeric_attempt: u64,
+    numeric_requests: Vec<crate::NumericRequest>,
+    numeric_last_edits: std::collections::BTreeMap<crate::NumericFieldKey, u64>,
+    numeric_confirm: Option<crate::NumericConfirmRequest>,
+    numeric_confirm_outbound: bool,
+    numeric_formula_open: Option<crate::NumericFormulaOpenRequest>,
+    numeric_formula_outbound: bool,
+    formula_modal_session: Option<u64>,
+    formula_apply: Option<crate::FormulaApplyRequest>,
+    formula_apply_outbound: bool,
+    formula_diagnostic: Option<String>,
+    numeric_error: Option<crate::UiError>,
     rename: RenameModal,
     /// The row the open Rename modal edits.
     rename_target: Option<(TreeTarget, String)>,
@@ -228,6 +254,7 @@ impl ShellState {
     pub fn new(cols: u32, rows: u32) -> Self {
         let (projection, initial) = data::reference_trees();
         let nodes = data::projection_nodes(&projection);
+        let selection_document = projection.document;
         let mut state = Self {
             cols,
             rows,
@@ -246,7 +273,15 @@ impl ShellState {
             nodes,
             tree_content_max: u32::MAX,
             expanded: initial.expanded,
-            selected: None,
+            entity_selection: crate::EntitySelectionView {
+                document: selection_document,
+                entities: Vec::new(),
+            },
+            reference_fixture: true,
+            selection_edit: crate::SelectionEdit::Replace,
+            selection_request: None,
+            command_started: false,
+            selection_field_counts: Default::default(),
             tree_focus: None,
             playhead: initial.playhead,
             gap_policy: initial.gap_policy,
@@ -259,10 +294,27 @@ impl ShellState {
             loft: LoftUi::new(ACTION_BASE),
             sweep: SweepUi::new(ACTION_BASE),
             boolean: BooleanUi::new(ACTION_BASE),
-            selection: SelectionPanel::new(SELECTION_BASE),
+            selection: SelectionPanel::reference(SELECTION_BASE),
             formula: FormulaEditor::new(FORMULA_BASE),
             numeric: Default::default(),
             formula_target: None,
+            numeric_retired_session: None,
+            numeric_identity: None,
+            numeric_origin: ProjectionGeneration::new(0),
+            numeric_sequence: 0,
+            numeric_accepted_sequence: 0,
+            numeric_attempt: 0,
+            numeric_requests: Vec::new(),
+            numeric_last_edits: std::collections::BTreeMap::new(),
+            numeric_confirm: None,
+            numeric_confirm_outbound: false,
+            numeric_formula_open: None,
+            numeric_formula_outbound: false,
+            formula_modal_session: None,
+            formula_apply: None,
+            formula_apply_outbound: false,
+            formula_diagnostic: None,
+            numeric_error: None,
             rename: RenameModal::new(RENAME_BASE),
             rename_target: None,
             interaction: InteractionState::default(),
@@ -278,6 +330,8 @@ impl ShellState {
     pub fn new_application(cols: u32, rows: u32) -> Self {
         let mut state = Self::new(cols, rows);
         state.close_startup_action_box();
+        state.reference_fixture = false;
+        state.selection = SelectionPanel::new(SELECTION_BASE);
         let projection = ModelTreeProjection::empty(TreeDocumentId::new(0));
         let initial = projection.initial_state();
         state.install_projection(projection, initial);
@@ -359,9 +413,9 @@ impl ShellState {
     /// Asks for a NavigationPanel `wanted` cells wide; the width is clamped to the grid
     /// (at least 8 cells, at most half the grid). Returns `true` if the laid-out width changed.
     pub fn set_nav_width(&mut self, wanted: u32) -> bool {
-        let before = self.nav_width();
+        let before = (self.nav_width(), self.widths.nav);
         self.widths.nav = wanted.clamp(14.min(self.tree_content_max), self.tree_content_max);
-        self.nav_width() != before
+        (self.nav_width(), self.widths.nav) != before
     }
 
     /// `true` while no menu popup or modal owns input, so panels can be dragged and the
@@ -396,7 +450,7 @@ impl ShellState {
         })
     }
 
-    /// The captured scrollbar thumb offset within its visible thumb, if `hit` is that
+    /// Captures the exact content offset and pointer row when `hit` is the
     /// actionable thumb in the topmost SelectionPanel.
     #[must_use]
     pub fn selection_thumb_grab(&self, hit: &HitTestResult) -> Option<SelectionThumbGrab> {
@@ -491,8 +545,12 @@ impl ShellState {
                     .map_or(GapDisplayLocation::EndOfTree, |item| {
                         GapDisplayLocation::BeforeNode(item.id)
                     }),
-                Some(Line::Node(shown)) if self.inline_playhead_host()
-                    == Some(self.nodes[Tree::Features.slot()][shown.index].target) => return false,
+                Some(Line::Node(shown))
+                    if self.inline_playhead_host()
+                        == Some(self.nodes[Tree::Features.slot()][shown.index].target) =>
+                {
+                    return false;
+                }
                 Some(Line::Node(shown)) if shown.index > 0 => {
                     let item = &self.projection.features[shown.index - 1];
                     GapDisplayLocation::AfterSubtree(item.id)
@@ -620,15 +678,6 @@ impl ShellState {
         &self.extrude
     }
 
-    /// The current M4 source for the Extrude Depth field: a literal engineering value or a
-    /// confirmed Formula Editor expression. The UI remains the editor, while parsing belongs
-    /// to `newell-model`.
-    #[must_use]
-    pub fn extrude_depth_source(&self) -> String {
-        let id = self.extrude.depth_field_id();
-        self.numeric[self.operation.slot()].source(id, "+|0.0 mm")
-    }
-
     /// The Revolve panel's mock state.
     #[must_use]
     pub const fn revolve(&self) -> &RevolveUi {
@@ -657,6 +706,426 @@ impl ShellState {
     #[must_use]
     pub const fn operation(&self) -> ActionOperation {
         self.operation
+    }
+
+    /// Explicit numeric contracts for every field in the current operation, including hidden branches.
+    #[must_use]
+    pub fn numeric_descriptors(&self) -> Vec<crate::NumericFieldDescriptor> {
+        self.panel().numeric_descriptors()
+    }
+
+    /// Identity installed by the current command's accepted numeric projection.
+    pub fn numeric_session(
+        &self,
+    ) -> Option<(
+        TreeDocumentId,
+        crate::CommandInputSessionId,
+        ActionOperation,
+    )> {
+        self.numeric_identity
+    }
+    /// Tests active eligibility from semantic branch state, excluding closed/other panels.
+    pub fn numeric_field_visible(&self, field: crate::NumericFieldKey) -> bool {
+        if field.operation != self.operation || !self.panel().showing() {
+            return false;
+        }
+        use crate::{ExtrudeOffsetMode as Mode, ExtrudeTermination as Term};
+        let active = match self.operation {
+            ActionOperation::Extrude => {
+                let v = &self.extrude.values;
+                match field.key {
+                    4 => v.termination == Term::Blind,
+                    11 => {
+                        matches!(v.termination, Term::Blind | Term::ThroughAll)
+                            && v.starting_offset
+                            && v.start_mode == Mode::Blind
+                    }
+                    15 => v.termination == Term::Blind && v.end_offset && v.end_mode == Mode::Blind,
+                    20 => !v.symmetric && v.second_side && v.second_mode == Mode::Blind,
+                    24 => {
+                        !v.symmetric
+                            && v.second_side
+                            && v.second_mode == Mode::UpTo
+                            && v.nested_end
+                            && v.nested_mode == Mode::Blind
+                    }
+                    _ => false,
+                }
+            }
+            ActionOperation::Revolve => {
+                let v = &self.revolve.values;
+                !v.full
+                    && match field.key {
+                        6 => v.mode == Mode::Blind,
+                        10 => v.start_offset && v.start_mode == Mode::Blind,
+                        14 => v.mode == Mode::UpTo && v.end_offset && v.end_mode == Mode::Blind,
+                        19 => !v.symmetric && v.second_side && v.second_mode == Mode::Blind,
+                        24 => {
+                            !v.symmetric
+                                && v.second_side
+                                && v.second_mode == Mode::UpTo
+                                && v.nested_end
+                                && v.nested_mode == Mode::Blind
+                        }
+                        _ => false,
+                    }
+            }
+            ActionOperation::Loft => {
+                let v = &self.loft.values;
+                match field.key {
+                    5 => v.start_type && v.start_kind != crate::LoftEndType::Match,
+                    9 => v.end_type && v.end_kind != crate::LoftEndType::Match,
+                    _ => false,
+                }
+            }
+            ActionOperation::Sweep => {
+                let v = &self.sweep.values;
+                match field.key {
+                    7 => v.keep_orientation && v.twist,
+                    9 => v.scale,
+                    _ => false,
+                }
+            }
+            ActionOperation::Boolean => {
+                field.key == 6
+                    && self.boolean.values.operation == crate::BooleanOperation::Cut
+                    && self.boolean.values.offset
+            }
+        };
+        debug_assert_eq!(
+            active,
+            self.panel().numeric_keys().contains(&field.key) && self.panel().shows(field.key)
+        );
+        active
+    }
+    /// Stamps subsequent candidates with the controller's pre-input published generation.
+    pub fn set_numeric_origin(&mut self, origin: ProjectionGeneration) {
+        self.numeric_origin = origin;
+    }
+    /// Whether this exact OK attempt still awaits acknowledgement, even after outbound drain.
+    pub fn numeric_confirm_pending(&self, request: crate::NumericConfirmRequest) -> bool {
+        self.numeric_confirm == Some(request)
+    }
+    /// Whether this exact Formula opening still awaits its accepted projection.
+    pub fn numeric_formula_pending(&self, request: crate::NumericFormulaOpenRequest) -> bool {
+        self.numeric_formula_open == Some(request)
+    }
+    /// Whether a terminal acknowledgement or deferred Formula opening currently gates input.
+    pub fn numeric_delivery_pending(&self) -> bool {
+        self.numeric_confirm.is_some()
+            || self.numeric_formula_open.is_some()
+            || self.formula_apply.is_some()
+    }
+    fn next_numeric_sequence(&mut self) -> Result<u64, crate::UiError> {
+        self.numeric_sequence = self
+            .numeric_sequence
+            .checked_add(1)
+            .ok_or(crate::UiError::InteractionIdentityExhausted)?;
+        Ok(self.numeric_sequence)
+    }
+    fn queue_numeric_edits(&mut self) {
+        let operations = [
+            ActionOperation::Extrude,
+            ActionOperation::Revolve,
+            ActionOperation::Loft,
+            ActionOperation::Sweep,
+            ActionOperation::Boolean,
+        ];
+        for operation in operations {
+            for (id, edit) in self.numeric[operation.slot()].take_edits() {
+                let Some((document, session, owner)) = self.numeric_identity else {
+                    continue;
+                };
+                if owner != operation {
+                    continue;
+                }
+                let Some(key) = id
+                    .get()
+                    .checked_sub(ACTION_BASE)
+                    .map(|n| n / crate::action_box::KEY_SLOTS)
+                else {
+                    continue;
+                };
+                match self.next_numeric_sequence() {
+                    Ok(sequence) => {
+                        self.numeric_last_edits
+                            .insert(crate::NumericFieldKey { operation, key }, sequence);
+                        self.numeric_requests.push(crate::NumericRequest {
+                            destination: crate::NumericDestination {
+                                document,
+                                session,
+                                field: crate::NumericFieldKey { operation, key },
+                            },
+                            sequence,
+                            origin: self.numeric_origin,
+                            edit,
+                        });
+                    }
+                    Err(error) => self.numeric_error = Some(error),
+                }
+            }
+        }
+    }
+    /// Drains the last checked interaction-identity allocation failure once.
+    pub fn take_numeric_error(&mut self) -> Option<crate::UiError> {
+        self.numeric_error.take()
+    }
+    /// Qualifies queued editor candidates with the current identity and sequence, then drains.
+    pub fn take_numeric_requests(&mut self) -> Vec<crate::NumericRequest> {
+        self.queue_numeric_edits();
+        std::mem::take(&mut self.numeric_requests)
+    }
+    /// Drains outbound OK once, retaining the exact pending record for acknowledgement.
+    pub fn take_numeric_confirm(&mut self) -> Option<crate::NumericConfirmRequest> {
+        if std::mem::take(&mut self.numeric_confirm_outbound) {
+            self.numeric_confirm
+        } else {
+            None
+        }
+    }
+    /// Drains outbound Formula opening once, retaining its pending delivery record.
+    pub fn take_numeric_formula_open(&mut self) -> Option<crate::NumericFormulaOpenRequest> {
+        if std::mem::take(&mut self.numeric_formula_outbound) {
+            self.numeric_formula_open
+        } else {
+            None
+        }
+    }
+    /// Drains one explicit Formula application, retaining its exact pending identity.
+    pub fn take_formula_apply(&mut self) -> Option<crate::FormulaApplyRequest> {
+        if std::mem::take(&mut self.formula_apply_outbound) {
+            self.formula_apply.clone()
+        } else {
+            None
+        }
+    }
+    /// Whether this exact modal application still owns its destination.
+    #[must_use]
+    pub fn formula_apply_pending(&self, request: &crate::FormulaApplyRequest) -> bool {
+        self.formula_apply.as_ref() == Some(request)
+            && self.formula_modal_session == Some(request.modal_session)
+    }
+    /// Publishes a validated Formula result; failure retains editable source and diagnostic.
+    ///
+    /// # Errors
+    /// Rejects an inconsistent accepted field projection.
+    pub fn finish_formula_apply(
+        &mut self,
+        request: &crate::FormulaApplyRequest,
+        value: crate::NumericProjection,
+        diagnostic: Option<String>,
+    ) -> Result<bool, crate::UiError> {
+        if !self.formula_apply_pending(request) {
+            return Ok(false);
+        }
+        if value.accepted_sequence != request.attempt.0 {
+            return Err(crate::UiError::InvalidNumericProjection);
+        }
+        self.set_numeric_projection(value)?;
+        self.formula_apply = None;
+        self.formula_apply_outbound = false;
+        self.formula_diagnostic = diagnostic;
+        self.formula
+            .finish_application(self.formula_diagnostic.is_none());
+        if self.formula_diagnostic.is_none() {
+            self.formula_target = None;
+            self.formula_modal_session = None;
+        }
+        self.sync();
+        Ok(true)
+    }
+    /// Installs complete accepted views without emitting edits or replacing same-session raw text.
+    /// A new session drops the old raw edit and resets its interaction identities.
+    ///
+    /// Returns `false` for a stale session/sequence. Invalid namespaces, operations, or field
+    /// inventories return [`crate::UiError::InvalidNumericProjection`].
+    pub fn set_numeric_projection(
+        &mut self,
+        value: crate::NumericProjection,
+    ) -> Result<bool, crate::UiError> {
+        if value.document != self.projection.document || value.operation != self.operation {
+            return Err(crate::UiError::InvalidNumericProjection);
+        }
+        if let Some((document, session, _)) = self.numeric_identity
+            && document == value.document
+            && value.session.0 < session.0
+        {
+            return Ok(false);
+        }
+        if self.numeric_identity == Some((value.document, value.session, value.operation))
+            && value.accepted_sequence < self.numeric_accepted_sequence
+        {
+            return Ok(false);
+        }
+        if self
+            .numeric_retired_session
+            .is_some_and(|(document, session)| {
+                document == value.document && value.session.0 <= session.0
+            })
+        {
+            return Ok(false);
+        }
+        let descriptors = crate::numeric::descriptors(value.operation);
+        let keys: BTreeSet<_> = value.fields.iter().map(|v| v.field).collect();
+        if keys.len() != value.fields.len() || keys != descriptors.iter().map(|d| d.field).collect()
+        {
+            return Err(crate::UiError::InvalidNumericProjection);
+        }
+        let identity = Some((value.document, value.session, value.operation));
+        if self.numeric_identity != identity {
+            self.numeric_identity = identity;
+            self.numeric_sequence = value.accepted_sequence;
+            self.numeric_attempt = 0;
+            self.numeric_confirm = None;
+            self.numeric_confirm_outbound = false;
+            self.numeric_formula_open = None;
+            self.numeric_formula_outbound = false;
+            self.formula = FormulaEditor::new(FORMULA_BASE);
+            self.formula_target = None;
+            self.formula_apply = None;
+            self.formula_apply_outbound = false;
+            self.formula_modal_session = None;
+            self.formula_diagnostic = None;
+            self.numeric_requests.clear();
+            self.numeric_last_edits.clear();
+            self.numeric[value.operation.slot()].discard();
+        }
+        self.numeric_sequence = self.numeric_sequence.max(value.accepted_sequence);
+        self.numeric_accepted_sequence = value.accepted_sequence;
+        self.numeric_last_edits
+            .retain(|_, sequence| *sequence > value.accepted_sequence);
+        for view in &value.fields {
+            let Some(descriptor) = descriptors.iter().find(|d| d.field == view.field) else {
+                return Err(crate::UiError::InvalidNumericProjection);
+            };
+            let id = WidgetId::new(ACTION_BASE + view.field.key * crate::action_box::KEY_SLOTS);
+            self.numeric[value.operation.slot()].install(id, *descriptor, view);
+        }
+        Ok(true)
+    }
+    /// Ends only the matching outstanding edit, ignoring stale destinations and sequences.
+    /// The application supplies the accepted projection separately to restore presentation.
+    pub fn reject_numeric_edit(
+        &mut self,
+        destination: crate::NumericDestination,
+        sequence: u64,
+    ) -> Result<bool, crate::UiError> {
+        if self.numeric_identity
+            != Some((
+                destination.document,
+                destination.session,
+                destination.field.operation,
+            ))
+            || self.numeric_last_edits.get(&destination.field) != Some(&sequence)
+        {
+            return Ok(false);
+        }
+        self.numeric_last_edits.remove(&destination.field);
+        let id = WidgetId::new(ACTION_BASE + destination.field.key * crate::action_box::KEY_SLOTS);
+        if self.editing_field() == Some(id) {
+            self.numeric[destination.field.operation.slot()].discard();
+        }
+        Ok(true)
+    }
+    /// Acknowledges one exact resolved OK attempt; this method performs no model commit.
+    /// Acceptance closes the panel once; rejection releases the pending attempt and keeps it
+    /// Editing. Mismatched or duplicate acknowledgements return `false` without changing it.
+    pub fn finish_numeric_confirm(
+        &mut self,
+        request: crate::NumericConfirmRequest,
+        accepted: bool,
+    ) -> Result<bool, crate::UiError> {
+        if self.numeric_confirm != Some(request)
+            || self.numeric_identity != Some((request.document, request.session, request.operation))
+        {
+            return Ok(false);
+        }
+        self.numeric_confirm = None;
+        self.numeric_confirm_outbound = false;
+        if accepted {
+            self.panel_mut().activate_id(WidgetId::new(
+                ACTION_BASE + K_ACTIONS * crate::action_box::KEY_SLOTS,
+            ));
+            self.numeric[request.operation.slot()].confirm();
+            self.interaction.set_focused(None);
+        }
+        self.sync();
+        Ok(true)
+    }
+    /// Installs the resulting accepted views and opens Formula once from that exact source.
+    ///
+    /// Ignores stale/duplicate opening identities. A mismatched accepted projection returns
+    /// [`crate::UiError::InvalidNumericProjection`].
+    pub fn open_numeric_formula(
+        &mut self,
+        request: crate::NumericFormulaOpenRequest,
+        value: crate::NumericProjection,
+    ) -> Result<bool, crate::UiError> {
+        if self.numeric_formula_open != Some(request)
+            || self.numeric_identity
+                != Some((
+                    request.destination.document,
+                    request.destination.session,
+                    request.destination.field.operation,
+                ))
+        {
+            return Ok(false);
+        }
+        if value.accepted_sequence != request.sequence
+            || value.accepted_sequence < self.numeric_accepted_sequence
+            || value.document != request.destination.document
+            || value.session != request.destination.session
+            || value.operation != request.destination.field.operation
+        {
+            return Err(crate::UiError::InvalidNumericProjection);
+        }
+        let source = value
+            .fields
+            .iter()
+            .find(|v| v.field == request.destination.field)
+            .ok_or(crate::UiError::InvalidNumericProjection)?
+            .formula
+            .clone();
+        self.set_numeric_projection(value)?;
+        let field = WidgetId::new(
+            ACTION_BASE + request.destination.field.key * crate::action_box::KEY_SLOTS,
+        );
+        self.formula_target = Some((field, Some(request.destination)));
+        self.numeric_formula_open = None;
+        self.numeric_formula_outbound = false;
+        self.formula.open(&mut self.interaction, &source);
+        self.formula.defer_application();
+        self.formula_modal_session = Some(request.sequence);
+        self.formula_diagnostic = None;
+        self.sync();
+        Ok(true)
+    }
+    /// Resolves the raw field by the ordinary acceptance rule, without confirming the command.
+    /// Candidates still require application validation; returns whether an edit was active.
+    pub fn numeric_focus_lost(&mut self) -> bool {
+        let editing = self.editing_field().is_some();
+        self.numeric[self.operation.slot()].commit();
+        editing
+    }
+    /// Drops numeric destinations, pending deliveries, Formula state, and presentation caches
+    /// when the document/session owner tears down its interaction namespace.
+    pub fn invalidate_numeric_session(&mut self) {
+        self.formula = FormulaEditor::new(FORMULA_BASE);
+        self.numeric_identity = None;
+        self.numeric_retired_session = None;
+        self.numeric_confirm = None;
+        self.numeric_formula_open = None;
+        self.numeric_requests.clear();
+        self.numeric_last_edits.clear();
+        self.formula_target = None;
+        self.formula_apply = None;
+        self.formula_apply_outbound = false;
+        self.formula_modal_session = None;
+        self.formula_diagnostic = None;
+        for fields in &mut self.numeric {
+            fields.reset();
+        }
+        self.sync();
     }
 
     /// The shown Action Box, whichever operation it belongs to.
@@ -838,6 +1307,9 @@ impl ShellState {
     /// Returns `true` if the click was acted on (recompose the grid); a click on nothing, or
     /// outside an open modal, returns `false`.
     pub fn click(&mut self, hit: Option<HitTestResult>) -> bool {
+        if self.numeric_delivery_pending() {
+            return false;
+        }
         let bounds = GridRect::new(0, 0, self.cols, self.rows);
         let id = hit.and_then(|h| h.widget_id);
         if self.editing_field().is_some_and(|f| Some(f) != id) {
@@ -871,6 +1343,9 @@ impl ShellState {
     /// Applies a translated key. Returns `true` if the key was acted on (recompose the
     /// grid). Keys with an unusable character (control characters) are ignored.
     pub fn key(&mut self, key: ShellKey) -> bool {
+        if self.numeric_delivery_pending() {
+            return false;
+        }
         if !key.is_valid() {
             return false;
         }
@@ -949,6 +1424,14 @@ impl ShellState {
         self.selection.sync_focus(&mut self.interaction);
         self.formula.sync_focus(&mut self.interaction);
         self.rename.sync_focus(&mut self.interaction);
+        if !self.modal_open()
+            && self
+                .interaction
+                .focused
+                .is_some_and(|id| in_action_panel(id) && self.panel().live_control(id).is_none())
+        {
+            self.interaction.set_focused(None);
+        }
         if restoring_rename {
             if self.tree_focus.is_none() {
                 self.interaction.set_focused(None);
@@ -980,24 +1463,56 @@ impl ShellState {
     /// Keeps the formula text of a FormulaEditor that was confirmed, for the numeric field it
     /// was opened from; a cancelled one changes nothing.
     fn finish_formula(&mut self) {
+        if self.formula.application_pending()
+            && self.formula_apply.is_none()
+            && let (Some((_, Some(destination))), Some(modal_session)) =
+                (self.formula_target, self.formula_modal_session)
+        {
+            let through_sequence = self.numeric_sequence;
+            match self.next_numeric_sequence() {
+                Ok(attempt) => {
+                    self.formula_apply = Some(crate::FormulaApplyRequest {
+                        destination,
+                        modal_session,
+                        attempt: crate::FormulaAttemptId(attempt),
+                        through_sequence,
+                        origin: self.numeric_origin,
+                        source: self.formula.draft(),
+                        source_origins: self.formula.source_origins().to_vec(),
+                    });
+                    self.formula_apply_outbound = true;
+                }
+                Err(error) => {
+                    self.numeric_error = Some(error);
+                    self.formula.finish_application(false);
+                }
+            }
+        }
         if self.formula.is_open() {
             return;
         }
-        let Some(field) = self.formula_target.take() else {
+        let Some((field, destination)) = self.formula_target.take() else {
             return;
         };
+        if destination.is_some_and(|d| {
+            self.numeric_identity != Some((d.document, d.session, d.field.operation))
+        }) {
+            return;
+        }
         if self.formula.status() != crate::ModalStatus::Confirmed {
             return;
         }
-        if let Some(mock) = self.numeric_mock(field) {
-            self.numeric[self.operation.slot()].set_formula(field, &mock, self.formula.text());
+        if let Some(mock) = self.numeric_descriptor(field) {
+            self.numeric[self.operation.slot()].set_formula(field, mock, self.formula.text());
         }
     }
 
-    /// The mock text (`+|0.0 mm`) of numeric field `id` in the shown Action Box.
-    fn numeric_mock(&self, id: WidgetId) -> Option<String> {
-        let panel = self.panel().compose_box()?;
-        panel.numeric_text(id).map(str::to_owned)
+    fn numeric_descriptor(&self, id: WidgetId) -> Option<crate::NumericFieldDescriptor> {
+        let (key, _) = self.panel().decode(id)?;
+        self.panel()
+            .shows(key)
+            .then(|| self.panel().numeric_descriptor(key))
+            .flatten()
     }
 
     /// Source Action Box footprint; centered modals have separate overlay rectangles.
@@ -1022,8 +1537,8 @@ impl ShellState {
         if !panel.numeric_sign_at(id, col, row) {
             return None;
         }
-        let mock = self.numeric_mock(id)?;
-        Some(self.numeric[self.operation.slot()].toggle_sign(id, &mock))
+        let mock = self.numeric_descriptor(id)?;
+        Some(self.numeric[self.operation.slot()].toggle_sign(id, mock))
     }
 
     /// Routes a key to the numeric field being edited. `None` if no field is edited, or for
@@ -1108,15 +1623,46 @@ impl ShellState {
         if self.panel().is_formula_button(id) {
             // The `☰` is slot 1 of the field it belongs to (slot 0).
             let field = WidgetId::new(id.get() - 1);
-            let text = self.numeric[slot].formula(field).to_owned();
-            self.formula_target = Some(field);
-            self.formula.open(&mut self.interaction, &text);
+            if let Some((document, session, operation)) = self.numeric_identity {
+                self.queue_numeric_edits();
+                let through_sequence = self.numeric_sequence;
+                match self.next_numeric_sequence() {
+                    Ok(sequence) => {
+                        self.numeric_formula_open = Some(crate::NumericFormulaOpenRequest {
+                            destination: crate::NumericDestination {
+                                document,
+                                session,
+                                field: crate::NumericFieldKey {
+                                    operation,
+                                    key: (field.get() - ACTION_BASE) / crate::action_box::KEY_SLOTS,
+                                },
+                            },
+                            sequence,
+                            through_sequence,
+                            origin: self.numeric_origin,
+                        });
+                        self.numeric_formula_outbound = true;
+                    }
+                    Err(error) => self.numeric_error = Some(error),
+                }
+            } else if self.reference_fixture {
+                let text = self.numeric[slot].formula(field).to_owned();
+                self.formula_target = Some((field, None));
+                self.formula.open(&mut self.interaction, &text);
+            }
         } else if self.panel().is_numeric_field(id) {
-            if let Some(mock) = self.numeric_mock(id) {
-                self.numeric[slot].begin(id, &mock);
+            if let Some(mock) = self.numeric_descriptor(id) {
+                self.numeric_last_edits.remove(&mock.field);
+                self.numeric[slot].begin(id, mock);
             }
         } else if self.panel().is_selection_field(id) {
-            if self.panel().is_profile_selection_field(id) {
+            if !self.reference_fixture {
+                if let Some((key, _)) = self.panel().decode(id)
+                    && let Some(descriptor) = self.panel().selection_descriptor(key)
+                {
+                    self.selection_request = Some(crate::SelectionUiRequest::OpenField(descriptor));
+                }
+            } else if self.panel().is_profile_selection_field(id) {
                 self.selection.open_profiles(&mut self.interaction);
             } else {
                 self.selection.open(&mut self.interaction);
@@ -1127,11 +1673,42 @@ impl ShellState {
                 .live_control(id)
                 .filter(|&(key, slot)| key == K_ACTIONS && slot < 2)
                 .map(|(_, slot)| slot);
-            self.panel_mut().activate_id(id);
-            match button {
-                Some(0) => self.numeric[slot].confirm(),
-                Some(_) => self.numeric[slot].cancel(),
-                None => {}
+            if button == Some(0) && self.numeric_identity.is_some() {
+                self.queue_numeric_edits();
+                if self.numeric_confirm.is_none() {
+                    match self.numeric_attempt.checked_add(1) {
+                        Some(attempt) => {
+                            self.numeric_attempt = attempt;
+                            if let Some((document, session, operation)) = self.numeric_identity {
+                                self.numeric_confirm = Some(crate::NumericConfirmRequest {
+                                    document,
+                                    session,
+                                    operation,
+                                    attempt: crate::NumericConfirmAttemptId(attempt),
+                                    through_sequence: self.numeric_sequence,
+                                });
+                                self.numeric_confirm_outbound = true;
+                            }
+                        }
+                        None => {
+                            self.numeric_error = Some(crate::UiError::InteractionIdentityExhausted)
+                        }
+                    }
+                }
+            } else {
+                if button == Some(0) && !self.reference_fixture && self.numeric_identity.is_none() {
+                    return false;
+                }
+                self.panel_mut().activate_id(id);
+                match button {
+                    Some(0) => self.numeric[slot].confirm(),
+                    Some(_) => {
+                        self.numeric[slot].cancel();
+                        self.numeric_confirm = None;
+                        self.numeric_formula_open = None;
+                    }
+                    None => {}
+                }
             }
             if !self.panel().showing() {
                 self.interaction.set_focused(None);
@@ -1162,7 +1739,7 @@ impl ShellState {
                     ));
                 }
             }
-            TreePart::Row | TreePart::Name => self.selected = Some(target),
+            TreePart::Row | TreePart::Name => self.request_entity_selection(target),
             _ => {}
         }
         self.tree_focus = Some(target);
@@ -1254,7 +1831,21 @@ impl ShellState {
     /// closed by OK / Cancel reopens with defaults. The boxes share one id range, so a focus
     /// held in the panel is dropped when the operation changes.
     fn show_operation(&mut self, operation: ActionOperation) {
+        self.command_started = true;
         self.numeric[self.operation.slot()].commit();
+        self.queue_numeric_edits();
+        if let Some((document, session, _)) = self.numeric_identity.take() {
+            self.numeric_retired_session = Some((document, session));
+        }
+        self.numeric_confirm = None;
+        self.numeric_confirm_outbound = false;
+        self.numeric_formula_open = None;
+        self.numeric_formula_outbound = false;
+        self.formula_target = None;
+        self.formula_apply = None;
+        self.formula_apply_outbound = false;
+        self.formula_modal_session = None;
+        self.formula_diagnostic = None;
         if self.operation != operation {
             if self.interaction.focused.is_some_and(in_action_panel) {
                 self.interaction.set_focused(None);
@@ -1418,8 +2009,15 @@ impl ShellState {
                     if self.tree_focus != Some(self.nodes[tree.slot()][index].target) {
                         return false;
                     }
-                    self.activate_tree(tree, index, TreePart::Marker);
-                    self.selected = Some(self.nodes[tree.slot()][index].target);
+                    let part = if matches!(
+                        self.nodes[tree.slot()][index].target.kind,
+                        TreeTargetKind::Operation(_) | TreeTargetKind::Entity(_)
+                    ) {
+                        TreePart::Row
+                    } else {
+                        TreePart::Marker
+                    };
+                    self.activate_tree(tree, index, part);
                     return true;
                 }
                 self.activate_widget(id)

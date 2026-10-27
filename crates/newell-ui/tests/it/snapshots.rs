@@ -395,3 +395,266 @@ fn view_menu_color_checked_light() {
     s.key(ShellKey::Enter);
     insta::assert_snapshot!(snapshot(&s));
 }
+
+/// Approved tree contract, exercised without snapshot acceptance or private UI state.
+mod treeview_contract {
+    use super::*;
+    use newell_ui::{
+        FeatureNodeId, FeatureTreeItem, GapDisplayLocation, InkRole, ModelTreeProjection,
+        OpaqueTreeId, TreeDocumentId,
+    };
+
+    fn op(id: u64) -> FeatureNodeId {
+        FeatureNodeId::Operation(OpaqueTreeId::new(id))
+    }
+    fn folder(id: u64) -> FeatureNodeId {
+        FeatureNodeId::Folder(OpaqueTreeId::new(id))
+    }
+    fn projection() -> ModelTreeProjection {
+        let mut p = ModelTreeProjection::empty(TreeDocumentId::new(77));
+        p.features = [
+            (folder(1), "Outer_folder", 1),
+            (folder(2), "Inner_folder", 2),
+            (op(3), "First", 3),
+            (op(4), "Last", 3),
+            (op(5), "Next", 1),
+        ]
+        .into_iter()
+        .map(|(id, name, depth)| FeatureTreeItem {
+            id,
+            name: name.into(),
+            depth,
+            visibility: None,
+        })
+        .collect();
+        p
+    }
+    fn live() -> ShellState {
+        let mut s = ShellState::new_application(82, 40);
+        s.set_tree_projection(projection()).unwrap();
+        s.set_nav_width(25);
+        s
+    }
+    fn text(s: &ShellState) -> Vec<String> {
+        let g = s.compose().unwrap();
+        (0..g.rows())
+            .map(|r| row_text(&g, r).into_iter().collect())
+            .collect()
+    }
+    fn activate(s: &mut ShellState, needle: &str) {
+        let grid = s.compose().unwrap();
+        assert!(
+            s.click(hit_on(&grid, needle)),
+            "activate {needle}: {:?}",
+            text(s)
+        );
+    }
+    fn place(s: &mut ShellState, display: GapDisplayLocation) {
+        let gap = s.tree_projection().placed_gap(display).unwrap();
+        s.set_playhead(gap).unwrap();
+    }
+
+    #[test]
+    fn nested_collapse_preserves_pair_and_inline_ownership_across_refresh() {
+        let mut s = live();
+        place(&mut s, GapDisplayLocation::BeforeNode(op(4)));
+        let original = s.playhead();
+        activate(&mut s, "[-] Inner");
+        assert_eq!(s.playhead(), original);
+        assert!(!text(&s).iter().any(|r| r.contains("Last")));
+        let g = s.compose().unwrap();
+        let row = (0..g.rows())
+            .find(|r| {
+                row_text(&g, *r)
+                    .iter()
+                    .collect::<String>()
+                    .contains("[+] Inner")
+            })
+            .unwrap();
+        let line: Vec<_> = row_text(&g, row);
+        let right = s.nav_width() - 1;
+        assert_eq!(line[(right - 1) as usize], '─');
+        assert_eq!(line[right as usize], '║');
+        let stroke_id = g.get(right - 1, row).unwrap().widget_id.unwrap();
+        assert!(!s.is_rename_target(stroke_id));
+        assert_eq!(g.get(right - 1, row).unwrap().ink, InkRole::Text);
+        let at = hit_test(
+            UiPoint {
+                x: (right - 1) * 6 + 3,
+                y: row * 10 + 5,
+            },
+            GridMetrics::new(6, 10).unwrap(),
+            &g,
+        )
+        .unwrap();
+        assert_eq!(s.drag_at(&at), Some(newell_ui::Separator::Playhead));
+        assert!(!s.drag_separator(newell_ui::Separator::Playhead, right - 1, row));
+        assert_eq!(s.playhead(), original);
+        let mut p = s.tree_projection().clone();
+        p.features[4].name = "Renamed".into();
+        s.set_tree_projection(p).unwrap();
+        assert!(
+            !text(&s).iter().any(|r| r.contains("Last")),
+            "refresh must not reveal cursor ancestors"
+        );
+        activate(&mut s, "[-] Outer_folder");
+        assert_eq!(s.playhead(), original);
+        let lines = text(&s);
+        assert!(lines.iter().any(|r| r.contains("Outer_folder ─")));
+        assert!(!lines.iter().any(|r| r.contains("Inner_folder")));
+        activate(&mut s, "[+] Outer_folder");
+        activate(&mut s, "[+] Inner");
+        assert_eq!(s.playhead(), original);
+        assert!(text(&s).iter().any(|r| r.contains("Last")));
+    }
+
+    #[test]
+    fn inline_budget_has_three_cells_and_deep_narrow_layout_suppresses_it() {
+        let mut s = live();
+        place(&mut s, GapDisplayLocation::BeforeNode(op(4)));
+        place(&mut s, GapDisplayLocation::AfterSubtree(op(4)));
+        let original = s.playhead();
+        activate(&mut s, "[-] Inner");
+        // Inner depth 2 prefix = 8, so O=15 gives W=P+5, one label cell.
+        s.set_nav_width(15);
+        assert!(
+            text(&s)
+                .iter()
+                .any(|r| r.starts_with("║ │ ╰[+] … ───║") || r.contains("… ───║"))
+        );
+        s.set_nav_width(14);
+        let g = s.compose().unwrap();
+        assert!(
+            !(0..g.rows()).any(|r| row_text(&g, r)
+                .iter()
+                .take(s.nav_width() as usize)
+                .collect::<String>()
+                .contains("───")),
+            "no partial inline stroke"
+        );
+        assert_eq!(s.playhead(), original);
+        s.set_nav_width(25);
+        activate(&mut s, "[+] Inner");
+        assert_eq!(s.playhead(), original);
+    }
+
+    #[test]
+    fn width_uses_hidden_full_names_and_content_shrink_clamps_preference() {
+        let mut s = live();
+        let mut p = projection();
+        p.features[3].name = "x".repeat(50);
+        s.set_tree_projection(p.clone()).unwrap();
+        s.set_nav_width(999);
+        assert_eq!(s.nav_width(), 41, "window half ceiling");
+        s.resize(200, 40);
+        assert_eq!(
+            s.nav_width(),
+            61,
+            "depth3 leaf prefix7 + 50 + 4 borders/padding"
+        );
+        s.resize(30, 40);
+        assert_eq!(s.nav_width(), 15);
+        s.resize(200, 40);
+        assert_eq!(s.nav_width(), 61);
+        p.features[3].name = "Last".into();
+        s.set_tree_projection(p.clone()).unwrap();
+        let cap = s.nav_width();
+        assert!(cap < 61);
+        p.features[3].name = "x".repeat(50);
+        s.set_tree_projection(p).unwrap();
+        assert_eq!(s.nav_width(), cap, "growth retains clamped preference");
+    }
+
+    #[test]
+    fn reference_cap_and_zero_layout_are_deterministic() {
+        let mut s = ShellState::new(82, 30);
+        s.set_nav_width(999);
+        assert_eq!(s.nav_width(), 28);
+        for (cols, rows) in [(0, 0), (1, 1), (2, 2), (10, 5), (82, 30)] {
+            s.resize(cols, rows);
+            let g = s.compose().unwrap();
+            assert_eq!((g.cols(), g.rows()), (cols, rows));
+            assert!(s.nav_width() <= cols / 2);
+        }
+    }
+
+    #[test]
+    fn gap_guides_endpoints_and_elements_absence() {
+        let mut s = live();
+        place(&mut s, GapDisplayLocation::BeforeNode(op(4)));
+        let g = s.compose().unwrap();
+        let r = (0..g.rows())
+            .find(|r| {
+                row_text(&g, *r)
+                    .iter()
+                    .take(s.nav_width() as usize)
+                    .collect::<String>()
+                    .contains("───")
+            })
+            .unwrap();
+        let line = row_text(&g, r);
+        let end = s.nav_width() - 2;
+        assert_eq!(&line[1..8], &[' ', '│', ' ', ' ', ' ', '│', ' ']);
+        assert_eq!(line[8], '─');
+        assert_eq!(line[end as usize], '─');
+        assert!(g.get(2, r).unwrap().widget_id.is_none());
+        let owner = g.get(end, r).unwrap().widget_id.unwrap();
+        let elem = (0..g.rows())
+            .find(|r| {
+                row_text(&g, *r)
+                    .iter()
+                    .collect::<String>()
+                    .contains("Elements")
+            })
+            .unwrap();
+        for y in elem..g.rows() {
+            for x in 1..s.nav_width() - 1 {
+                assert_ne!(g.get(x, y).unwrap().widget_id, Some(owner));
+            }
+        }
+        place(&mut s, GapDisplayLocation::EndOfTree);
+        let rows = text(&s);
+        let endrow = rows
+            .iter()
+            .find(|r| {
+                r.chars()
+                    .take(s.nav_width() as usize)
+                    .collect::<String>()
+                    .contains("───")
+            })
+            .unwrap();
+        assert!(endrow.starts_with("║   ─"), "End has no continuing guide");
+    }
+
+    #[test]
+    fn exact_glyph_combinations_preserve_routes_and_roles() {
+        let mut s = ShellState::new(82, 30);
+        for selected in [false, true] {
+            if selected {
+                activate(&mut s, "Extrude_Cut_Center");
+            }
+            let normal = s.compose().unwrap();
+            let hit = hit_on(&normal, "Extrude_Cut_Center").unwrap();
+            let row = hit.row;
+            let id = s.hover_target(hit, &normal).unwrap();
+            let (hover, lit) = s.compose_hovered(Some(id)).unwrap();
+            assert!(lit);
+            let line: String = row_text(&hover, row).into_iter().take(25).collect();
+            assert_eq!(
+                line,
+                if selected {
+                    "║ ┃ ┗╸Extrude_Cut_Center╣"
+                } else {
+                    "║ │ ╘ Extrude_Cut_Center╣"
+                }
+            );
+            for (a, b) in normal.cells().iter().zip(hover.cells()) {
+                assert_eq!(
+                    (a.widget_id, a.shared_border, a.ink),
+                    (b.widget_id, b.shared_border, b.ink)
+                );
+            }
+            assert_eq!(s.compose_hovered(None).unwrap().0, normal);
+        }
+    }
+}

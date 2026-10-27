@@ -27,11 +27,7 @@ const K_OFFSET_DIST: u32 = 6;
 const K_FACES: u32 = 7;
 const K_KEEP_TOOLS: u32 = 8;
 
-const NUMERIC_KEYS: [u32; 1] = [K_OFFSET_DIST];
 const SELECT_KEYS: [u32; 3] = [K_TARGET, K_TOOLS, K_FACES];
-
-/// Mock text of the `Dist` field.
-const DIST: &str = "+|0.0 mm";
 
 /// The border topology of each operation (`Action_Box_Boolean.txt`): the glyph between `Add`
 /// and `Cut`, the glyph between `Cut` and `Inter`, and the border row under the selector. The
@@ -108,7 +104,10 @@ impl BooleanUi {
                 self.row()
                     .contour("│")
                     .text("   ╰╴Dist  ")
-                    .numeric(K_OFFSET_DIST, DIST)
+                    .numeric(
+                        K_OFFSET_DIST,
+                        crate::numeric::field(crate::ActionOperation::Boolean, K_OFFSET_DIST),
+                    )
                     .end(),
             );
         } else {
@@ -123,7 +122,10 @@ impl BooleanUi {
                 self.row()
                     .contour("│")
                     .text("     Dist  ")
-                    .numeric(K_OFFSET_DIST, DIST)
+                    .numeric(
+                        K_OFFSET_DIST,
+                        crate::numeric::field(crate::ActionOperation::Boolean, K_OFFSET_DIST),
+                    )
                     .end(),
             );
         }
@@ -163,14 +165,14 @@ impl ActionBoxUi for BooleanUi {
             self.row()
                 .contour("│")
                 .text(" Target      ")
-                .select(K_TARGET, v.target.count())
+                .select(K_TARGET, self.selection_count(K_TARGET, v.target.count()))
                 .end(),
         );
         b.push(
             self.row()
                 .contour("│")
                 .text(" Tools       ")
-                .select(K_TOOLS, v.tools.count())
+                .select(K_TOOLS, self.selection_count(K_TOOLS, v.tools.count()))
                 .end(),
         );
         if v.operation == BooleanOperation::Cut {
@@ -217,10 +219,38 @@ impl ActionBoxUi for BooleanUi {
         self.reopen();
     }
 
-    fn numeric_keys(&self) -> &'static [u32] {
-        &NUMERIC_KEYS
+    fn numeric_operation(&self) -> crate::ActionOperation {
+        crate::ActionOperation::Boolean
     }
 
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor> {
+        use crate::SelectionFieldRole::*;
+        if !SELECT_KEYS.contains(&key) {
+            return None;
+        }
+        let role = match key {
+            K_TARGET => BodyTarget,
+            K_TOOLS => Bodies,
+            K_FACES => UnsupportedTopology,
+            _ => EntityReference,
+        };
+        Some(crate::SelectionFieldDescriptor {
+            field: crate::SelectionFieldKey {
+                operation: crate::ActionOperation::Boolean,
+                key,
+            },
+            role,
+            ordered: false,
+            max_count: if matches!(role, MergeScope | Bodies) {
+                None
+            } else {
+                Some(1)
+            },
+        })
+    }
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>) {
+        self.selection_counts = Some(counts.clone());
+    }
     fn select_keys(&self) -> &'static [u32] {
         &SELECT_KEYS
     }

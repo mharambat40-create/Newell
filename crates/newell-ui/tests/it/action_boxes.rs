@@ -245,7 +245,7 @@ fn selection_fields_and_formula_buttons_open_the_existing_overlays() {
 fn keyboard_reaches_every_new_box() {
     let mut s = shell();
     create(&mut s, 'S');
-    let before = *s.sweep();
+    let before = s.sweep().clone();
     // Tab walks the tree rows first, then the Sweep controls; Enter activates the focused one.
     // The first Sweep control in the ring is the `Solid` segment, which changes nothing, so
     // keep going until a control changes the box or opens a modal.

@@ -546,10 +546,8 @@ pub(crate) mod scrollbar_tests {
                             || u64::from(y) >= rect.bottom()
                         {
                             assert_eq!(*cell, sentinel);
-                        } else if h > 0 && y == 1 && w > 1 {
-                            if x == 2 {
-                                assert_eq!(cell.widget_id, Some(it[6].id));
-                            }
+                        } else if h > 0 && y == 1 && w > 1 && x == 2 {
+                            assert_eq!(cell.widget_id, Some(it[6].id));
                         }
                     }
                 }

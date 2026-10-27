@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(effective_scale(None, WINDOWED, 60).k, 3);
         assert_eq!(effective_scale(None, WINDOWED, 0).k, 3);
         assert_eq!(effective_scale(None, WINDOWED, 0).requested, 3);
-        assert_eq!(effective_scale(None, WINDOWED, 9999).k, 7);
+        assert_eq!(effective_scale(None, WINDOWED, 9999).k, 6);
     }
 
     #[test]

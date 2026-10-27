@@ -257,8 +257,7 @@ the `.txt` references together with this README):
    reproduced with its own label.
 2. `Up to` and `Through all` show no `End Offset`; if the design intends one it
    must be added to the reference.
-3. The `Offset` row of `Up to` has no documented expanded form: toggling it
-   changes only `□`/`■`; no child row is composed.
+3. Enabling Up to Offset reveals one unsigned formula-capable length below Offset. Its magnitude is a clearance toward the start, measured along the extrusion direction. Zero terminates at the target.
 
 ---
 
@@ -780,11 +779,17 @@ now, would route to an enabled, interactive widget of one of the documented kind
 
 - Set and changed only by pointer motion; cleared by pointer exit
   (`CursorLeft`) or by the pointer moving onto a cell that is not eligible.
+  While the Features playhead is captured, tree-row hover is suppressed in both
+  trees; ending or cancelling that capture re-resolves hover from the current
+  pointer and published hit map.
 - After every recomposition (state change, overlay open/close, scroll, panel
   drag, scale or theme change, resize end) the Controller re-checks, with one
   O(1) lookup, that the cell under the last known pointer position still resolves to
   the hovered id (tree parts normalize to their row id in O(1), §26.4); if not, or if the target no longer exists, hover is cleared.
-  A recomposition never acquires a new target without a pointer motion.
+  A recomposition never acquires a new target without a pointer motion, except
+  when a captured Features playhead ends or is cancelled: then hover is resolved
+  once from the current pointer and published semantic target, never from a
+  saved row or slot.
 - A redraw is requested only when the stored value changes (`None` → `Some`,
   `Some(a)` → `Some(b)`, `Some` → `None`). Motion inside one target requests
   nothing. Hover wakes no timer and adds no periodic redraw.
@@ -990,6 +995,8 @@ Same for Surfaces
 
 `Profile` identifies the section used by the extrusion.
 
+Extrude accepts one planar bounded face for Solid and a planar open wire or closed boundary for Surface. A face chosen for Surface sweeps all its boundary wires without caps. A wire or edge profile is chosen with a supporting planar face; the candidate label identifies that face and its effective normal defines default sweep direction. A direction tangent to that supporting plane is invalid for this profile contract. Typed profile, Along and target references are chosen through the existing selection-list controls; their modal does not enable viewport picking. Up to accepts one planar bounded face or datum plane; the entire swept section must reach its target trim. Surface Add forms the regular union of compatible sheets, welding shared boundaries and removing overlapping area once. Surface Remove subtracts overlapping area on the same supporting surface; a transverse line intersection removes no area. A nonmanifold result or an operation changing no target is rejected. Solid targets are bodies; Surface targets are surfaces.
+
 `[Select…       ]` is the selection field.
 
 ---
@@ -1039,6 +1046,13 @@ position MUST be kept.
 
 `Offset` optionally shifts the termination relative to that target. It is the
 last child of `Extend` (`╰╴`).
+
+Enabling Up to Offset reveals one unsigned formula-capable length below Offset. Its magnitude is a clearance toward the start, measured along the extrusion direction. Zero terminates at the target.
+
+```text
+│ ╰╴■ Offset                  │
+│   ╰╴Dist  [0.0 mm         ☰]│
+```
 
 ### Through all
 
@@ -1219,6 +1233,10 @@ When enabled, every applicable target is used.
 
 When disabled, `Targets` appears so the user can explicitly choose which
 existing entities are affected.
+
+---
+
+Blind depth is measured from the displaced start. Symetric uses the main extent as a per-side reach about the displaced start, so Blind depth D produces total depth 2D before end offsets; the independently defined second side is inactive. A Blind End Offset extends/retracts the nominal endpoint in that side's orientation. An Up to End Offset replaces that endpoint with the selected target station. Main Up to Offset and unsigned second-side End Offset retract toward the start. A Start Up to target must be parallel to the profile plane and translates the start section; a tilted start target is rejected. Tilted main/second termination targets remain permitted. Through all Invert reverses only the main reference direction. Along is used only while Blind is active.
 
 ---
 
@@ -2311,6 +2329,10 @@ The UI specification does not itself define the expression evaluator.
 
 ---
 
+Formula accepts `#Name := expression` to name or explicitly redefine a parameter, or an expression alone. Names use ASCII letters/underscore followed by letters/digits/underscore and are case-sensitive. Names and stable parameter identities are distinct. Changing only the header name of an existing field binding renames that identity; a colliding name is rejected. Formula OK accepts only the owning command draft. Command OK publishes its named definitions and reachable active bindings atomically; Cancel discards them. In existing non-Extrude panels, OK may publish explicitly named definitions but creates no CAD feature. Newly created standalone definitions belong to the document; updating an existing definition preserves its original owner and dependency restrictions.
+
+---
+
 # 23. Enter Name and Rename
 
 Exact references:
@@ -2354,6 +2376,10 @@ selection meaning; the second opens the modal. No keyboard shortcut opens
 `Rename` in M2.20; one may be added later only after it is documented here.
 Opening, editing (caret, §5.11), OK/Cancel and focus restoration follow the
 common modal interaction above; Cancel keeps the old name.
+
+---
+
+Utilities > Properties opens the Extrude operation named by the currently focused operation row in Features. This target is independent of selected output entities, so an operation with zero or consumed outputs remains editable. With no focused Features operation, or a focused non-Extrude operation, Properties opens no editor and reports an ordinary contextual status. Its stable feature and parameter identities are retained. OK replaces that feature and recomputes affected following history atomically; Cancel leaves it unchanged. Double-click remains Rename.
 
 ---
 
@@ -2869,7 +2895,7 @@ identity and regain their visual when shown.
 |---|---|---|---|---|
 | Continuing ancestor on this row | `│` | `│` | `┃` | `┃` |
 | Non-last connector | `├` | `╞` | `┣` | `┣` |
-| Last leaf connector + tail | `╰╴` | `╘╸` | `┗╸` | `┗╸` |
+| Last leaf connector + tail | `╰╴` | `╘ ` | `┗╸` | `┗╸` |
 | Last branch connector before handle | `╰` | `╘` | `┗` | `┗` |
 | Right frame, Color off | `║` | `╣` | `║` | `╣` |
 | Right frame, Color on | `│` | `╡` | `│` | `╡` |
@@ -2880,7 +2906,9 @@ selection alone adds no root marker. Names, expansion handles, squares, spaces,
 left frame and all unrelated rows/borders stay unchanged. The hierarchy table
 uses Text ink in all four palettes; right frame stays Contour. A selected
 inline-host row follows this table, but its horizontal playhead stays `─`.
-Do not apply the tree `╘╸` rule to Action Box `╘ ` replacements.
+For a hovered last leaf, the tree tail cell is blank. The selected-tree `┗╸`
+form is reserved for selection; Action Box hover continues to follow its own
+connector-slot rule in §5.12.
 
 The exact supplied 25-cell rows, preserving `╸`, are:
 
@@ -2890,7 +2918,7 @@ Normal
 ║ │ ╰╴Extrude_Cut_Center║
 Hovered (each row independently)
 ║ │ ╞ Extrude_Base      ╣
-║ │ ╘╸Extrude_Cut_Center╣
+║ │ ╘ Extrude_Cut_Center╣
 Selected
 ║ ┃ ┣ Extrude_Base      ║
 ║ ┃ ┗╸Extrude_Cut_Center║
@@ -2928,6 +2956,17 @@ slots and routing policy atomically. Preserve the controller's owned capture
 identity/origin and rebind only the matching drag's newly published generation;
 unrelated map changes cancel capture as in M4.2. Release, focus/pointer loss,
 overlays, scale and document replacement retain their cancellation rules.
+
+While a Features playhead drag is captured, suppress row-hover glyphs in both
+Features and Elements. Clear any tree hover when the capture begins; pointer
+movement across rows or between the trees must not acquire tree hover. This
+applies to standalone and collapsed-folder inline playheads. Use the existing
+captured `Separator::Playhead` state as the sole authority; do not add a second
+suppression flag. Selection glyphs, focus, expansion, insertion anchors and
+playhead movement remain unchanged. On release or cancellation, resolve hover
+again from the current pointer against the current published semantic map, so a
+reused slot can only hover its current target. Ordinary pointer motion without
+playhead capture keeps the existing hover behavior.
 
 Required glyphs are `─ │ ├ ╰ ╴ ╞ ╘ ╸ ┃ ┣ ┗ ║ ╣ ╡ …`, plus existing controls
 and Color frame glyphs. Static inspection on 2026-10-26 confirms all occur in
@@ -3162,8 +3201,8 @@ Current menu:
 
 ```text
 ╭─View──────────────╮
-│ ◀  Perspective  ▶ │
-│ ◀  Wireframe    ▶ │
+│ ◀ Orthographic  ▶ │
+│ ◀  Hidden Line  ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ Theme [ ◑ Dark  ] │
 │ □ Color           │
@@ -3191,6 +3230,9 @@ Projection selector states:
 ◀ Orthographic  ▶
 ```
 
+Every new application window starts with Orthographic selected. Perspective
+remains available as the adjacent selector state; the choice is per-window.
+
 Display-style states:
 
 ```text
@@ -3209,7 +3251,7 @@ UI Scale states (`Application_Menu_Bar.txt`):
 │ UI Scale    80% ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ UI Scale ◀ 120% ▶ │
-│ UI Scale ◀ 140%  │
+│ UI Scale ◀ 140%   │
 ```
 
 `UI Scale` is a bounded selector (§5.2) over four displayed labels. At 80% the
@@ -3241,8 +3283,8 @@ to 12×27, 16×36, 20×45 and 24×54 px respectively. The new default label is
   raised to the existing minimum `k = 2`, duplicating other presets, so it is
   not offered.
 - `100%` is the default displayed label (factor 80%). New application, renderer, UI shell and View-menu states
-  use Dark theme, Color unchecked and Wireframe shading. The initial renderer therefore draws white
-  foreground on a black background and uses wireframe before a View-menu value is changed.
+  use Dark theme, Color unchecked, Orthographic projection and Hidden Line shading. The initial renderer therefore draws white
+  foreground on a black background and uses hidden-line display before a View-menu value is changed.
 - When the cell size changes (a step that changes `effective_k`, or the window
   moving to another monitor, a resolution or display-scale change, or entering or
   leaving fullscreen) the whole UI is recomposed in one atomic transition
@@ -3284,8 +3326,8 @@ does not introduce a separate state colour. Color-on single-stroke contours
 retain all cell coordinates and hit targets. Hover `╞`/`╡`/`╘` remains the
 approved stroke-form exception and inherits the original role.
 
-The seven display-style states remain in the order shown above. Wireframe is the
-startup state; navigation remains cyclic in both directions. Points shows mesh
+The seven display-style states remain in the order shown above. Hidden Line is
+the startup state; navigation remains cyclic in both directions. Points shows mesh
 vertices; Wireframe shows mesh edges, including triangulation. Line shows only
 visible solid geometry contour and feature edges. Hidden Line shows the same
 geometry edges solid where visible and dashed where occluded, including when

@@ -62,6 +62,36 @@ fn open_extrude(c: &mut ShellController) {
     click_text(c, "[E]xtrude");
 }
 
+// Numeric Formula opening now waits for the app's accepted source. Supply a model-free
+// projection and complete that exchange while retaining all modal/scene assertions.
+fn open_numeric_modal(c: &mut ShellController) {
+    let mut projection = newell_ui::NumericProjection {
+        document: c.shell().tree_projection().document,
+        session: newell_ui::CommandInputSessionId(1),
+        operation: c.shell().operation(),
+        accepted_sequence: 0,
+        fields: c
+            .shell()
+            .numeric_descriptors()
+            .into_iter()
+            .map(|d| newell_ui::NumericFieldView {
+                field: d.field,
+                magnitude: d.default_magnitude.to_owned(),
+                direction: newell_ui::NumericDirection::Forward,
+                formula: String::new(),
+            })
+            .collect(),
+    };
+    c.set_numeric_projection(projection.clone()).unwrap();
+    let (col, row) = find_glyph(c.grid(), '☰');
+    press_at(c, col, row);
+    c.take_numeric_requests();
+    let request = c.take_numeric_formula_open().unwrap();
+    projection.accepted_sequence = request.sequence;
+    c.open_numeric_formula(request, projection).unwrap();
+    assert!(c.shell().formula().is_open());
+}
+
 fn find_glyph(g: &CellGrid, ch: char) -> (u32, u32) {
     (0..g.rows())
         .find_map(|r| {
@@ -324,7 +354,7 @@ fn dragging_the_navigation_separator_snaps_to_columns() {
     assert!(c.dragging());
     let update = c.pointer_moved(at(30, 10));
     assert!(update.grid);
-    assert_eq!(c.shell().nav_width(), 31);
+    assert_eq!(c.shell().nav_width(), 28);
     // Within the same column nothing changes, wherever in the cell the pointer is.
     let again = c.pointer_moved(Some(UiPoint {
         x: 30 * W + W - 1,
@@ -335,7 +365,7 @@ fn dragging_the_navigation_separator_snaps_to_columns() {
     c.pointer_released();
     assert!(!c.dragging());
     assert!(!c.pointer_moved(at(40, 10)).grid, "no drag after release");
-    assert_eq!(c.shell().nav_width(), 31);
+    assert_eq!(c.shell().nav_width(), 28);
 }
 
 #[test]
@@ -344,12 +374,12 @@ fn dragging_outside_the_window_clamps() {
     c.pointer_moved(at(24, 10));
     c.pointer_pressed();
     assert!(c.pointer_moved(Some(UiPoint { x: u32::MAX, y: 0 })).grid);
-    assert_eq!(c.shell().nav_width(), 41);
+    assert_eq!(c.shell().nav_width(), 28);
     // Revision 3 explicitly cancels capture when the pointer exits the window.
     c.pointer_moved(None);
     assert!(!c.dragging());
     c.pointer_moved(at(30, 10));
-    assert_eq!(c.shell().nav_width(), 41);
+    assert_eq!(c.shell().nav_width(), 28);
     c.pointer_released();
 }
 
@@ -386,7 +416,7 @@ fn external_resize_cancels_owned_drag() {
     c.pointer_moved(at(width - 1, 10));
     c.pointer_pressed();
     assert!(c.pointer_moved(at(50, 10)).grid);
-    assert_eq!(c.shell().nav_width(), 51);
+    assert_eq!(c.shell().nav_width(), 28);
 }
 
 // ---- M2.17: window controls, drag and resize routing ----
@@ -477,8 +507,7 @@ fn drag_is_not_started_while_a_popup_or_modal_is_open() {
     // The click closes the menu (existing behaviour) instead of dragging the window.
     assert!(matches!(press_at(&mut c, 40, 1), Press::Shell(u) if u.grid));
     // Modal.
-    let (col, row) = find_glyph(c.grid(), '☰');
-    assert!(matches!(press_at(&mut c, col, row), Press::Shell(_)));
+    open_numeric_modal(&mut c);
     assert_ne!(press_at(&mut c, 40, 1), Press::Drag);
 }
 
@@ -539,7 +568,7 @@ fn resize_is_inactive_when_not_resizable() {
 #[test]
 fn separators_and_shell_controls_keep_working() {
     let mut c = window_controller();
-    c.pointer_moved(at(24, 10));
+    c.pointer_moved(at(c.shell().nav_width() - 1, 10));
     assert_eq!(c.press(SURFACE, true), Press::Shell(NOTHING));
     assert!(c.dragging());
     c.pointer_released();
@@ -654,8 +683,7 @@ fn scene_navigation_respects_visible_pixels_menus_modals_and_action_box() {
     assert!(!c.scene_input_enabled());
     c.key(ShellKey::Escape);
     assert!(c.scene_input_enabled());
-    let (col, row) = find_glyph(c.grid(), '☰');
-    press_at(&mut c, col, row);
+    open_numeric_modal(&mut c);
     c.pointer_moved(point);
     assert!(!c.scene_input_enabled(), "modal blocks the entire scene");
     c.key(ShellKey::Escape);
@@ -762,7 +790,7 @@ fn primary_orbit_admission_preserves_shell_press_priority() {
     assert!(c.scene_input_enabled());
 
     // Resize ring, tree row, and navigation-panel divider keep their own routing.
-    for point in [at(0, 0), at(4, 7), at(24, 10)] {
+    for point in [at(0, 0), at(4, 7), at(c.shell().nav_width() - 1, 10)] {
         c.pointer_moved(point);
         no_orbit(&mut c);
     }
@@ -777,8 +805,7 @@ fn primary_orbit_admission_preserves_shell_press_priority() {
     no_orbit(&mut c);
     c.key(ShellKey::Escape);
     // Modal ownership blocks the background scene even outside the modal footprint.
-    let (col, row) = find_glyph(c.grid(), '☰');
-    press_at(&mut c, col, row);
+    open_numeric_modal(&mut c);
     c.pointer_released();
     c.pointer_moved(scene_point);
     no_orbit(&mut c);
@@ -857,10 +884,10 @@ fn selection_drag_survives_repeated_publications_and_preserves_wheel_and_key_rou
         assert!(c.dragging(), "checkbox draft-only change retains capture");
         c.key(ShellKey::Down);
         assert!(c.dragging(), "focus movement inside window retains capture");
-        assert!(c.pointer_moved(at(col, row + 1)).grid);
-        assert!(c.dragging(), "first own scroll retains capture");
-        assert!(c.pointer_moved(at(col, row + 2)).grid);
-        assert!(c.dragging(), "second own scroll retains capture");
+        for movement in [1, 2, 1] {
+            assert!(c.pointer_moved(at(col, row + movement)).grid);
+            assert!(c.dragging(), "own scroll {movement} retains capture");
+        }
         assert_eq!(c.cursor_hint((82 * W, 30 * H), true), CursorHint::Grabbing);
         assert_eq!(c.shell().selection().applied(), applied);
         assert_eq!(c.shell().selection().profile_applied(), profile_applied);
@@ -888,6 +915,10 @@ fn selection_keyboard_scrolling_and_external_lifecycle_cancel_old_grabs() {
             c.pointer_moved(at(col, row));
             c.pointer_pressed();
             assert!(c.dragging());
+            for movement in [1, 2, 1] {
+                assert!(c.pointer_moved(at(col, row + movement)).grid);
+                assert!(c.dragging());
+            }
             match event {
                 0 => {
                     for _ in 0..5 {

@@ -7,3 +7,5 @@
 
 mod harness;
 mod kernel;
+
+mod extrude_feasibility;

@@ -62,6 +62,7 @@ pub(crate) struct Scene {
     occlusions: Vec<SceneViewport>,
     camera: CameraSnapshot,
     display_mode: SceneDisplayMode,
+    selected: bool,
 }
 
 impl Scene {
@@ -72,7 +73,7 @@ impl Scene {
     ) -> Self {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene camera uniform"),
-            size: 96,
+            size: 112,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -84,7 +85,7 @@ impl Scene {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(96),
+                    min_binding_size: wgpu::BufferSize::new(112),
                 },
                 count: None,
             }],
@@ -129,7 +130,7 @@ impl Scene {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(96),
+                        min_binding_size: wgpu::BufferSize::new(112),
                     },
                     count: None,
                 },
@@ -204,6 +205,7 @@ impl Scene {
             occlusions: Vec::new(),
             camera: CameraSnapshot::default(),
             display_mode: SceneDisplayMode::default(),
+            selected: false,
         }
     }
 
@@ -229,6 +231,10 @@ impl Scene {
     pub(crate) fn set_camera(&mut self, device: &wgpu::Device, camera: CameraSnapshot) {
         self.camera = camera;
         self.rebuild_geometry_lines(device);
+    }
+
+    pub(crate) fn set_selected(&mut self, selected: bool) {
+        self.selected = selected;
     }
 
     pub(crate) fn set_display_mode(&mut self, mode: SceneDisplayMode) {
@@ -411,24 +417,7 @@ impl Scene {
         if self.index_count == 0 || self.viewport.width == 0 || self.viewport.height == 0 {
             return;
         }
-        let mut bytes = Vec::with_capacity(96);
-        for column in self.camera.view_projection() {
-            for value in column {
-                bytes.extend_from_slice(&value.to_ne_bytes());
-            }
-        }
-        // Directional light as a vec4, aligned with the WGSL uniform layout.
-        for value in [0.4_f32, 0.6, 0.7, self.display_mode.shader_id() as f32] {
-            bytes.extend_from_slice(&value.to_ne_bytes());
-        }
-        for value in [
-            self.viewport.width as f32,
-            self.viewport.height as f32,
-            0.0,
-            0.0,
-        ] {
-            bytes.extend_from_slice(&value.to_ne_bytes());
-        }
+        let bytes = scene_uniforms(self.camera, self.display_mode, self.viewport, self.selected);
         queue.write_buffer(&self.uniform, 0, &bytes);
         let depth_only = matches!(
             self.display_mode,
@@ -881,6 +870,31 @@ fn scene_pipeline(
     })
 }
 
+fn scene_uniforms(
+    camera: CameraSnapshot,
+    display_mode: SceneDisplayMode,
+    viewport: SceneViewport,
+    selected: bool,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(112);
+    for column in camera.view_projection() {
+        for value in column {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    // Directional light as a vec4, aligned with the WGSL uniform layout.
+    for value in [0.4_f32, 0.6, 0.7, display_mode.shader_id() as f32] {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    for value in [viewport.width as f32, viewport.height as f32, 0.0, 0.0] {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    for value in [if selected { 1.10_f32 } else { 1.0 }, 0.0, 0.0, 0.0] {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
 fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
@@ -923,6 +937,173 @@ mod tests {
         assert!((start - 0.5).abs() < 0.001);
         assert_eq!(end, 1.0);
         assert!((length - 128.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn selection_uniform_is_aligned_and_does_not_change_camera_light_or_viewport() {
+        let camera = CameraSnapshot::default();
+        let viewport = SceneViewport::new(4, 8, 256, 192);
+        let plain = super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, false);
+        let selected = super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, true);
+        assert_eq!(plain.len(), 112);
+        assert_eq!(selected.len(), 112);
+        assert_eq!(&plain[..96], &selected[..96]);
+        assert_eq!(&plain[96..100], &1.0_f32.to_ne_bytes());
+        assert_eq!(&selected[96..100], &1.1_f32.to_ne_bytes());
+        assert_eq!(&selected[100..], &[0; 12]);
+        assert_eq!(
+            selected,
+            super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, true)
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn selection_is_ten_percent_once_in_every_mode_and_restores_original_pixels() {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter =
+            block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let mesh = NewellSolid::box_solid(1.0, 1.0, 1.0)
+            .unwrap()
+            .tessellate(0.05)
+            .unwrap();
+        for format in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ] {
+            let mut scene = Scene::new(&device, format, (256, 192));
+            scene.set_viewport(&device, SceneViewport::new(0, 0, 256, 192));
+            scene.set_camera(&device, three_quarter_camera(false));
+            scene.set_mesh(&device, mesh.clone());
+            scene.set_occlusions(vec![SceneViewport::new(100, 75, 25, 20)]);
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("selection regression target"),
+                size: wgpu::Extent3d {
+                    width: 256,
+                    height: 192,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let render = |scene: &Scene| {
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("selection regression clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.005,
+                                g: 0.01,
+                                b: 0.015,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                }));
+                scene.draw(&queue, &mut encoder, &view);
+                let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("selection readback"),
+                    size: 256 * 192 * 4,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                encoder.copy_texture_to_buffer(
+                    target.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(256 * 4),
+                            rows_per_image: Some(192),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: 256,
+                        height: 192,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                queue.submit(Some(encoder.finish()));
+                readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                device.poll(wgpu::PollType::Wait).unwrap();
+                let bytes = readback.slice(..).get_mapped_range().to_vec();
+                readback.unmap();
+                bytes
+            };
+            for mode in [
+                SceneDisplayMode::Points,
+                SceneDisplayMode::Wireframe,
+                SceneDisplayMode::Line,
+                SceneDisplayMode::HiddenLine,
+                SceneDisplayMode::NoShading,
+                SceneDisplayMode::Shaded,
+                SceneDisplayMode::Default,
+            ] {
+                scene.set_display_mode(mode);
+                scene.set_selected(false);
+                let plain = render(&scene);
+                scene.set_selected(true);
+                let selected = render(&scene);
+                scene.set_selected(true);
+                assert_eq!(selected, render(&scene), "no accumulation: {mode:?}");
+                scene.set_selected(false);
+                assert_eq!(plain, render(&scene), "exact restore: {mode:?}");
+                let background = &plain[..4];
+                let mut geometry = 0;
+                for (index, (a, b)) in plain
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(selected.as_chunks::<4>().0)
+                    .enumerate()
+                {
+                    assert_eq!(a[3], b[3]);
+                    let x = index % 256;
+                    let y = index / 256;
+                    if a == background || ((100..125).contains(&x) && (75..95).contains(&y)) {
+                        assert_eq!(a, b, "background/occlusion unchanged: {mode:?}");
+                        continue;
+                    }
+                    geometry += 1;
+                    for channel in 0..3 {
+                        let decode = |value: u8| {
+                            let c = f64::from(value) / 255.0;
+                            if format.is_srgb() {
+                                if c <= 0.04045 {
+                                    c / 12.92
+                                } else {
+                                    ((c + 0.055) / 1.055).powf(2.4)
+                                }
+                            } else {
+                                c
+                            }
+                        };
+                        assert!(
+                            (decode(b[channel]) - (decode(a[channel]) * 1.10).min(1.0)).abs()
+                                < 0.012,
+                            "linear RGB multiplier: {format:?}/{mode:?} {a:?} -> {b:?}"
+                        );
+                    }
+                }
+                assert!(geometry > 0, "mode must draw geometry: {mode:?}");
+            }
+        }
     }
 
     #[test]

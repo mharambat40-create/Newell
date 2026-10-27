@@ -271,8 +271,8 @@ impl ViewMock {
 impl Default for ViewMock {
     fn default() -> Self {
         Self {
-            projection: 0,
-            shading: 2,
+            projection: 1,
+            shading: 3,
             scale: scale_index(DEFAULT_SCALE_FACTOR_PERCENT),
             theme: ThemeChoice::Dark,
             color_enabled: false,

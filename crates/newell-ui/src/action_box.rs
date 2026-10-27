@@ -81,6 +81,7 @@ enum Item {
         width: u32,
         field: WidgetId,
         formula: WidgetId,
+        descriptor: Option<crate::NumericFieldDescriptor>,
         text: String,
     },
     TextField {
@@ -242,7 +243,7 @@ impl Row {
     }
 
     /// `[text      ☰]` up to the right border: the field is slot 0, `☰]` slot 1.
-    pub(crate) fn numeric(mut self, key: u32, text: &str) -> Self {
+    pub(crate) fn numeric(mut self, key: u32, descriptor: crate::NumericFieldDescriptor) -> Self {
         self.note(key);
         let (field, formula) = (self.id(key, 0), self.id(key, 1));
         let (col, width) = (self.col, self.rest());
@@ -254,7 +255,8 @@ impl Row {
                 width,
                 field,
                 formula,
-                text: text.to_owned(),
+                descriptor: Some(descriptor),
+                text: String::new(),
             },
         )
     }
@@ -300,6 +302,7 @@ impl Row {
                 width,
                 field,
                 formula,
+                descriptor: None,
                 text,
             },
         )
@@ -357,17 +360,6 @@ impl ActionBox {
         self.draw_with(grid, ctx, rect, None).0
     }
 
-    /// The mock text of numeric field `id` (`+|0.0 mm`), if this box has such a field.
-    pub(crate) fn numeric_text(&self, id: WidgetId) -> Option<&str> {
-        self.rows
-            .iter()
-            .flat_map(|r| &r.items)
-            .find_map(|item| match item {
-                Item::Numeric { field, text, .. } if *field == id => Some(text.as_str()),
-                _ => None,
-            })
-    }
-
     /// `true` when `(col, row)`, relative to this box, is the visible direction marker of
     /// numeric field `id`.  The marker is one cell after the opening `[`.
     pub(crate) fn numeric_sign_at(&self, id: WidgetId, col: u32, row: u32) -> bool {
@@ -376,11 +368,11 @@ impl ActionBox {
                 Item::Numeric {
                     col: start,
                     field,
-                    text,
+                    descriptor,
                     ..
                 } => {
                     *field == id
-                        && matches!(text.as_bytes().get(0..2), Some(b"+|" | b"-|"))
+                        && descriptor.is_some_and(|d| d.directional)
                         && col == start.saturating_add(1)
                 }
                 _ => false,
@@ -556,10 +548,12 @@ fn draw_items(
                 formula,
                 text,
                 kind,
-            } => match fields
-                .filter(|_| *kind == FieldKind::Edit)
-                .and_then(|f| f.view(*field, text))
-            {
+                descriptor,
+            } => match descriptor.map(|d| {
+                fields
+                    .and_then(|f| f.view(*field, d))
+                    .unwrap_or_else(|| crate::widgets::default_view(d))
+            }) {
                 Some(view) => {
                     draw_numeric_view(grid, ctx, at(*col, *width), *field, *formula, state, &view);
                 }
@@ -621,7 +615,7 @@ mod tests {
             Row::new(BASE).text("│ Profile     ").select(0, 0).end(),
             Row::new(BASE)
                 .text("│ │ Depth   ")
-                .numeric(1, "+|0.0 mm")
+                .numeric(1, crate::numeric::field(crate::ActionOperation::Extrude, 4))
                 .end(),
             Row::new(BASE)
                 .text("│ ")
@@ -723,7 +717,13 @@ mod color_tests {
             Row::new(10)
                 .contour("│")
                 .text(" │ Depth ")
-                .numeric(1, "+|3.0 mm")
+                .numeric(
+                    1,
+                    crate::NumericFieldDescriptor {
+                        default_magnitude: "3.0",
+                        ..crate::numeric::field(crate::ActionOperation::Extrude, 4)
+                    },
+                )
                 .end(),
         );
         let mut grid = CellGrid::new(31, 4).unwrap();

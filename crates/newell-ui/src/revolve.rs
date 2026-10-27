@@ -41,13 +41,6 @@ const K_SECOND_MODE: u32 = 18;
 const K_SECOND_ANGLE: u32 = 19;
 const K_SECOND_TARGET: u32 = 20;
 
-const NUMERIC_KEYS: [u32; 5] = [
-    K_ANGLE,
-    K_START_ANGLE,
-    K_END_ANGLE,
-    K_SECOND_ANGLE,
-    crate::create_box::K_NESTED_DIST,
-];
 const SELECT_KEYS: [u32; 8] = [
     K_PROFILE,
     K_AXIS,
@@ -58,10 +51,6 @@ const SELECT_KEYS: [u32; 8] = [
     K_NESTED_TARGET,
     K_MERGE_TARGETS,
 ];
-
-/// Mock field texts (`[+|0.0 deg      ☰]`, `[0.0 deg      ☰]`).
-const ANGLE: &str = "+|0.0 deg";
-const ANGLE_UNSIGNED: &str = "0.0 deg";
 
 /// The editable mock values of the Revolve box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,14 +134,17 @@ impl RevolveUi {
                 self.row()
                     .contour("│")
                     .text(" │ Angle   ")
-                    .numeric(K_ANGLE, ANGLE)
+                    .numeric(
+                        K_ANGLE,
+                        crate::numeric::field(crate::ActionOperation::Revolve, K_ANGLE),
+                    )
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => b.push(
                 self.row()
                     .contour("│")
                     .text(" │ Target    ")
-                    .select(K_TARGET, v.target.count())
+                    .select(K_TARGET, self.selection_count(K_TARGET, v.target.count()))
                     .end(),
             ),
         }
@@ -171,8 +163,11 @@ impl RevolveUi {
                 "│ │ ╰╴",
                 (K_START_ANGLE, K_START_TARGET),
                 v.start_mode,
-                v.start_target,
-                ("Angle ", ANGLE),
+                self.selection_count(K_START_TARGET, v.start_target.count()),
+                (
+                    "Angle ",
+                    crate::numeric::field(crate::ActionOperation::Revolve, K_START_ANGLE),
+                ),
             );
         } else {
             b.push(
@@ -199,8 +194,11 @@ impl RevolveUi {
                     "│ │ ╰╴",
                     (K_END_ANGLE, K_END_TARGET),
                     v.end_mode,
-                    v.end_target,
-                    ("Angle   ", ANGLE_UNSIGNED),
+                    self.selection_count(K_END_TARGET, v.end_target.count()),
+                    (
+                        "Angle   ",
+                        crate::numeric::field(crate::ActionOperation::Revolve, K_END_ANGLE),
+                    ),
                 );
             } else {
                 b.push(
@@ -260,7 +258,10 @@ impl RevolveUi {
                 self.row()
                     .contour("│")
                     .text("   ╰╴Angle ")
-                    .numeric(K_SECOND_ANGLE, ANGLE)
+                    .numeric(
+                        K_SECOND_ANGLE,
+                        crate::numeric::field(crate::ActionOperation::Revolve, K_SECOND_ANGLE),
+                    )
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => {
@@ -268,7 +269,10 @@ impl RevolveUi {
                     self.row()
                         .contour("│")
                         .text("   │ Target  ")
-                        .select(K_SECOND_TARGET, v.second_target.count())
+                        .select(
+                            K_SECOND_TARGET,
+                            self.selection_count(K_SECOND_TARGET, v.second_target.count()),
+                        )
                         .end(),
                 );
                 push_nested_end(
@@ -276,8 +280,11 @@ impl RevolveUi {
                     self.base(),
                     v.nested_end,
                     v.nested_mode,
-                    v.nested_target,
-                    ("Angle ", ANGLE_UNSIGNED),
+                    self.selection_count(K_NESTED_TARGET, v.nested_target.count()),
+                    (
+                        "Angle ",
+                        crate::numeric::field(crate::ActionOperation::Revolve, 24),
+                    ),
                 );
             }
         }
@@ -300,14 +307,17 @@ impl ActionBoxUi for RevolveUi {
             self.row()
                 .contour("│")
                 .text(" Profile     ")
-                .select(K_PROFILE, v.profile.count())
+                .select(
+                    K_PROFILE,
+                    self.selection_count(K_PROFILE, v.profile.count()),
+                )
                 .end(),
         );
         b.push(
             self.row()
                 .contour("│")
                 .text(" Axis        ")
-                .select(K_AXIS, v.axis.count())
+                .select(K_AXIS, self.selection_count(K_AXIS, v.axis.count()))
                 .end(),
         );
         if v.full {
@@ -321,7 +331,12 @@ impl ActionBoxUi for RevolveUi {
             self.partial(&mut b);
         }
         if v.result != ExtrudeResultMode::New {
-            push_merge(&mut b, self.base(), v.merge_with_all, v.merge_targets);
+            push_merge(
+                &mut b,
+                self.base(),
+                v.merge_with_all,
+                self.selection_count(K_MERGE_TARGETS, v.merge_targets.count()),
+            );
         }
         push_footer(&mut b, self.base());
         Some(b)
@@ -374,10 +389,40 @@ impl ActionBoxUi for RevolveUi {
         self.reopen();
     }
 
-    fn numeric_keys(&self) -> &'static [u32] {
-        &NUMERIC_KEYS
+    fn numeric_operation(&self) -> crate::ActionOperation {
+        crate::ActionOperation::Revolve
     }
 
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor> {
+        use crate::SelectionFieldRole::*;
+        if !SELECT_KEYS.contains(&key) {
+            return None;
+        }
+        let role = match key {
+            K_MERGE_TARGETS => MergeScope,
+            K_AXIS => Axis,
+            K_TARGET | K_START_TARGET | K_END_TARGET | K_SECOND_TARGET | K_NESTED_TARGET => {
+                SurfaceTarget
+            }
+            _ => EntityReference,
+        };
+        Some(crate::SelectionFieldDescriptor {
+            field: crate::SelectionFieldKey {
+                operation: crate::ActionOperation::Revolve,
+                key,
+            },
+            role,
+            ordered: false,
+            max_count: if matches!(role, MergeScope | Bodies) {
+                None
+            } else {
+                Some(1)
+            },
+        })
+    }
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>) {
+        self.selection_counts = Some(counts.clone());
+    }
     fn select_keys(&self) -> &'static [u32] {
         &SELECT_KEYS
     }

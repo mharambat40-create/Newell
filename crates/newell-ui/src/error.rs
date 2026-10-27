@@ -11,6 +11,11 @@ use thiserror::Error;
 /// Errors produced while constructing validated UI data structures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum UiError {
+    /// Numeric projection namespaces, operation, field inventory, or delivery payload mismatch.
+    #[error("invalid numeric projection")]
+    InvalidNumericProjection,
+    #[error("invalid selection data")]
+    InvalidSelection,
     #[error("invalid tree projection")]
     InvalidTreeProjection,
     #[error("projection generation exhausted")]

@@ -14,7 +14,7 @@ expression: snapshot(&s)
 ║│ Export    │_Hole     ║                         ╭─Extrude─────┬───────────────╮║
 ║│ Option    │Cut_Center║                         │    Solid    │    Surface    │║
 ║╰───────────╯er        ║                         ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ─────────────────── ║                         │  New  │   Add   ┆  Remove   │║
+║ │ ────────────────────║                         │  New  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║                         ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║                         │ Profile     [Select…       ]│║
 ║                       ║                         │ Extend   ◀     Blind     ▶  │║

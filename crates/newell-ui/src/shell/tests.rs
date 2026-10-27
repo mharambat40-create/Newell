@@ -253,7 +253,7 @@ fn only_one_menu_is_open_and_outside_clicks_close_it() {
     assert!(!s.command_bar.is_active() && s.overlays.is_empty());
     // A click on a control while a menu is open only closes the menu.
     click_text(&mut s, "File");
-    let before = s.extrude;
+    let before = s.extrude.clone();
     click_text(&mut s, "Symetric");
     assert_eq!(s.extrude, before);
     assert!(!s.menu_bar.is_active());
@@ -262,9 +262,13 @@ fn only_one_menu_is_open_and_outside_clicks_close_it() {
 #[test]
 fn view_menu_rows_cycle_and_toggle_without_closing() {
     let mut s = shell();
+    assert!(
+        !s.perspective(),
+        "new shells start in Orthographic projection"
+    );
     click_text(&mut s, "View");
     let g = s.compose().unwrap();
-    assert!(has(&g, "Perspective") && has(&g, "Wireframe") && has(&g, "■ Tree panel"));
+    assert!(has(&g, "Orthographic") && has(&g, "Hidden Line") && has(&g, "■ Tree panel"));
     assert!(has(&g, "□ Grid Overlay"));
 
     click_text(&mut s, "Grid Overlay");
@@ -272,18 +276,18 @@ fn view_menu_rows_cycle_and_toggle_without_closing() {
     assert!(has(&g, "■ Grid Overlay"));
     assert!(s.menu_bar.open_menu().is_some());
 
-    let (col, row) = find(&g, "Perspective").unwrap();
+    let (col, row) = find(&g, "Orthographic").unwrap();
     // The `▶` of the row is its last cell before the padding.
     let next = (col..COLS).find(|&c| glyph(&g, c, row) == '▶').unwrap();
     click_at(&mut s, next, row);
-    assert!(has(&s.compose().unwrap(), "Orthographic"));
+    assert!(has(&s.compose().unwrap(), "Perspective"));
 }
 
 #[test]
 fn theme_pointer_and_keyboard_activation_keep_view_open_and_focused() {
     let mut s = shell();
     assert_eq!(s.theme(), ThemeChoice::Dark);
-    assert_eq!(s.shading(), 2);
+    assert_eq!(s.shading(), 3);
     click_text(&mut s, "View");
     let theme_id = BAR_IDS.item(2, 3);
 
@@ -418,7 +422,10 @@ fn keyboard_menu_navigation_mirrors_pointer_state() {
     s.key(ShellKey::Alt('v'));
     assert_eq!(s.menu_bar.open_menu(), Some(2));
     s.key(ShellKey::Right);
-    assert_eq!(s.view.projection, 1);
+    assert!(
+        s.perspective(),
+        "Right cycles startup Orthographic to Perspective"
+    );
     // Shading, UI Scale, Theme and Color precede Tree panel.
     keys(&mut s, &[ShellKey::Down; 5]);
     keys(&mut s, &[ShellKey::Enter]);
@@ -574,7 +581,7 @@ fn navigation_trees_start_as_in_the_reference() {
     assert!(text(&g, 8).contains("│ ├ Extrude_Base"));
     assert!(text(&g, 9).contains("│ ├ ■ Sketch_Hole"));
     assert!(text(&g, 10).contains("│ ╰╴Extrude_Cut_Center║"));
-    assert!(text(&g, 12).contains("│ ─────────────────── ║"));
+    assert!(text(&g, 12).contains("│ ────────────────────║"));
     assert!(text(&g, 20).contains("╰[+]Construct"));
     assert!(!has(&g, "Plane_XY"), "Construct starts collapsed");
 }
@@ -623,9 +630,8 @@ fn tree_leaf_click_selects_and_focuses_without_changing_the_tree() {
     assert!(click_text(&mut s, "Extrude_Base"));
     assert_eq!(s.expanded.clone(), before);
     assert_eq!(s.interaction().focused, Some(tree_id(Tree::Features, 3)));
-    assert_eq!(
-        s.selected,
-        Some(
+    assert!(
+        s.is_entity_target_selected(
             s.projection
                 .target(TreeTargetKind::Operation(OpaqueTreeId::new(2)))
         )
@@ -720,20 +726,14 @@ fn extrude_ok_closes_and_cancel_restores_the_opening_values() {
     );
 }
 
-const EXAMPLE_TXT: &str = include_str!("../../../../docs/ui_design/Interface_Exemple.txt");
-
-/// The Action Box of `Interface_Exemple.txt` (82 x 28): rows 9..25, columns 50..81. Reference
-/// row 19 is the hovered Starting Offset row (`README_UI.md` §25); the default shell has no
-/// pointer, so its two hover slots hold the normal `│`.
+/// The canonical New/Solid/Blind Extrude reference, without a retired shell dependency.
 fn example_box() -> Vec<String> {
-    let mut rows: Vec<String> = EXAMPLE_TXT
+    include_str!("../../../../docs/ui_design/Action_Box_Extrude.txt")
         .lines()
-        .skip(9)
+        .skip_while(|line| !line.starts_with("╭─Extrude"))
         .take(16)
-        .map(|l| l.chars().skip(50).take(31).collect())
-        .collect();
-    rows[9] = rows[9].replace(['╞', '╡'], "│");
-    rows
+        .map(str::to_owned)
+        .collect()
 }
 
 #[test]
@@ -1072,12 +1072,12 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     for &(needle, (c, r)) in &spots {
         assert_eq!(hit_at(&g, c, r).unwrap().widget_id, None, "{needle}");
     }
-    let base = (s.extrude, s.expanded.clone());
+    let base = (s.extrude.clone(), s.expanded.clone());
     for &(_, (c, r)) in &spots {
         assert!(!click_at(&mut s, c, r));
     }
     assert!(s.formula().is_open());
-    assert_eq!(base, (s.extrude, s.expanded.clone()));
+    assert_eq!(base, (s.extrude.clone(), s.expanded.clone()));
 
     // Keys go to the modal: base shortcuts do nothing, text is typed.
     assert!(!s.key(ShellKey::MenuBar) && !s.menu_bar.is_active());
@@ -1087,7 +1087,7 @@ fn modal_blocks_pointer_and_keyboard_to_the_base_shell() {
     s.key(ShellKey::Tab);
     assert_eq!(s.interaction().focused, s.formula().focus());
     assert!(s.formula().is_open());
-    assert_eq!(base, (s.extrude, s.expanded.clone()));
+    assert_eq!(base, (s.extrude.clone(), s.expanded.clone()));
 }
 
 #[test]
@@ -1516,7 +1516,15 @@ fn tiny_and_degenerate_grids_are_safe() {
 fn huge_grids_do_not_overflow() {
     let s = ShellState::new(u32::MAX, u32::MAX);
     assert!(s.compose().is_err());
-    let layout = Layout::new(u32::MAX, u32::MAX, PanelWidths::default(), u32::MAX, true, true, true);
+    let layout = Layout::new(
+        u32::MAX,
+        u32::MAX,
+        PanelWidths::default(),
+        u32::MAX,
+        true,
+        true,
+        true,
+    );
     assert!(layout.viewport.width() > 0);
     let _ = layout.action_panel(usize::MAX);
 }
@@ -1939,6 +1947,141 @@ fn selection_scrollbars_keep_semantic_ink_and_glyphs_in_every_theme_and_color_mo
                 assert_eq!(glyph(&bottom, x, y + 3), '┃');
                 assert!(s.scroll(i32::MAX));
                 assert_eq!(s.compose().unwrap(), grid);
+            }
+        }
+    }
+}
+
+fn numeric_projection(s: &ShellState, session: u64) -> crate::NumericProjection {
+    crate::NumericProjection {
+        document: s.tree_projection().document,
+        session: crate::CommandInputSessionId(session),
+        operation: s.operation(),
+        accepted_sequence: 0,
+        fields: s
+            .numeric_descriptors()
+            .iter()
+            .map(|d| crate::NumericFieldView {
+                field: d.field,
+                magnitude: d.default_magnitude.to_owned(),
+                direction: crate::NumericDirection::Forward,
+                formula: String::new(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn numeric_confirmation_attempts_are_distinct_exact_and_checked() {
+    let mut s = shell();
+    s.set_numeric_projection(numeric_projection(&s, 1)).unwrap();
+    let ok = WidgetId::new(ACTION_BASE + K_ACTIONS * crate::action_box::KEY_SLOTS);
+    s.activate_widget(ok);
+    let a = s.take_numeric_confirm().unwrap();
+    assert!(s.take_numeric_confirm().is_none());
+    assert_eq!(s.extrude.status, ExtrudeStatus::Editing);
+    assert!(s.finish_numeric_confirm(a, false).unwrap());
+    s.activate_widget(ok);
+    let b = s.take_numeric_confirm().unwrap();
+    assert_eq!(a.through_sequence, b.through_sequence);
+    assert_ne!(a.attempt, b.attempt);
+    assert!(!s.finish_numeric_confirm(a, false).unwrap());
+    assert_eq!(s.numeric_confirm, Some(b));
+    assert!(s.finish_numeric_confirm(b, true).unwrap());
+    assert_eq!(s.extrude.status, ExtrudeStatus::Confirmed);
+    assert!(!s.finish_numeric_confirm(b, true).unwrap());
+    let mut s = shell();
+    s.set_numeric_projection(numeric_projection(&s, 2)).unwrap();
+    s.numeric_attempt = u64::MAX;
+    s.activate_widget(ok);
+    assert!(s.take_numeric_confirm().is_none());
+    assert_eq!(
+        s.take_numeric_error(),
+        Some(crate::UiError::InteractionIdentityExhausted)
+    );
+    assert_eq!(s.extrude.status, ExtrudeStatus::Editing);
+}
+
+#[test]
+fn numeric_projections_are_qualified_and_do_not_replace_active_raw_or_emit_edits() {
+    let mut s = shell();
+    let mut p = numeric_projection(&s, 1);
+    p.fields[0].magnitude = "1.2".into();
+    p.fields[0].formula = "wall + 7.5 mm".into();
+    s.set_numeric_projection(p.clone()).unwrap();
+    assert!(s.take_numeric_requests().is_empty());
+    let id = WidgetId::new(ACTION_BASE + 4 * crate::action_box::KEY_SLOTS);
+    s.activate_widget(id);
+    s.key(ShellKey::Edit(EditKey::SelectAll));
+    s.key(ShellKey::Char('3'));
+    s.set_numeric_projection(p.clone()).unwrap();
+    assert_eq!(
+        s.fields()
+            .view(id, crate::numeric::field(ActionOperation::Extrude, 4))
+            .unwrap()
+            .body
+            .iter()
+            .collect::<String>(),
+        "3"
+    );
+    s.key(ShellKey::Escape);
+    assert!(s.take_numeric_requests().is_empty());
+    s.activate_widget(id);
+    s.key(ShellKey::Enter);
+    assert!(s.take_numeric_requests().is_empty());
+    let mut bad = p.clone();
+    bad.fields.push(bad.fields[0].clone());
+    assert!(s.set_numeric_projection(bad).is_err());
+    let mut newer = p.clone();
+    newer.session = crate::CommandInputSessionId(2);
+    s.set_numeric_projection(newer).unwrap();
+    assert!(!s.set_numeric_projection(p).unwrap());
+}
+
+#[test]
+fn numeric_active_contracts_match_every_extrude_and_revolve_branch() {
+    use crate::{ExtrudeOffsetMode as Mode, ExtrudeTermination as Term};
+    let mut s = shell();
+    for operation in [ActionOperation::Extrude, ActionOperation::Revolve] {
+        s.operation = operation;
+        for mask in 0..1024 {
+            let bit = |i| mask & (1 << i) != 0;
+            let mode = |i| if bit(i) { Mode::UpTo } else { Mode::Blind };
+            if operation == ActionOperation::Extrude {
+                let v = &mut s.extrude.values;
+                v.termination = match mask % 3 {
+                    0 => Term::Blind,
+                    1 => Term::UpTo,
+                    _ => Term::ThroughAll,
+                };
+                v.starting_offset = bit(0);
+                v.start_mode = mode(1);
+                v.end_offset = bit(2);
+                v.end_mode = mode(3);
+                v.symmetric = bit(4);
+                v.second_side = bit(5);
+                v.second_mode = mode(6);
+                v.nested_end = bit(7);
+                v.nested_mode = mode(8);
+            } else {
+                let v = &mut s.revolve.values;
+                v.full = bit(9);
+                v.mode = mode(0);
+                v.start_offset = bit(1);
+                v.start_mode = mode(2);
+                v.end_offset = bit(3);
+                v.end_mode = mode(4);
+                v.symmetric = bit(5);
+                v.second_side = bit(6);
+                v.second_mode = mode(7);
+                v.nested_end = bit(8);
+                v.nested_mode = mode(2);
+            }
+            for d in s.numeric_descriptors() {
+                assert_eq!(
+                    s.numeric_field_visible(d.field),
+                    s.panel().shows(d.field.key)
+                );
             }
         }
     }

@@ -11,6 +11,9 @@ use newell_ui::{
     CellContent, CellGrid, GridMetrics, ShellKey, ShellState, ThemeChoice, UiPoint, hit_test,
 };
 
+#[path = "../support/reference_shell.rs"]
+mod reference_shell;
+
 fn rows(g: &CellGrid) -> Vec<String> {
     (0..g.rows())
         .map(|row| {
@@ -26,19 +29,7 @@ fn rows(g: &CellGrid) -> Vec<String> {
 
 #[test]
 fn complete_shell_matches_reference_in_both_themes_and_both_heights() {
-    let mut reference: Vec<String> =
-        include_str!("../../../../docs/ui_design/Interface_Exemple.txt")
-            .lines()
-            .map(str::to_owned)
-            .collect();
-    let command = include_str!("../../../../docs/ui_design/Command_Bar.txt")
-        .lines()
-        .find(|line| line.trim_start().starts_with("Workbench │"))
-        .unwrap();
-    // Explicitly approved CommandBar supersession, plus the documented normal row-19 state.
-    let bar = format!(" {}", command.trim());
-    reference[3] = format!("║{bar:<80}║");
-    reference[18] = reference[18].replace(['╞', '╡'], "│");
+    let reference = reference_shell::rows(28);
     assert_eq!(reference.len(), 28);
     for height in [28, 30] {
         for dark in [false, true] {

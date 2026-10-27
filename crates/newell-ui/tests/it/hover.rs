@@ -16,10 +16,9 @@ use newell_ui::{
 const COLS: u32 = 82;
 const ROWS: u32 = 30;
 /// First column of the Action Box on an 82-column grid: it ends at column 80, the viewport
-/// border is at 81 (`Interface_Exemple.txt`).
+/// border is at 81 (the existing 82-column shell fixture).
 const BOX_LEFT: usize = 50;
 const BOX_WIDTH: usize = 31;
-const REFERENCE: &str = include_str!("../../../../docs/ui_design/Interface_Exemple.txt");
 
 fn shell() -> ShellState {
     ShellState::new(COLS, ROWS)
@@ -79,17 +78,8 @@ fn box_row(g: &CellGrid, needle: &str) -> String {
         .collect()
 }
 
-/// The 31 Action Box cells of row `number` (1-based) of `Interface_Exemple.txt`.
-fn reference_box(number: usize) -> String {
-    REFERENCE
-        .lines()
-        .nth(number - 1)
-        .unwrap()
-        .chars()
-        .skip(BOX_LEFT)
-        .take(BOX_WIDTH)
-        .collect()
-}
+/// Exact Starting Offset hover structure from README_UI.md §5.12.
+const STARTING_OFFSET_HOVER: &str = "│ ╞ □ Starting Offset         ╡";
 
 /// The hovered composition of `s` with `id`, which must be eligible.
 fn hovered(s: &ShellState, id: WidgetId) -> CellGrid {
@@ -140,8 +130,7 @@ fn checkbox_row_is_reference_row_nineteen_when_hovered() {
     );
     let id = id_in(&normal, "Starting Offset", "Starting");
     let hover = hovered(&s, id);
-    assert_eq!(box_row(&hover, "Starting Offset"), reference_box(19));
-    assert_eq!(reference_box(19), "│ ╞ □ Starting Offset         ╡");
+    assert_eq!(box_row(&hover, "Starting Offset"), STARTING_OFFSET_HOVER);
     assert_only_slots_differ(&normal, &hover, 3);
 }
 
@@ -274,8 +263,8 @@ fn rename_modal_ok_hovers_as_its_own_row() {
 fn non_targets_never_light() {
     let s = shell();
     let normal = s.compose().unwrap();
-    // Tree rows, the MenuBar title and the window controls.
-    for (row_needle, cell_needle) in [("Hub_Features", "Hub"), ("File", "File"), ("[X]", "[X]")] {
+    // Inert MenuBar title and window controls; tree rows now have canonical hover.
+    for (row_needle, cell_needle) in [("File", "File"), ("[X]", "[X]")] {
         let id = id_in(&normal, row_needle, cell_needle);
         let (grid, lit) = s.compose_hovered(Some(id)).unwrap();
         assert!(!lit, "{cell_needle:?} must not hover");
@@ -284,19 +273,16 @@ fn non_targets_never_light() {
 }
 
 #[test]
-fn only_action_box_and_popup_ids_may_hover() {
+fn documented_tree_action_box_and_popup_ids_may_hover() {
     let s = shell();
     let normal = s.compose().unwrap();
-    for (row_needle, cell_needle) in [
-        ("Hub_Features", "Hub"),
-        ("File", "File"),
-        ("Workbench", "Workbench"),
-        ("[X]", "[X]"),
-    ] {
+    for (row_needle, cell_needle) in [("File", "File"), ("Workbench", "Workbench"), ("[X]", "[X]")]
+    {
         let id = id_in(&normal, row_needle, cell_needle);
         assert!(!ShellState::may_hover(id), "{cell_needle:?} never hovers");
     }
     for (row_needle, cell_needle) in [
+        ("Hub_Features", "Hub"),
         ("Along     [", "[Select"),
         ("Cancel", "OK"),
         ("Cancel", "Cancel"),

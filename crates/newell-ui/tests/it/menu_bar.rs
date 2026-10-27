@@ -118,7 +118,7 @@ fn ui_scale_labels_keep_the_original_rendering_factors_and_stop_at_endpoints() {
             "│ UI Scale    80% ▶ │",
             "│ UI Scale ◀ 100% ▶ │",
             "│ UI Scale ◀ 120% ▶ │",
-            "│ UI Scale ◀ 140%  │",
+            "│ UI Scale ◀ 140%   │",
         ]
     );
     let mut s = shell();
@@ -152,14 +152,14 @@ fn projection_and_shading_states_match_the_reference() {
     assert_eq!((projections.len(), shadings.len()), (2, 7));
     let mut s = shell();
     open_view(&mut s);
-    for want in projections.iter().cycle().skip(1).take(2) {
+    for want in projections.iter().cycle().take(2) {
         s.key(ShellKey::Right);
         let row: String = row_chars(&s.compose().unwrap(), 3).into_iter().collect();
         assert!(row.contains(&format!("│ {want} │")), "{want:?} in {row:?}");
     }
     s.key(ShellKey::Down);
-    // Startup is `Wireframe` (index 2); Right visits all seven cyclic states.
-    for i in [3, 4, 5, 6, 0, 1, 2] {
+    // Startup is `Hidden Line` (index 3); Right visits the next seven cyclic states.
+    for i in [4, 5, 6, 0, 1, 2, 3] {
         s.key(ShellKey::Right);
         let row: String = row_chars(&s.compose().unwrap(), 4).into_iter().collect();
         assert!(
@@ -167,8 +167,8 @@ fn projection_and_shading_states_match_the_reference() {
             "{i}: {row:?}"
         );
     }
-    // Left visits the same states in reverse and wraps back to Wireframe.
-    for i in [1, 0, 6, 5, 4, 3, 2] {
+    // Left visits the same states in reverse and wraps back to Hidden Line.
+    for i in [2, 1, 0, 6, 5, 4, 3] {
         s.key(ShellKey::Left);
         let row: String = row_chars(&s.compose().unwrap(), 4).into_iter().collect();
         assert!(

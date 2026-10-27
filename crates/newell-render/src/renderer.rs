@@ -160,6 +160,11 @@ impl Renderer {
     }
 
     /// Applies a typed display mode to the 3D scene.
+    /// Consumes derived entity membership without owning selection or picking.
+    pub fn set_scene_selected(&mut self, selected: bool) {
+        self.scene.set_selected(selected);
+    }
+
     pub fn set_scene_display_mode(&mut self, mode: SceneDisplayMode) {
         self.scene.set_display_mode(mode);
     }

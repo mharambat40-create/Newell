@@ -12,7 +12,8 @@ The requested interaction model is:
 - Primary-button drag: screen-space yaw/pitch orbit with a level horizon.
 - Secondary-button drag: focal-distance proportional pan; middle-button drag is a pan fallback.
 - Primary and secondary presses capture navigation only after the click/drag threshold.
-- Wheel, smooth trackpad scrolling, and native pinch where available: cursor-targeted zoom.
+- `LineDelta` wheel input, unphased `PixelDelta` wheel input, and native pinch where available: cursor-targeted zoom.
+- A button-free phased `PixelDelta` stream that starts over exposed viewport pixels: two-axis screen-plane pan at contextual focal depth.
 - Orbit pivot: geometric hit under the pointer; otherwise the visible model bounding-box centre.
 - Navigation state and input handling: `newell-app`.
 - Camera matrix consumption and uniform upload: `newell-render`.
@@ -355,6 +356,32 @@ u=\frac{\text{orthographic height}}{H}
 
 Captured pan continues across viewport boundaries while the pointer remains in the application window.
 
+### Button-free phased trackpad pan
+
+On macOS, winit 0.30.13 maps precise `scrollWheel:` events to
+`MouseScrollDelta::PixelDelta` and maps the native scroll lifecycle to
+`TouchPhase::{Started, Moved, Ended}`. The event does not report finger count.
+Route a `PixelDelta` stream to camera pan only when its `Started` phase begins
+over exposed viewport pixels and no UI target consumes that scroll. Freeze the
+pointer anchor and contextual focal depth at that start; add the physical X/Y
+deltas to the same pointer-plane pan calculation used by mouse drags. Positive
+deltas follow winit's documented content direction (right/down). Winit already
+converts macOS precise deltas to physical pixels, so do not apply another scale
+factor. Preserve fractional values through camera math.
+
+The UI keeps first refusal on every scroll event. A stream started over a menu,
+modal, tree, selection list or other UI remains UI-owned through its end even if
+the pointer later reaches the viewport. Focus loss, pointer exit, layout changes,
+projection changes and scene changes cancel the pan and reject the rest of that
+stream. Scroll pan has no application-generated inertia or render loop.
+
+Winit does not identify the number of fingers or distinguish a phased
+high-resolution mouse wheel from trackpad scrolling. Therefore the routing rule
+is exact and intentionally limited: a phased `PixelDelta` stream with an
+observed `Started` phase pans; `LineDelta` and `PixelDelta` without that start
+retain wheel zoom. A trackpad event delivered without a start phase cannot pan
+under this rule, while a phased high-resolution mouse wheel can.
+
 ## 8. Cursor-targeted zoom
 
 ### Input conversion
@@ -362,7 +389,7 @@ Captured pan continues across viewport boundaries while the pointer remains in t
 Keep camera normalization separate from existing UI-panel scrolling.
 
 - Wheel line deltas retain fractional values.
-- Smooth physical-pixel deltas are divided by display scale.
+- Unphased smooth physical-pixel wheel deltas are divided by display scale.
 - Initially map 100 logical pixels to one wheel step.
 - Ignore horizontal-only zoom input.
 - Reject non-finite values.
@@ -529,21 +556,24 @@ Use analytic fixtures and the existing property-test dependency. Compare rotatio
 31. Pan translates the projected anchor by the pointer displacement.
 32. Pan preserves orientation.
 33. Pan scale follows focal distance and viewport dimensions.
-34. Perspective zoom preserves the surface anchor’s projected pixel.
-35. Orthographic zoom preserves its anchor without changing orientation.
-36. Minimum and maximum limits apply without crossing the anchor.
-37. Bounds scale with mesh size and account for narrow aspect ratios.
-38. Partitioned fractional zoom events produce equivalent results for a frozen anchor.
-39. DPI-normalized deltas produce equivalent camera changes.
-40. Fit recovery contains the complete model within the selected unobstructed rectangle.
+34. A phased, button-free `PixelDelta` stream starting on exposed viewport pixels pans both screen axes with fractional deltas and the frozen contextual depth.
+35. A stream starting on UI, an occlusion, or another ineligible region cannot later pan after entering the viewport.
+36. `LineDelta`, unphased `PixelDelta`, and native pinch retain their existing zoom behavior.
+37. Perspective zoom preserves the surface anchor’s projected pixel.
+38. Orthographic zoom preserves its anchor without changing orientation.
+39. Minimum and maximum limits apply without crossing the anchor.
+40. Bounds scale with mesh size and account for narrow aspect ratios.
+41. Partitioned fractional zoom events produce equivalent results for a frozen anchor.
+42. DPI-normalized deltas produce equivalent camera changes.
+43. Fit recovery contains the complete model within the selected unobstructed rectangle.
 
 ### Input ownership
 
-41. Gestures cannot start outside the scene or under UI.
-42. A rejected phased gesture cannot enter the scene midway through its stream.
-43. Releasing an unrelated button preserves active capture.
-44. Focus loss, modal activation, and resize end capture without changing pose.
-45. Action Box opening and closing changes occlusion without reframing.
+44. Gestures cannot start outside the scene or under UI.
+45. A rejected phased gesture cannot enter the scene midway through its stream.
+46. Releasing an unrelated button preserves active capture.
+47. Focus loss, modal activation, and resize end capture without changing pose.
+48. Action Box opening and closing changes occlusion without reframing.
 
 ## 12. Implementation order and acceptance
 

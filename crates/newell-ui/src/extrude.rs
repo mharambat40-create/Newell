@@ -68,13 +68,6 @@ const K_SECOND_DEPTH: u32 = 20;
 const K_SECOND_TARGET: u32 = 21;
 
 /// Keys of the numeric rows (field slot 0, formula `☰` slot 1).
-const NUMERIC_KEYS: [u32; 5] = [
-    K_DEPTH,
-    K_START_DIST,
-    K_END_DIST,
-    K_SECOND_DEPTH,
-    K_NESTED_DIST,
-];
 /// Keys of the selection fields (slot 0 the field, slot 1 the `☰` of a populated one).
 const SELECT_KEYS: [u32; 8] = [
     K_PROFILE,
@@ -87,9 +80,6 @@ const SELECT_KEYS: [u32; 8] = [
     K_MERGE_TARGETS,
 ];
 
-/// Mock field text of the numeric rows; numeric fields are UI-only (M2.23 edits them).
-const MOCK_DIST: &str = "+|0.0 mm";
-const MOCK_DIST_UNSIGNED: &str = "0.0 mm";
 /// Element count shown for [`MockSelection::Many`].
 const MOCK_MANY: u32 = 3;
 
@@ -273,21 +263,28 @@ impl Default for ExtrudeValues {
 }
 
 /// UI state of the Extrude Action Box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtrudeUi {
     base_id: u32,
+    selection_counts: Option<std::collections::BTreeMap<u32, usize>>,
     pub values: ExtrudeValues,
     opened: ExtrudeValues,
     pub status: ExtrudeStatus,
 }
 
 impl ExtrudeUi {
+    fn selection_count(&self, key: u32, fallback: u32) -> u32 {
+        self.selection_counts.as_ref().map_or(fallback, |counts| {
+            u32::try_from(counts.get(&key).copied().unwrap_or(0)).unwrap_or(u32::MAX)
+        })
+    }
     /// Opens the box with default values; `base_id` is its first widget id.
     #[must_use]
     pub fn new(base_id: u32) -> Self {
         let values = ExtrudeValues::default();
         Self {
             base_id,
+            selection_counts: None,
             values,
             opened: values,
             status: ExtrudeStatus::Editing,
@@ -302,7 +299,9 @@ impl ExtrudeUi {
 
     /// Reopens with default values.
     pub fn reopen(&mut self) {
+        let counts = self.selection_counts.take();
         *self = Self::new(self.base_id);
+        self.selection_counts = counts;
     }
 
     fn row(&self) -> Row {
@@ -327,7 +326,10 @@ impl ExtrudeUi {
             self.row()
                 .contour("│")
                 .text(" Profile     ")
-                .select(K_PROFILE, v.profile.count())
+                .select(
+                    K_PROFILE,
+                    self.selection_count(K_PROFILE, v.profile.count()),
+                )
                 .end(),
         );
         b.push(
@@ -352,7 +354,12 @@ impl ExtrudeUi {
             self.second_side(&mut b);
         }
         if v.result != ExtrudeResultMode::New {
-            push_merge(&mut b, self.base_id, v.merge_with_all, v.merge_targets);
+            push_merge(
+                &mut b,
+                self.base_id,
+                v.merge_with_all,
+                self.selection_count(K_MERGE_TARGETS, v.merge_targets.count()),
+            );
         }
         push_footer(&mut b, self.base_id);
         Some(b)
@@ -364,14 +371,17 @@ impl ExtrudeUi {
             self.row()
                 .contour("│")
                 .text(" │ Depth   ")
-                .numeric(K_DEPTH, MOCK_DIST)
+                .numeric(
+                    K_DEPTH,
+                    crate::numeric::field(crate::ActionOperation::Extrude, K_DEPTH),
+                )
                 .end(),
         );
         b.push(
             self.row()
                 .contour("│")
                 .text(" │ Along     ")
-                .select(K_ALONG, v.along.count())
+                .select(K_ALONG, self.selection_count(K_ALONG, v.along.count()))
                 .end(),
         );
         if v.starting_offset {
@@ -389,8 +399,11 @@ impl ExtrudeUi {
                 "│ │ ╰╴",
                 (K_START_DIST, K_START_TARGET),
                 v.start_mode,
-                v.start_target,
-                ("Dist  ", MOCK_DIST),
+                self.selection_count(K_START_TARGET, v.start_target.count()),
+                (
+                    "Dist  ",
+                    crate::numeric::field(crate::ActionOperation::Extrude, K_START_DIST),
+                ),
             );
         } else {
             b.push(
@@ -416,8 +429,11 @@ impl ExtrudeUi {
                 "│   ╰╴",
                 (K_END_DIST, K_END_TARGET),
                 v.end_mode,
-                v.end_target,
-                ("Dist  ", MOCK_DIST),
+                self.selection_count(K_END_TARGET, v.end_target.count()),
+                (
+                    "Dist  ",
+                    crate::numeric::field(crate::ActionOperation::Extrude, K_END_DIST),
+                ),
             );
         } else {
             b.push(
@@ -436,7 +452,10 @@ impl ExtrudeUi {
             self.row()
                 .contour("│")
                 .text(" │ Selection ")
-                .select(K_SELECTION, v.selection.count())
+                .select(
+                    K_SELECTION,
+                    self.selection_count(K_SELECTION, v.selection.count()),
+                )
                 .end(),
         );
         b.push(
@@ -472,8 +491,11 @@ impl ExtrudeUi {
                 "│   ╰╴",
                 (K_START_DIST, K_START_TARGET),
                 v.start_mode,
-                v.start_target,
-                ("Dist  ", MOCK_DIST),
+                self.selection_count(K_START_TARGET, v.start_target.count()),
+                (
+                    "Dist  ",
+                    crate::numeric::field(crate::ActionOperation::Extrude, K_START_DIST),
+                ),
             );
         } else {
             b.push(
@@ -512,7 +534,10 @@ impl ExtrudeUi {
                 self.row()
                     .contour("│")
                     .text("   ╰╴Depth ")
-                    .numeric(K_SECOND_DEPTH, MOCK_DIST)
+                    .numeric(
+                        K_SECOND_DEPTH,
+                        crate::numeric::field(crate::ActionOperation::Extrude, K_SECOND_DEPTH),
+                    )
                     .end(),
             ),
             ExtrudeOffsetMode::UpTo => {
@@ -520,7 +545,10 @@ impl ExtrudeUi {
                     self.row()
                         .contour("│")
                         .text("   │ Target  ")
-                        .select(K_SECOND_TARGET, v.second_target.count())
+                        .select(
+                            K_SECOND_TARGET,
+                            self.selection_count(K_SECOND_TARGET, v.second_target.count()),
+                        )
                         .end(),
                 );
                 push_nested_end(
@@ -528,8 +556,11 @@ impl ExtrudeUi {
                     self.base_id,
                     v.nested_end,
                     v.nested_mode,
-                    v.nested_target,
-                    ("Dist  ", MOCK_DIST_UNSIGNED),
+                    self.selection_count(K_NESTED_TARGET, v.nested_target.count()),
+                    (
+                        "Dist  ",
+                        crate::numeric::field(crate::ActionOperation::Extrude, K_NESTED_DIST),
+                    ),
                 );
             }
         }
@@ -615,10 +646,40 @@ impl ActionBoxUi for ExtrudeUi {
         self.reopen();
     }
 
-    fn numeric_keys(&self) -> &'static [u32] {
-        &NUMERIC_KEYS
+    fn numeric_operation(&self) -> crate::ActionOperation {
+        crate::ActionOperation::Extrude
     }
 
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor> {
+        use crate::SelectionFieldRole::*;
+        if !SELECT_KEYS.contains(&key) {
+            return None;
+        }
+        let role = match key {
+            K_MERGE_TARGETS => MergeScope,
+            K_ALONG => Direction,
+            K_SELECTION | K_START_TARGET | K_END_TARGET | K_SECOND_TARGET | K_NESTED_TARGET => {
+                SurfaceTarget
+            }
+            _ => EntityReference,
+        };
+        Some(crate::SelectionFieldDescriptor {
+            field: crate::SelectionFieldKey {
+                operation: crate::ActionOperation::Extrude,
+                key,
+            },
+            role,
+            ordered: false,
+            max_count: if matches!(role, MergeScope | Bodies) {
+                None
+            } else {
+                Some(1)
+            },
+        })
+    }
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>) {
+        self.selection_counts = Some(counts.clone());
+    }
     fn select_keys(&self) -> &'static [u32] {
         &SELECT_KEYS
     }

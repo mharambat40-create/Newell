@@ -84,6 +84,9 @@ fn respond_fixture(controller: &mut ShellController) {
         return;
     };
     assert_eq!(intent.generation(), controller.generation());
+    if matches!(intent.kind(), TreeIntentKind::Select { .. }) {
+        return;
+    }
     let mut projection = controller.shell().tree_projection().clone();
     let mut supported = true;
     match (intent.target().kind, intent.kind()) {
@@ -252,7 +255,7 @@ fn a_double_click_is_consumed_and_the_modal_edits_confirms_and_cancels() {
     }
     assert!(c.fixture_key(ShellKey::Enter).grid);
     assert!(!rename_open(&c));
-    assert!(row_text(c.grid(), 20).contains("╰╴□ Hub_Body_2"));
+    assert!(row_text(c.grid(), 20).contains("┗╸□ Hub_Body_2"));
 
     // Escape keeps the name; the row can be renamed again after a fresh double-click.
     press_on(&mut c, "Hub_Body_2", ms(1_000));
@@ -260,7 +263,7 @@ fn a_double_click_is_consumed_and_the_modal_edits_confirms_and_cancels() {
     assert!(rename_open(&c));
     c.fixture_key(ShellKey::Char('x'));
     assert!(c.fixture_key(ShellKey::Escape).grid);
-    assert!(row_text(c.grid(), 20).contains("╰╴□ Hub_Body_2 "));
+    assert!(row_text(c.grid(), 20).contains("┗╸□ Hub_Body_2 "));
 
     // The consumed double-click does not chain: press, press (opens), cancel, press again.
     press_on(&mut c, "Hub_Body_2", ms(2_000));
@@ -300,7 +303,9 @@ fn dragging_the_divider_follows_the_pointer_row_by_row() {
     assert!(row_text(c.grid(), 23).starts_with("╠═══"), "clamped");
     c.pointer_released();
     assert!(!c.dragging());
-    assert!(!c.pointer_moved(at(10, 8)).grid, "no drag after release");
+    let state = c.shell().clone();
+    c.pointer_moved(at(10, 8)); // A row may now acquire hover, but cannot keep resizing.
+    assert_eq!(c.shell(), &state, "no drag after release");
 }
 
 #[test]
@@ -334,6 +339,7 @@ fn dragging_the_playhead_row_moves_only_the_separator() {
     );
     assert!(row_text(c.grid(), 11).contains("│ ───────────────────"));
     c.pointer_released();
+    c.pointer_moved(None); // Compare structure after the canonical row hover is cleared.
     let after: Vec<String> = (5..15).map(|r| row_text(c.grid(), r)).collect();
     let strip = |rows: &[String]| {
         rows.iter()

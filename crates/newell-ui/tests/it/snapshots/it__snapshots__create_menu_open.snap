@@ -14,7 +14,7 @@ expression: snapshot(&s)
 ║ │ ├ ■ Sketch_Hole     ║      │ [E]xtrude       │╭─Extrude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║      │ [R]evolve       ││    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║      │ [L]oft          │├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ─────────────────── ║      │ [S]weep         ││  New  │   Add   ┆  Remove   │║
+║ │ ────────────────────║      │ [S]weep         ││  New  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║      │─────────────────│├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║      │ Hole            ││ Profile     [Select…       ]│║
 ║                       ║      │ Thread          ││ Extend   ◀     Blind     ▶  │║

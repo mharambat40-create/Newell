@@ -28,12 +28,7 @@ const K_TWIST_ANGLE: u32 = 7;
 const K_SCALE: u32 = 8;
 const K_SCALE_VALUE: u32 = 9;
 
-const NUMERIC_KEYS: [u32; 2] = [K_TWIST_ANGLE, K_SCALE_VALUE];
 const SELECT_KEYS: [u32; 3] = [K_PROFILE, K_PATH, K_MERGE_TARGETS];
-
-/// Mock field texts: `[+|0.0 deg      ☰]` and the unitless `[0.0          ☰]`.
-const TWIST: &str = "+|0.0 deg";
-const SCALE: &str = "0.0";
 
 /// The editable mock values of the Sweep box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,14 +83,17 @@ impl ActionBoxUi for SweepUi {
             self.row()
                 .contour("│")
                 .text(" Profile     ")
-                .select(K_PROFILE, v.profile.count())
+                .select(
+                    K_PROFILE,
+                    self.selection_count(K_PROFILE, v.profile.count()),
+                )
                 .end(),
         );
         b.push(
             self.row()
                 .contour("│")
                 .text(" Path        ")
-                .select(K_PATH, v.path.count())
+                .select(K_PATH, self.selection_count(K_PATH, v.path.count()))
                 .end(),
         );
         b.push(
@@ -118,7 +116,10 @@ impl ActionBoxUi for SweepUi {
                         .text(" ╰╴")
                         .check(K_TWIST, true, "Twist", 7)
                         .contour(" ")
-                        .numeric(K_TWIST_ANGLE, TWIST)
+                        .numeric(
+                            K_TWIST_ANGLE,
+                            crate::numeric::field(crate::ActionOperation::Sweep, K_TWIST_ANGLE),
+                        )
                         .end(),
                 );
             } else {
@@ -137,7 +138,10 @@ impl ActionBoxUi for SweepUi {
                     .contour("│ ")
                     .check(K_SCALE, true, "Scale", 7)
                     .contour("     ")
-                    .numeric(K_SCALE_VALUE, SCALE)
+                    .numeric(
+                        K_SCALE_VALUE,
+                        crate::numeric::field(crate::ActionOperation::Sweep, K_SCALE_VALUE),
+                    )
                     .end(),
             );
         } else {
@@ -149,7 +153,12 @@ impl ActionBoxUi for SweepUi {
             );
         }
         if v.result != ExtrudeResultMode::New {
-            push_merge(&mut b, self.base(), v.merge_with_all, v.merge_targets);
+            push_merge(
+                &mut b,
+                self.base(),
+                v.merge_with_all,
+                self.selection_count(K_MERGE_TARGETS, v.merge_targets.count()),
+            );
         }
         push_footer(&mut b, self.base());
         Some(b)
@@ -190,10 +199,37 @@ impl ActionBoxUi for SweepUi {
         self.reopen();
     }
 
-    fn numeric_keys(&self) -> &'static [u32] {
-        &NUMERIC_KEYS
+    fn numeric_operation(&self) -> crate::ActionOperation {
+        crate::ActionOperation::Sweep
     }
 
+    fn selection_descriptor(&self, key: u32) -> Option<crate::SelectionFieldDescriptor> {
+        use crate::SelectionFieldRole::*;
+        if !SELECT_KEYS.contains(&key) {
+            return None;
+        }
+        let role = match key {
+            K_MERGE_TARGETS => MergeScope,
+            K_PATH => Path,
+            _ => EntityReference,
+        };
+        Some(crate::SelectionFieldDescriptor {
+            field: crate::SelectionFieldKey {
+                operation: crate::ActionOperation::Sweep,
+                key,
+            },
+            role,
+            ordered: false,
+            max_count: if matches!(role, MergeScope | Bodies) {
+                None
+            } else {
+                Some(1)
+            },
+        })
+    }
+    fn set_selection_counts(&mut self, counts: &std::collections::BTreeMap<u32, usize>) {
+        self.selection_counts = Some(counts.clone());
+    }
     fn select_keys(&self) -> &'static [u32] {
         &SELECT_KEYS
     }

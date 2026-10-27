@@ -134,7 +134,7 @@ The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
   the Elements tree to resulting geometric entities.
 - [ ] M4.3: Implement shared selection state between the viewport, trees and
   Selection panel.
-- [ ] M4.4: Implement parameter values with engineering units and bind numeric
+- [x] M4.4: Implement parameter values with engineering units and bind numeric
   Action Panel fields to command parameters.
 - [ ] M4.5: Implement the expression/formula data model and connect the
   Formula editor to parameter values.
@@ -148,3 +148,13 @@ The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
   Merge with all and explicit Merge scope.
 - [ ] M4.10: Implement command preview, OK/Cancel semantics and rollback of
   uncommitted command state.
+
+### M4.4 verification history — 2026-10-27
+
+- Manual validation: **passed by the human**; the human tested M4.4 and
+  confirmed the result was OK.
+- Auditor: **green** for revision 2 and the stabilization changes. The final
+  workspace run reported 915 tests passed and 14 skipped; workspace check,
+  formatting, strict Clippy, documentation tests and `git diff --check` passed.
+  No failures were reported. The existing `block v0.1.6` future-incompatibility
+  notice remains informational.

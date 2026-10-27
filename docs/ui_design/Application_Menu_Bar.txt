@@ -16,8 +16,8 @@
 │ Recompute │
 ╰───────────╯
 ╭─View──────────────╮
-│ ◀  Perspective  ▶ │
-│ ◀  Wireframe    ▶ │
+│ ◀ Orthographic  ▶ │
+│ ◀  Hidden Line  ▶ │
 │ UI Scale ◀ 100% ▶ │
 │ Theme [ ◑ Dark  ] │
 │ □ Color           │
@@ -32,7 +32,7 @@
 ╰───────────────────╯
 ◀  Perspective  ▶, ◀ Orthographic  ▶
 ◀    Points     ▶, ◀     Line      ▶, ◀  Wireframe    ▶, ◀  Hidden Line  ▶, ◀  No shading   ▶, ◀    Shaded     ▶, ◀    Default    ▶
-│ UI Scale    80% ▶ │, │ UI Scale ◀ 100% ▶ │, │ UI Scale ◀ 120% ▶ │, │ UI Scale ◀ 140%  │
+│ UI Scale    80% ▶ │, │ UI Scale ◀ 100% ▶ │, │ UI Scale ◀ 120% ▶ │, │ UI Scale ◀ 140%   │
 [ ◐ Light ], [ ◑ Dark  ]
 ╭─Help──────╮
 │ Tutorial  │

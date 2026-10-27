@@ -269,6 +269,11 @@ impl ShellState {
     /// # Errors
     /// Only if the grid size is rejected by [`CellGrid::new`].
     pub fn compose_hovered(&self, hovered: Option<WidgetId>) -> Result<(CellGrid, bool), UiError> {
+        let hovered = hovered.map(|id| {
+            super::tree_decode(id).map_or(id, |(tree, slot, _)| {
+                super::tree_part_id(tree, slot, TreePart::Row)
+            })
+        });
         let mut grid = CellGrid::new(self.cols, self.rows)?;
         let styles = WidgetStyles::default();
         let below = InteractionState {
@@ -305,19 +310,30 @@ impl ShellState {
         if self.color_enabled() {
             single_contours(&mut grid);
         }
-        if self.input_free() && let Some(id) = hovered {
-            for (tree, frame) in [(Tree::Features, layout.features), (Tree::Elements, layout.elements)] {
+        if self.input_free()
+            && let Some(id) = hovered
+        {
+            for (tree, frame) in [
+                (Tree::Features, layout.features),
+                (Tree::Elements, layout.elements),
+            ] {
                 if let Some((shown_tree, slot, _)) = super::tree_decode(id)
                     && shown_tree == tree
                     && let Some(index) = self.tree_slots[tree.slot()].get(slot)
-                    && let Some(line) = self.tree_lines(tree).iter().skip(self.tree_scroll[tree.slot()])
+                    && let Some(line) = self
+                        .tree_lines(tree)
+                        .iter()
+                        .skip(self.tree_scroll[tree.slot()])
                         .take(frame.inset(1).height() as usize)
                         .position(|line| matches!(line, Line::Node(row) if row.index == *index))
                     && frame.width() >= 2
-                    && let Some(cell) = grid.get_mut(frame.col() + frame.width() - 1,
-                        frame.inset(1).row() + u32::try_from(line).unwrap_or(u32::MAX))
+                    && let Some(cell) = grid.get_mut(
+                        frame.col() + frame.width() - 1,
+                        frame.inset(1).row() + u32::try_from(line).unwrap_or(u32::MAX),
+                    )
                 {
-                    cell.content = crate::CellContent::Glyph(if self.color_enabled() { '╡' } else { '╣' });
+                    cell.content =
+                        crate::CellContent::Glyph(if self.color_enabled() { '╡' } else { '╣' });
                     lit = true;
                 }
             }
@@ -379,16 +395,15 @@ impl ShellState {
         self.draw_tree(grid, ctx, layout.features, Tree::Features);
         self.draw_tree(grid, ctx, layout.elements, Tree::Elements);
         draw_viewport(grid, ctx, layout.viewport, self.view_panel_visible(3));
+        let mut status = status_text(self.workbench, self.fps, self.progress);
+        if let Some(diagnostic) = &self.formula_diagnostic {
+            status = status.replacen(data::CONSTRAINT, diagnostic, 1);
+        }
         if layout.status.height() > 0 {
-            draw_label(
-                grid,
-                layout.status.inset(1),
-                &status_text(self.workbench, self.fps, self.progress),
-                style,
-            );
+            draw_label(grid, layout.status.inset(1), &status, style);
         }
         // Stamp only the fixed progress segment, never adjacent separators or the frame.
-        let status = status_text(self.workbench, self.fps, self.progress);
+
         if layout.status.height() > 0
             && let Some(byte) = status.find("Progress [")
         {
@@ -436,6 +451,11 @@ impl ShellState {
     fn draw_tree(&self, grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, tree: Tree) {
         let inner = frame.inset(1);
         let nodes = &self.nodes[tree.slot()];
+        let inline_host = if tree == Tree::Features {
+            self.inline_playhead_host()
+        } else {
+            None
+        };
         for (line, shown) in self
             .tree_lines(tree)
             .iter()
@@ -482,12 +502,11 @@ impl ShellState {
                 label: &label,
                 state: WidgetState {
                     expanded: self.expanded.contains(&node.target),
-                    selected: self.selected == Some(node.target),
+                    selected: self.is_entity_target_selected(node.target),
                     ..WidgetState::default()
                 },
             };
-            let inline = (tree == Tree::Features && self.inline_playhead_host() == Some(node.target))
-                .then_some(WidgetId::new(PLAYHEAD_ID));
+            let inline = (inline_host == Some(node.target)).then_some(WidgetId::new(PLAYHEAD_ID));
             tree_row.draw_with_inline(grid, ctx, at, inline);
         }
     }
@@ -551,18 +570,34 @@ impl ShellState {
 
 /// Boundary guides are inert Text cells; only the horizontal stroke admits capture.
 fn draw_playhead(
-    grid: &mut CellGrid, ctx: &WidgetContext<'_>, rect: GridRect, depth: u32, trunk: &[bool],
+    grid: &mut CellGrid,
+    ctx: &WidgetContext<'_>,
+    rect: GridRect,
+    depth: u32,
+    trunk: &[bool],
 ) {
     let style = ctx.styles.normal;
     let mut canvas = Canvas::new(grid, rect);
     for level in 0..depth.min(canvas.reach() / 2) {
         if trunk.get(level as usize).copied().unwrap_or(false) {
-            canvas.text(level.saturating_mul(2).saturating_add(1), 0, "│", style, None);
+            canvas.text(
+                level.saturating_mul(2).saturating_add(1),
+                0,
+                "│",
+                style,
+                None,
+            );
         }
     }
     let start = depth.saturating_mul(2).saturating_add(1);
     let count = canvas.width().saturating_sub(start).min(canvas.reach());
-    canvas.text(start, 0, &"─".repeat(count as usize), style, Some(WidgetId::new(PLAYHEAD_ID)));
+    canvas.text(
+        start,
+        0,
+        &"─".repeat(count as usize),
+        style,
+        Some(WidgetId::new(PLAYHEAD_ID)),
+    );
 }
 
 fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, show_cube: bool) {

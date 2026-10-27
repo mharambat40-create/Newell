@@ -55,7 +55,7 @@ pub(crate) use edit::{TextEdit, caret_window};
 pub(crate) use field::{FieldKind, draw_numeric_kind, draw_numeric_view, draw_text_kind};
 pub use field::{draw_numeric_field, draw_text_field};
 pub(crate) use hover::hover_row;
-pub(crate) use numeric::NumericFields;
+pub(crate) use numeric::{NumericFields, default_view};
 pub use selector::{Cyclic, cycle_next, cycle_prev, draw_cyclic};
 pub use tree::{TreeNodeKind, TreeRow, TreeRowIds, draw_tree_row, ellipsize};
 

@@ -460,7 +460,7 @@ fn symetric_removes_the_second_side_and_restores_it() {
     assert!(!has(&u, "Second end position") && !has(&u, "2nd side"));
     assert_eq!(r.len(), rows(&ui()).len() - 1);
     // A stale id of the removed row does nothing.
-    let before = u;
+    let before = u.clone();
     assert!(!click(&mut u, K_SECOND, 0));
     assert_eq!(u, before);
     assert!(click(&mut u, K_SYMMETRIC, 0));
@@ -637,7 +637,7 @@ fn segments_select_exactly_one_value_each() {
 #[test]
 fn numeric_fields_and_foreign_ids_change_nothing() {
     let mut u = ui();
-    let before = u;
+    let before = u.clone();
     assert!(!click(&mut u, K_DEPTH, 0));
     assert!(!click(&mut u, K_DEPTH, 1));
     assert!(!u.activate(WidgetId::new(0)));
