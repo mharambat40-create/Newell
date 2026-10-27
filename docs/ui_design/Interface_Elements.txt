@@ -26,11 +26,32 @@ Progress [█████] 100%
 [Select…       ] [1 Element    ☰] [N Elements   ☰]
 
 "Selection box"
+Empty
 ╭─Selection───────────────────╮
 │┌───────────────────────────┐│
-││ □ Rim_Body               ▲││
-││ ■ Hub_Body               ┃││
-││ □ Inner_Surface          ▼││
+││                           ││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+For Items that need to be realign (in sweep for exemple) use "☰"
+╭─Profils─────────────────────╮
+│┌───────────────────────────┐│
+││ ☰ Spline_1             × ▲││
+││ ☰ Profil_3             × ╻││
+││ ☰ Profil_4             × ╹││
+││ ☰ Profil_4             ×  ││
+││ ☰ Compound_line_1      × ▼││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+For Merge with add □ before :
+╭─Selection───────────────────╮
+│┌───────────────────────────┐│
+││ □ Rim_Body                ││
+││ ■ Hub_Body                ││
+││ □ Inner_Surface           ││
 │└───────────────────────────┘│
 │─────────────────────────────│
 │      OK      │    Cancel    │
@@ -94,7 +115,17 @@ Pour 10 :
 │  New  │   Add   ┆  Remove   ││  New  │   Add   │  Remove   ││  New  ┆   Add   │  Remove   ││  New  │   Add   ┆  Remove   ││  New  │   Add   │  Remove   ││  New  ┆   Add   │  Remove   │
 ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤├╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤│╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴┴───────────┤
 
-"☰ variants"                       
+"☰ variants"
+Empty (Conserve "Fx = "):
+╭─Formula─────────────────────────╮
+│┌───────────────────────────────┐│
+││Fx =                           ││
+││                               ││
+│└───────────────────────────────┘│
+│─────────────────────────────────│
+│       OK       │     Cancel     │
+╰─────────────────────────────────╯
+exemple :
 ╭─Formula─────────────────────────╮
 │┌───────────────────────────────┐│
 ││Fx = (#EntraxeA - 2mm ) / 5 * 3││
@@ -229,7 +260,7 @@ Remplacer "│      OK      │    Cancel    │" par "╞      OK      ╡    C
 ║ ╰╴Pattern_Circular    ║
 ╠═══════════════════════╣
 
-Tree geometry: README_UI.md §26.1–§26.5. Natural reference maximum 24 cells;
+Tree geometry: README_UI.md sections 26.1-26.5. Natural reference maximum 24 cells;
 maximum interior 26 cells (including two padding), outer width 28 cells.
 Hover examples are alternative single-row states. Selected + hovered retains
 selected hierarchy glyphs and uses right border ╣ (Color checked: ╡).
