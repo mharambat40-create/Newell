@@ -7,7 +7,7 @@ struct Uniforms {
     atlas_px: vec2<f32>,
     cols: u32,
     srgb_target: u32,
-    inks: array<vec4<f32>, 3>,
+    inks: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -58,7 +58,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.local = corner;
     out.origin = vec2<f32>(f32(in.glyph & 0xFFFFu), f32(in.glyph >> 16u));
     out.has_glyph = select(0.0, 1.0, has_glyph);
-    out.ink = select(0u, in.ink, in.ink < 3u);
+    out.ink = select(0u, in.ink, in.ink < 4u);
     return out;
 }
 

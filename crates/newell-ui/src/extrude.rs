@@ -28,7 +28,7 @@
 //! Offsets that disclose children use the documented expanded forms; an expanded offset that is
 //! the last child of its branch uses the prefix transformation of §2.6. The open reference
 //! points of §2.6 (label drift, no `End Offset` under `Up to` / `Through all`, no expanded
-//! `Offset`) are reproduced as written.
+//! `Offset`) follow the approved D3 expanded clearance row.
 //!
 //! # Widget ids
 //!
@@ -66,6 +66,7 @@ const K_SECOND: u32 = 18;
 const K_SECOND_MODE: u32 = 19;
 const K_SECOND_DEPTH: u32 = 20;
 const K_SECOND_TARGET: u32 = 21;
+const K_MAIN_CLEARANCE: u32 = 29;
 
 /// Keys of the numeric rows (field slot 0, formula `☰` slot 1).
 /// Keys of the selection fields (slot 0 the field, slot 1 the `☰` of a populated one).
@@ -465,6 +466,18 @@ impl ExtrudeUi {
                 .check_fill(K_OFFSET, v.offset, "Offset")
                 .end(),
         );
+        if v.offset {
+            b.push(
+                self.row()
+                    .contour("│")
+                    .text("   ╰╴Dist  ")
+                    .numeric(
+                        K_MAIN_CLEARANCE,
+                        crate::numeric::field(crate::ActionOperation::Extrude, K_MAIN_CLEARANCE),
+                    )
+                    .end(),
+            );
+        }
     }
 
     fn through_all_branch(&self, b: &mut ActionBox) {

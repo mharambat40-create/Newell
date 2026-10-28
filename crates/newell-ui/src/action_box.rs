@@ -751,7 +751,7 @@ mod color_tests {
         }
         assert_eq!(grid.get(11, 3).unwrap().ink, InkRole::Action);
         assert_eq!(grid.get(12, 3).unwrap().ink, InkRole::Contour);
-        assert_eq!(grid.get(13, 3).unwrap().ink, InkRole::Text);
+        assert_eq!(grid.get(13, 3).unwrap().ink, InkRole::Placeholder);
         assert_eq!(grid.get(28, 3).unwrap().ink, InkRole::Action);
         let mut crop = CellGrid::new(12, 3).unwrap();
         b.draw(&mut crop, &ctx, GridRect::new(0, 0, 12, 3));

@@ -8,10 +8,12 @@
 
 pub mod camera;
 pub mod navigation;
+pub mod navigation_widgets;
 pub mod picking;
 
 mod app;
 mod document;
+pub mod extrude_session;
 pub mod geometry_worker;
 mod parameters;
 mod selection;
@@ -58,8 +60,12 @@ pub enum AppError {
 
 /// Opens the window and runs the event loop until it is closed or a fatal error occurs.
 pub fn run() -> Result<(), AppError> {
-    let event_loop = winit::event_loop::EventLoop::new()?;
+    let event_loop = winit::event_loop::EventLoop::<app::AppEvent>::with_user_event().build()?;
     let mut app = app::App::new();
+    let proxy = event_loop.create_proxy();
+    app.enable_geometry_worker(move || {
+        let _ = proxy.send_event(app::AppEvent::GeometryReady);
+    })?;
     event_loop.run_app(&mut app)?;
     app.into_result()
 }

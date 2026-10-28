@@ -6,13 +6,21 @@
 // (at your option) any later version.
 //! Geometric kernel boundary over BrepKIT (Model layer, `ARCHITECTURE.md` §1, §5.1).
 
+mod boolean;
 mod extrude;
-pub use extrude::{NewellGeometry, NewellShapeKey};
+pub use boolean::NewellSurfaceResult;
+mod termination;
+pub use extrude::{NewellBodyResult, NewellGeometry, NewellShapeKey};
+pub use termination::{
+    NewellFaceTarget, NewellSurfaceExtent, NewellSurfaceExtrude, NewellSurfaceSides,
+    NewellSurfaceStart,
+};
 mod surface;
-pub use surface::{NewellBooleanMode, NewellSurface};
+pub use surface::{NewellBooleanMode, NewellBoundary, NewellSurface};
 mod profile;
 pub use profile::{
-    NewellProfile, NewellProfileEdge, NewellProfileFace, NewellProfileFrame, NewellProfileWire,
+    NewellFaceProvenance, NewellProfile, NewellProfileEdge, NewellProfileFace, NewellProfileFrame,
+    NewellProfileWire,
 };
 
 use brepkit_operations::primitives::make_box;
@@ -111,6 +119,9 @@ pub enum NewellKernelError {
     /// The kernel returned data that cannot be represented by the renderer's f32 buffers.
     #[error("BrepKIT returned a non-finite mesh value")]
     NonFiniteMesh,
+    /// Conversion to renderer coordinates collapsed or reversed actual triangle detail.
+    #[error("geometry detail cannot be represented in renderer coordinates")]
+    MeshPrecisionLoss,
 }
 
 impl NewellSolid {
@@ -120,6 +131,9 @@ impl NewellSolid {
     /// Propagates kernel measurement errors.
     pub fn volume(&self) -> Result<f64, NewellKernelError> {
         if let Some(volume) = self.measured_volume {
+            return Ok(volume);
+        }
+        if let Some(volume) = profile::parallel_sweep_volume(&self.topology, self.solid)? {
             return Ok(volume);
         }
         brepkit_operations::measure::solid_volume(&self.topology, self.solid, 0.001)
@@ -176,6 +190,7 @@ impl NewellSolid {
             .iter()
             .map(point_to_f32)
             .collect::<Result<Vec<_>, _>>()?;
+        validate_mesh_precision(&mesh.positions, &positions, &mesh.indices)?;
         let normals = mesh
             .normals
             .iter()
@@ -234,6 +249,43 @@ fn operation_error(error: impl std::fmt::Display) -> NewellKernelError {
     NewellKernelError::Operation {
         message: error.to_string(),
     }
+}
+
+fn validate_mesh_precision(
+    original: &[brepkit_math::vec::Point3],
+    converted: &[[f32; 3]],
+    indices: &[u32],
+) -> Result<(), NewellKernelError> {
+    use brepkit_math::vec::Point3;
+    if original.len() != converted.len() || !indices.len().is_multiple_of(3) {
+        return Err(operation_error("invalid mesh buffer lengths"));
+    }
+    for triangle in indices.as_chunks::<3>().0 {
+        let mut exact = [Point3::new(0., 0., 0.); 3];
+        let mut rounded = exact;
+        for (corner, index) in triangle.iter().enumerate() {
+            let index = usize::try_from(*index).map_err(operation_error)?;
+            exact[corner] = *original
+                .get(index)
+                .ok_or_else(|| operation_error("mesh vertex index"))?;
+            let point = converted
+                .get(index)
+                .ok_or_else(|| operation_error("mesh vertex index"))?;
+            rounded[corner] = Point3::new(
+                f64::from(point[0]),
+                f64::from(point[1]),
+                f64::from(point[2]),
+            );
+        }
+        let before = (exact[1] - exact[0]).cross(exact[2] - exact[0]);
+        let after = (rounded[1] - rounded[0]).cross(rounded[2] - rounded[0]);
+        // Degenerate source triangles are the tessellator's responsibility. An
+        // actual area may never disappear or flip merely during conversion.
+        if before.length_squared() > 0. && before.dot(after) <= 0. {
+            return Err(NewellKernelError::MeshPrecisionLoss);
+        }
+    }
+    Ok(())
 }
 
 fn finite_f32(value: f64) -> Result<f32, NewellKernelError> {
@@ -317,5 +369,90 @@ mod tests {
             3,
             "the three coplanar seams must be absent"
         );
+    }
+}
+
+/// Exact item ranges in a composed display/query mesh. B-Rep ordinals remain item-local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewellMeshRange {
+    pub index_start: u32,
+    pub index_end: u32,
+    pub face_start: u32,
+    pub face_end: u32,
+}
+impl NewellMesh {
+    /// Composes owned display buffers with explicit per-item face/index ranges.
+    /// This only joins meshes; it never creates or substitutes model geometry.
+    ///
+    /// # Errors
+    /// Rejects index/count overflow and malformed input buffers before publishing a mesh.
+    pub fn compose(items: &[&Self]) -> Result<(Self, Vec<NewellMeshRange>), NewellKernelError> {
+        let mut mesh = Self {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            indices: Vec::new(),
+            face_offsets: vec![0],
+            feature_edges: NewellEdgePolylines {
+                positions: Vec::new(),
+                offsets: vec![0],
+            },
+        };
+        let mut ranges = Vec::new();
+        let capacity_error = || NewellKernelError::Operation {
+            message: "composed scene mesh exceeds index capacity".into(),
+        };
+        for item in items {
+            let vertex = u32::try_from(mesh.positions.len()).map_err(|_| capacity_error())?;
+            let index_start = u32::try_from(mesh.indices.len()).map_err(|_| capacity_error())?;
+            let face_start = u32::try_from(mesh.face_count()).map_err(|_| capacity_error())?;
+            if item.positions.len() != item.normals.len()
+                || item.face_offsets.first() != Some(&0)
+                || item.face_offsets.last().copied() != u32::try_from(item.indices.len()).ok()
+                || item.indices.len() % 3 != 0
+            {
+                return Err(NewellKernelError::NonFiniteMesh);
+            }
+            let total = mesh
+                .positions
+                .len()
+                .checked_add(item.positions.len())
+                .ok_or_else(capacity_error)?;
+            u32::try_from(total).map_err(|_| capacity_error())?;
+            for index in &item.indices {
+                if usize::try_from(*index).map_or(true, |index| index >= item.positions.len()) {
+                    return Err(NewellKernelError::NonFiniteMesh);
+                }
+                mesh.indices
+                    .push(vertex.checked_add(*index).ok_or_else(capacity_error)?);
+            }
+            mesh.positions.extend_from_slice(&item.positions);
+            mesh.normals.extend_from_slice(&item.normals);
+            for offset in item.face_offsets.iter().skip(1) {
+                mesh.face_offsets.push(
+                    index_start
+                        .checked_add(*offset)
+                        .ok_or_else(capacity_error)?,
+                );
+            }
+            let edge_start =
+                u32::try_from(mesh.feature_edges.positions.len()).map_err(|_| capacity_error())?;
+            mesh.feature_edges
+                .positions
+                .extend_from_slice(&item.feature_edges.positions);
+            for offset in item.feature_edges.offsets.iter().skip(1) {
+                mesh.feature_edges
+                    .offsets
+                    .push(edge_start.checked_add(*offset).ok_or_else(capacity_error)?);
+            }
+            let index_end = u32::try_from(mesh.indices.len()).map_err(|_| capacity_error())?;
+            let face_end = u32::try_from(mesh.face_count()).map_err(|_| capacity_error())?;
+            ranges.push(NewellMeshRange {
+                index_start,
+                index_end,
+                face_start,
+                face_end,
+            });
+        }
+        Ok((mesh, ranges))
     }
 }

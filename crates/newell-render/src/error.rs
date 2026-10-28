@@ -9,6 +9,8 @@
 /// Errors returned by the renderer. Crate-local by design (no global error type).
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
+    #[error("navigation overlay: {0}")]
+    Navigation(String),
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
     #[error("surface creation failed: {0}")]

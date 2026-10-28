@@ -61,7 +61,7 @@ pub struct FeatureTreeItem {
     pub name: String,
     /// Root children have depth one; only folders can parent deeper items.
     pub depth: u32,
-    /// Legacy reference squares only; live operations and folders supply `None`.
+    /// Historical fixture state or the aggregate visibility of a live Base operation's outputs.
     pub visibility: Option<bool>,
 }
 /// One entity in the ordered operation/output stream, before Elements grouping.
@@ -69,6 +69,8 @@ pub struct FeatureTreeItem {
 pub struct ElementTreeItem {
     pub id: OpaqueTreeId,
     pub source_feature: OpaqueTreeId,
+    /// Whether the producer is seeded geometry outside operation history.
+    pub seeded: bool,
     /// Zero-based position within the producing operation's stored outputs.
     pub output_ordinal: usize,
     pub group: ElementGroup,
@@ -126,10 +128,45 @@ impl Default for PlacedHistoryGap {
         }
     }
 }
+/// Built-in world references, distinct from operation and model-entity identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OriginReference {
+    O,
+    X,
+    Y,
+    Z,
+    XY,
+    XZ,
+    YZ,
+}
+impl OriginReference {
+    pub const ALL: [Self; 7] = [
+        Self::O,
+        Self::X,
+        Self::Y,
+        Self::Z,
+        Self::XY,
+        Self::XZ,
+        Self::YZ,
+    ];
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::O => "O",
+            Self::X => "X",
+            Self::Y => "Y",
+            Self::Z => "Z",
+            Self::XY => "XY",
+            Self::XZ => "XZ",
+            Self::YZ => "YZ",
+        }
+    }
+}
 /// Semantic target kind, independent of visible cell positions and reusable widget ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TreeTargetKind {
     FeaturesRoot,
+    OriginFolder,
+    OriginReference(OriginReference),
     Operation(OpaqueTreeId),
     Folder(OpaqueTreeId),
     ElementsRoot,
@@ -173,7 +210,7 @@ impl TreeInitialState {
                 }
             }
         }
-        let nodes = super::data::projection_nodes(projection);
+        let nodes = super::data::projection_nodes(projection, true);
         if self
             .expanded
             .iter()
@@ -289,7 +326,7 @@ impl ModelTreeProjection {
         for item in &self.elements {
             if !entities.insert(item.id)
                 || !outputs.insert((item.source_feature, item.output_ordinal))
-                || !seen.contains(&FeatureNodeId::Operation(item.source_feature))
+                || (!item.seeded && !seen.contains(&FeatureNodeId::Operation(item.source_feature)))
             {
                 return Err(UiError::InvalidTreeProjection);
             }
@@ -424,11 +461,13 @@ impl super::ShellState {
         })
     }
     pub fn open_selection(&mut self, request: crate::SelectionOpen) -> Result<(), UiError> {
+        let qualified = matches!(request.destination,crate::SelectionDestination::Field{session,field} if field.geometry_qualified() && self.numeric_identity==Some((request.document,session,field.operation)) && self.selection_field_visible(field));
         if request.document != self.projection.document
-            || request
-                .rows
-                .iter()
-                .any(|r| !self.projection.elements.iter().any(|e| e.id == r.entity))
+            || (!qualified
+                && request
+                    .rows
+                    .iter()
+                    .any(|r| !self.projection.elements.iter().any(|e| e.id == r.entity)))
         {
             return Err(UiError::InvalidSelection);
         }
@@ -543,6 +582,17 @@ impl super::ShellState {
                 crate::SelectionEdit::Clear => selected.clear(),
             }
         }
+    }
+    pub(super) fn history_index(&self, target: TreeTarget) -> Option<usize> {
+        let id = match target.kind {
+            TreeTargetKind::Operation(id) => FeatureNodeId::Operation(id),
+            TreeTargetKind::Folder(id) => FeatureNodeId::Folder(id),
+            _ => return None,
+        };
+        self.projection
+            .features
+            .iter()
+            .position(|item| item.id == id)
     }
     pub(super) fn playhead_depth(&self) -> u32 {
         match self.playhead.display {
@@ -711,7 +761,7 @@ impl super::ShellState {
         }) {
             self.interaction.set_focused(None);
         }
-        self.nodes = super::data::projection_nodes(&projection);
+        self.nodes = super::data::projection_nodes(&projection, !self.reference_fixture);
         self.update_tree_content_max();
         self.projection = projection;
         self.expanded = initial.expanded;
@@ -733,6 +783,8 @@ impl super::ShellState {
         self.selection.dismiss();
         self.selection_request = None;
         self.tree_focus = None;
+        self.properties_request = None;
+        self.properties_origin = None;
         self.tree_scroll = [0, 0];
         self.rename.cancel();
         self.rename_target = None;
@@ -752,7 +804,7 @@ impl super::ShellState {
             && candidate.selection.is_open()
         {
             if request.document != candidate.projection.document
-                || matches!(request.destination, crate::SelectionDestination::Field { field, .. } if !candidate.selection_field_visible(field))
+                || matches!(request.destination, crate::SelectionDestination::Field { field, .. } if field.geometry_qualified() || !candidate.selection_field_visible(field))
             {
                 candidate.selection.dismiss();
                 candidate.sync();
@@ -810,7 +862,7 @@ impl super::ShellState {
                     })
             });
             let old_features = self.projection.features.clone();
-            self.nodes = super::data::projection_nodes(&projection);
+            self.nodes = super::data::projection_nodes(&projection, !self.reference_fixture);
             self.update_tree_content_max();
             self.projection = projection;
             let targets: BTreeSet<_> = self
@@ -1128,5 +1180,155 @@ impl super::ShellState {
         };
         self.rebuild_tree_slots();
         Some(old != self.tree_scroll[tree.slot()])
+    }
+}
+
+#[cfg(test)]
+mod origin_reference_tests {
+    use super::*;
+    use crate::shell::data::Line;
+    use crate::shell::{ShellState, Tree};
+
+    fn shell() -> ShellState {
+        let mut shell = ShellState::new_application(100, 60);
+        let mut p = ModelTreeProjection::empty(TreeDocumentId::new(9));
+        p.features.push(FeatureTreeItem {
+            id: FeatureNodeId::Operation(OpaqueTreeId::new(1)),
+            name: "Operation".into(),
+            depth: 1,
+            visibility: None,
+        });
+        shell.set_tree_projection(p).unwrap();
+        shell
+    }
+    fn visible(shell: &ShellState) -> Vec<TreeTargetKind> {
+        shell
+            .tree_lines(Tree::Features)
+            .iter()
+            .filter_map(|l| match l {
+                Line::Node(row) => Some(shell.nodes[0][row.index].target.kind),
+                _ => None,
+            })
+            .collect()
+    }
+    #[test]
+    fn seed_only_document_has_origin_then_end_without_operation_rows() {
+        let mut s = ShellState::new_application(100, 60);
+        let mut p = ModelTreeProjection::empty(TreeDocumentId::new(9));
+        p.elements.push(ElementTreeItem {
+            id: OpaqueTreeId::new(1),
+            source_feature: OpaqueTreeId::new(0),
+            seeded: true,
+            output_ordinal: 0,
+            group: ElementGroup::Bodies,
+            name: "Base Solid".into(),
+            visible: true,
+        });
+        s.set_tree_projection(p).unwrap();
+        assert_eq!(
+            visible(&s),
+            vec![TreeTargetKind::FeaturesRoot, TreeTargetKind::OriginFolder]
+        );
+        assert_eq!(s.playhead, PlacedHistoryGap::default());
+        assert_eq!(s.projection.elements.len(), 1);
+        assert!(s.projection.features.is_empty());
+    }
+
+    #[test]
+    fn origin_reference_folder_order_identity_and_expansion_are_presentation_only() {
+        let mut s = shell();
+        let p = s.projection.clone();
+        let gap = s.playhead;
+        assert_eq!(
+            visible(&s),
+            vec![
+                TreeTargetKind::FeaturesRoot,
+                TreeTargetKind::OriginFolder,
+                TreeTargetKind::Operation(OpaqueTreeId::new(1))
+            ]
+        );
+        assert_eq!(s.nodes[0][1].label, "Origin");
+        assert_eq!(
+            s.nodes[0][2..9]
+                .iter()
+                .map(|n| n.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["O", "X", "Y", "Z", "XY", "XZ", "YZ"]
+        );
+        let targets = s.nodes[0][1..9]
+            .iter()
+            .map(|n| n.target)
+            .collect::<Vec<_>>();
+        assert_eq!(targets.iter().collect::<BTreeSet<_>>().len(), 8);
+        assert!(
+            targets
+                .iter()
+                .all(|t| s.history_index(*t).is_none() && !s.rename_eligible(*t))
+        );
+        assert!(s.nodes[0][1..9].iter().all(|n| n.check.is_none()));
+        s.activate_tree(Tree::Features, 1, TreePart::Marker);
+        assert_eq!(visible(&s).len(), 10);
+        for reference in OriginReference::ALL {
+            assert!(visible(&s).contains(&TreeTargetKind::OriginReference(reference)));
+        }
+        for i in 1..9 {
+            s.activate_tree(Tree::Features, i, TreePart::Row);
+            s.activate_tree(Tree::Features, i, TreePart::Check);
+            assert!(s.take_tree_edit().is_none());
+            assert!(!s.is_entity_target_selected(s.nodes[0][i].target));
+        }
+        assert_eq!(s.playhead, gap);
+        assert_eq!(s.projection, p);
+        assert!(!s.nodes[1].iter().any(|n| targets.contains(&n.target)));
+        s.activate_tree(Tree::Features, 1, TreePart::Marker);
+        assert_eq!(visible(&s).len(), 3);
+        let mut updated = p.clone();
+        updated.features[0].name = "Renamed operation".into();
+        s.set_tree_projection(updated).unwrap();
+        assert_eq!(
+            targets,
+            s.nodes[0][1..9]
+                .iter()
+                .map(|n| n.target)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(s.projection.elements, p.elements);
+    }
+    #[test]
+    fn origin_reference_rows_never_host_or_move_operation_insertion() {
+        let mut s = shell();
+        let gap = s
+            .projection
+            .placed_gap(GapDisplayLocation::BeforeNode(s.projection.features[0].id))
+            .unwrap();
+        s.set_playhead(gap).unwrap();
+        for expanded in [false, true] {
+            if expanded {
+                s.activate_tree(Tree::Features, 1, TreePart::Marker);
+            }
+            let lines = s.tree_lines(Tree::Features);
+            let playhead = lines
+                .iter()
+                .position(|l| matches!(l, Line::Playhead))
+                .unwrap();
+            let operation=lines.iter().position(|l|matches!(l,Line::Node(r) if s.nodes[0][r.index].target.kind==TreeTargetKind::Operation(OpaqueTreeId::new(1)))).unwrap();
+            assert_eq!(playhead + 1, operation);
+            let first = s.layout().features.inset(1).row();
+            for (row, line) in lines.iter().enumerate() {
+                if matches!(line,Line::Node(r) if matches!(s.nodes[0][r.index].target.kind,TreeTargetKind::OriginFolder|TreeTargetKind::OriginReference(_)))
+                {
+                    assert!(!s.drag_playhead(first + row as u32));
+                    assert_eq!(s.playhead, gap);
+                }
+            }
+            assert!(s.inline_playhead_host().is_none());
+        }
+        let empty = ModelTreeProjection::empty(TreeDocumentId::new(10));
+        s.set_tree_projection(empty).unwrap();
+        assert!(matches!(
+            s.tree_lines(Tree::Features).last(),
+            Some(Line::Playhead)
+        ));
+        assert_eq!(s.playhead.insertion, HistoryGap::End);
     }
 }

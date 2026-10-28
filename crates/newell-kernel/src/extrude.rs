@@ -10,7 +10,7 @@ use crate::{
     operation_error,
 };
 use brepkit_math::{mat::Mat4, vec::Vec3};
-use brepkit_topology::{SolidId, Topology};
+use brepkit_topology::{FaceId, SolidId, Topology};
 use std::collections::BTreeMap;
 
 /// Arena-local Newell identity, never a BrepKIT handle or a cross-thread geometry token.
@@ -19,8 +19,11 @@ pub struct NewellShapeKey(u64);
 /// All topology is created and retained inside the one geometry worker.
 #[derive(Debug, Default)]
 pub struct NewellGeometry {
-    topology: Topology,
+    pub(crate) topology: Topology,
     solids: BTreeMap<NewellShapeKey, SolidId>,
+    pub(crate) surfaces: BTreeMap<NewellShapeKey, Vec<FaceId>>,
+    pub(crate) surface_recipes: BTreeMap<NewellShapeKey, crate::surface::SurfaceSweepRecipe>,
+    provenance: BTreeMap<NewellShapeKey, BTreeMap<u32, crate::NewellFaceProvenance>>,
     next: u64,
 }
 impl NewellGeometry {
@@ -29,7 +32,7 @@ impl NewellGeometry {
     pub fn new() -> Self {
         Self::default()
     }
-    fn insert(&mut self, solid: SolidId) -> Result<NewellShapeKey, NewellKernelError> {
+    fn reserve_key(&mut self) -> Result<NewellShapeKey, NewellKernelError> {
         let next = self
             .next
             .checked_add(1)
@@ -37,11 +40,36 @@ impl NewellGeometry {
                 message: "geometry identity exhausted".into(),
             })?;
         let key = NewellShapeKey(self.next);
-        self.solids.insert(key, solid);
         self.next = next;
         Ok(key)
     }
-    fn solid(&self, key: NewellShapeKey) -> Result<SolidId, NewellKernelError> {
+    pub(crate) fn insert(&mut self, solid: SolidId) -> Result<NewellShapeKey, NewellKernelError> {
+        let key = self.reserve_key()?;
+        self.solids.insert(key, solid);
+        Ok(key)
+    }
+    pub(crate) fn insert_surface(
+        &mut self,
+        faces: Vec<FaceId>,
+    ) -> Result<NewellShapeKey, NewellKernelError> {
+        if faces.is_empty() {
+            return Err(operation_error("empty surface"));
+        }
+        let key = self.reserve_key()?;
+        self.surfaces.insert(key, faces);
+        Ok(key)
+    }
+    pub(crate) fn shape_faces(
+        &self,
+        key: NewellShapeKey,
+    ) -> Result<Vec<FaceId>, NewellKernelError> {
+        if let Some(faces) = self.surfaces.get(&key) {
+            return Ok(faces.clone());
+        }
+        brepkit_topology::explorer::solid_faces(&self.topology, self.solid(key)?)
+            .map_err(operation_error)
+    }
+    pub(crate) fn solid(&self, key: NewellShapeKey) -> Result<SolidId, NewellKernelError> {
         self.solids
             .get(&key)
             .copied()
@@ -74,7 +102,13 @@ impl NewellGeometry {
             &Mat4::translation(origin[0], origin[1], origin[2]),
         )
         .map_err(operation_error)?;
-        self.insert(solid)
+        let key = self.insert(solid)?;
+        let roles = crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)?
+            .into_iter()
+            .map(|face| (face.face, crate::NewellFaceProvenance::Base(face.face)))
+            .collect();
+        self.provenance.insert(key, roles);
+        Ok(key)
     }
     /// Resolves and sweeps a genuine planar face of an existing generation's shape.
     ///
@@ -93,9 +127,7 @@ impl NewellGeometry {
                 parameter: "extrusion interval",
             });
         }
-        let source = self.solid(profile)?;
-        let faces = brepkit_topology::explorer::solid_faces(&self.topology, source)
-            .map_err(operation_error)?;
+        let faces = self.shape_faces(profile)?;
         let face = *faces
             .get(usize::try_from(face).map_err(operation_error)?)
             .ok_or_else(|| NewellKernelError::Operation {
@@ -132,7 +164,7 @@ impl NewellGeometry {
         self.validate_native(solid)?;
         self.insert(solid)
     }
-    fn validate_native(&self, solid: SolidId) -> Result<(), NewellKernelError> {
+    pub(crate) fn validate_native(&self, solid: SolidId) -> Result<(), NewellKernelError> {
         let validation = brepkit_operations::validate::validate_solid(&self.topology, solid)
             .map_err(operation_error)?;
         if !validation.is_valid() {
@@ -199,6 +231,9 @@ impl NewellGeometry {
         key: NewellShapeKey,
         deflection: f64,
     ) -> Result<NewellMesh, NewellKernelError> {
+        if self.surfaces.contains_key(&key) {
+            return self.surface_mesh(key, deflection);
+        }
         self.owned_snapshot(key)?.tessellate(deflection)
     }
     /// Exact generation's candidate faces and oriented boundary occurrences.
@@ -209,7 +244,136 @@ impl NewellGeometry {
         &self,
         key: NewellShapeKey,
     ) -> Result<Vec<NewellProfileFace>, NewellKernelError> {
-        self.owned_snapshot(key)?.profile_faces()
+        let mut faces = crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)?;
+        for face in &mut faces {
+            if let Some(role) = self
+                .provenance
+                .get(&key)
+                .and_then(|roles| roles.get(&face.face))
+            {
+                face.provenance = *role;
+            }
+        }
+        Ok(faces)
+    }
+    /// Assigns only uniquely proven cap/wall roles to a completed extrusion tool.
+    ///
+    /// # Errors
+    /// Rejects absent supports and invalid directions/topology.
+    pub fn tag_extrude(
+        &mut self,
+        key: NewellShapeKey,
+        profile: (NewellShapeKey, u32),
+        direction: [f64; 3],
+    ) -> Result<(), NewellKernelError> {
+        use crate::NewellFaceProvenance as Role;
+        let d = Vec3::new(direction[0], direction[1], direction[2])
+            .normalize()
+            .map_err(operation_error)?;
+        let source = self
+            .profile_faces(profile.0)?
+            .into_iter()
+            .find(|face| face.face == profile.1)
+            .ok_or_else(|| operation_error("missing profile support"))?;
+        let mut roles = BTreeMap::new();
+        let mut counts = BTreeMap::new();
+        for face in crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)? {
+            let n = Vec3::new(
+                face.frame.normal[0],
+                face.frame.normal[1],
+                face.frame.normal[2],
+            );
+            let alignment = n.dot(d);
+            let role = if alignment > 1e-12 {
+                Role::EndCap
+            } else if alignment < -1e-12 {
+                Role::StartCap
+            } else {
+                let origin = Vec3::new(
+                    face.frame.origin[0],
+                    face.frame.origin[1],
+                    face.frame.origin[2],
+                );
+                let mut matches = Vec::new();
+                for wire in &source.wires {
+                    for edge in &wire.edges {
+                        if !edge.straight {
+                            continue;
+                        }
+                        let point = |p: [f64; 3]| Vec3::new(p[0], p[1], p[2]);
+                        let scale = (point(edge.start) - origin)
+                            .length()
+                            .max((point(edge.end) - origin).length())
+                            .max(origin.length());
+                        let eps = 1e-7_f64.max(scale * 1e-10);
+                        if n.dot(point(edge.start) - origin).abs() <= eps
+                            && n.dot(point(edge.end) - origin).abs() <= eps
+                        {
+                            matches.push(Role::Wall {
+                                wire: wire.wire,
+                                edge: edge.edge,
+                            });
+                        }
+                    }
+                }
+                if matches.len() == 1 {
+                    matches[0]
+                } else {
+                    Role::Unknown
+                }
+            };
+            *counts.entry(role).or_insert(0usize) += 1;
+            roles.insert(face.face, role);
+        }
+        for role in roles.values_mut() {
+            if counts.get(role).copied().unwrap_or(0) != 1 {
+                *role = Role::Unknown;
+            }
+        }
+        self.provenance.insert(key, roles);
+        Ok(())
+    }
+    /// Resolves the selected straight boundary occurrence against current native geometry.
+    ///
+    /// # Errors
+    /// Rejects missing/nonstraight occurrences and collapsed directions.
+    pub fn direction(
+        &self,
+        key: NewellShapeKey,
+        face: u32,
+        wire: u32,
+        edge: u32,
+    ) -> Result<[f64; 3], NewellKernelError> {
+        let face = self
+            .profile_faces(key)?
+            .into_iter()
+            .find(|value| value.face == face)
+            .ok_or_else(|| operation_error("direction support"))?;
+        let edge = face
+            .wires
+            .iter()
+            .find(|value| value.wire == wire)
+            .and_then(|wire| {
+                wire.edges
+                    .iter()
+                    .find(|value| value.edge == edge && value.straight)
+            })
+            .ok_or_else(|| operation_error("direction edge"))?;
+        let d = Vec3::new(
+            edge.end[0] - edge.start[0],
+            edge.end[1] - edge.start[1],
+            edge.end[2] - edge.start[2],
+        )
+        .normalize()
+        .map_err(operation_error)?;
+        Ok([d.x(), d.y(), d.z()])
+    }
+    /// Complete native face count, including curved faces and cavity shells.
+    ///
+    /// # Errors
+    /// Propagates missing shape and invalid topology.
+    pub fn face_count(&self, key: NewellShapeKey) -> Result<usize, NewellKernelError> {
+        Ok(self.shape_faces(key)?.len())
     }
     /// Measures the actual B-Rep independently of the display mesh.
     ///
@@ -217,5 +381,215 @@ impl NewellGeometry {
     /// Propagates missing shape and kernel measurement errors.
     pub fn volume(&self, key: NewellShapeKey) -> Result<f64, NewellKernelError> {
         self.owned_snapshot(key)?.volume()
+    }
+}
+
+/// Exact changed-target inventory and connected result bodies.
+#[derive(Debug)]
+pub struct NewellBodyResult {
+    pub outputs: Vec<NewellShapeKey>,
+    pub changed_targets: Vec<usize>,
+}
+impl NewellGeometry {
+    /// Separates native disconnected outer shells while retaining each cavity with its owner.
+    ///
+    /// # Errors
+    /// Rejects ambiguous cavities, invalid components and topology failures.
+    pub fn body_components(
+        &mut self,
+        key: NewellShapeKey,
+    ) -> Result<Vec<NewellShapeKey>, NewellKernelError> {
+        use brepkit_topology::{shell::Shell, solid::Solid};
+        let solid = self.solid(key)?;
+        let value = self.topology.solid(solid).map_err(operation_error)?;
+        let voids = value.inner_shells().to_vec();
+        let faces = self
+            .topology
+            .shell(value.outer_shell())
+            .map_err(operation_error)?
+            .faces()
+            .to_vec();
+        let mut edges: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+        for (index, id) in faces.iter().enumerate() {
+            let face = self.topology.face(*id).map_err(operation_error)?;
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for edge in self.topology.wire(wire).map_err(operation_error)?.edges() {
+                    edges.entry(edge.edge()).or_default().push(index);
+                }
+            }
+        }
+        let mut neighbors = vec![Vec::new(); faces.len()];
+        for uses in edges.values() {
+            for index in uses {
+                neighbors[*index].extend(uses.iter().copied().filter(|other| other != index));
+            }
+        }
+        let mut visited = vec![false; faces.len()];
+        let mut groups = Vec::new();
+        for first in 0..faces.len() {
+            if visited[first] {
+                continue;
+            }
+            let mut group = Vec::new();
+            let mut work = vec![first];
+            visited[first] = true;
+            while let Some(index) = work.pop() {
+                group.push(faces[index]);
+                for next in &neighbors[index] {
+                    if !visited[*next] {
+                        visited[*next] = true;
+                        work.push(*next);
+                    }
+                }
+            }
+            groups.push(group);
+        }
+        if groups.len() == 1 {
+            self.validate_native(solid)?;
+            return Ok(vec![key]);
+        }
+        let mut components = Vec::new();
+        for group in groups {
+            let shell = self
+                .topology
+                .add_shell(Shell::new(group).map_err(operation_error)?);
+            components.push(self.topology.add_solid(Solid::new(shell, Vec::new())));
+        }
+        for shell in voids {
+            let face = *self
+                .topology
+                .shell(shell)
+                .map_err(operation_error)?
+                .faces()
+                .first()
+                .ok_or_else(|| operation_error("empty cavity"))?;
+            let wire = self
+                .topology
+                .face(face)
+                .map_err(operation_error)?
+                .outer_wire();
+            let edge = self
+                .topology
+                .wire(wire)
+                .map_err(operation_error)?
+                .edges()
+                .first()
+                .ok_or_else(|| operation_error("empty cavity wire"))?
+                .edge();
+            let vertex = self.topology.edge(edge).map_err(operation_error)?.start();
+            let point = self
+                .topology
+                .vertex(vertex)
+                .map_err(operation_error)?
+                .point();
+            let mut owners = Vec::new();
+            for component in &components {
+                if brepkit_operations::classify::classify_point(
+                    &self.topology,
+                    *component,
+                    point,
+                    0.001,
+                    1e-7,
+                )
+                .map_err(operation_error)?
+                    == brepkit_operations::classify::PointClassification::Inside
+                {
+                    owners.push(*component);
+                }
+            }
+            if owners.len() != 1 {
+                return Err(operation_error("ambiguous cavity component"));
+            }
+            self.topology
+                .solid_mut(owners[0])
+                .map_err(operation_error)?
+                .add_inner_shell(shell);
+        }
+        components
+            .into_iter()
+            .map(|solid| {
+                self.validate_native(solid)?;
+                self.insert(solid)
+            })
+            .collect()
+    }
+    /// Applies regular solid union/difference and reports only targets actually changed.
+    ///
+    /// # Errors
+    /// Rejects no changed target, invalid/nonmanifold unions and native exact failures.
+    pub fn combine_bodies(
+        &mut self,
+        tool: NewellShapeKey,
+        targets: &[NewellShapeKey],
+        mode: NewellBooleanMode,
+    ) -> Result<NewellBodyResult, NewellKernelError> {
+        let mut changed = Vec::new();
+        let mut outputs = Vec::new();
+        let mut union = tool;
+        match mode {
+            NewellBooleanMode::Add => {
+                let mut pending: Vec<_> = (0..targets.len()).collect();
+                loop {
+                    let mut progress = false;
+                    let mut remaining = Vec::new();
+                    for index in pending {
+                        let merged = self
+                            .boolean(union, targets[index], mode)?
+                            .ok_or_else(|| operation_error("empty union"))?;
+                        let components = self.body_components(merged)?;
+                        if components.len() == 1 {
+                            changed.push(index);
+                            union = components[0];
+                            progress = true;
+                        } else {
+                            remaining.push(index);
+                        }
+                    }
+                    if !progress || remaining.is_empty() {
+                        break;
+                    }
+                    pending = remaining;
+                }
+                changed.sort_unstable();
+            }
+            NewellBooleanMode::Remove => {
+                for (index, target) in targets.iter().copied().enumerate() {
+                    let old = self.volume(target)?;
+                    let result = self.boolean(target, tool, mode)?;
+                    let measure = result
+                        .map(|key| self.volume(key))
+                        .transpose()?
+                        .unwrap_or(0.);
+                    if measure > old + 1e-9_f64.max(old.abs() * 1e-10) {
+                        return Err(operation_error("difference increased the target volume"));
+                    }
+                    if (old - measure).abs() <= 1e-9_f64.max(old.abs() * 1e-10) {
+                        continue;
+                    }
+                    changed.push(index);
+                    if let Some(result) = result {
+                        outputs.extend(self.body_components(result)?);
+                    }
+                }
+            }
+        }
+        if changed.is_empty() {
+            return Err(operation_error("NoTargetIntersection"));
+        }
+        if mode == NewellBooleanMode::Add {
+            if changed.len() == 1 {
+                let old = self.volume(targets[changed[0]])?;
+                let result = self.volume(union)?;
+                if result <= old + 1e-9_f64.max(old.abs() * 1e-10) {
+                    return Err(operation_error("NoTargetIntersection"));
+                }
+            }
+            outputs.push(union);
+        }
+        Ok(NewellBodyResult {
+            outputs,
+            changed_targets: changed,
+        })
     }
 }

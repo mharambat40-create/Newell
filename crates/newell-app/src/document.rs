@@ -7,9 +7,13 @@
 //! Document ownership, successful-change publication and retained UI synchronization.
 
 use crate::AppError;
+#[cfg(test)]
+use newell_model::ExtrudeInputProjection;
+#[cfg(test)]
+use newell_model::{CommandController, ExtrudeSpec};
 use newell_model::{
-    CommandController, Document, EntityId, EntityKind, ExtrudeSpec, FeatureId, FolderId,
-    HistoryLayoutRow, HistoryNodeId, NewEntity,
+    Document, EntityId, EntityKind, Feature, FeatureId, FolderId, HistoryLayoutRow, HistoryNodeId,
+    NewEntity,
 };
 use newell_ui::{
     ElementGroup, ElementTreeItem, FeatureNodeId, FeatureTreeItem, ModelTreeProjection,
@@ -124,6 +128,7 @@ impl DocumentSession {
         if expected != self.version()
             || self.worker_epoch != Some(token.worker_epoch())
             || !token.matches(self.identity, prepared.manifest().generation())
+            || !token.authorizes(&prepared)
         {
             return Err(AppError::InvalidDocumentProjection);
         }
@@ -188,6 +193,13 @@ impl DocumentSession {
         });
         Ok(())
     }
+    /// Adds startup geometry without creating a modeling operation row.
+    pub fn add_seeded_solid(&mut self, name: &str) -> Result<FeatureId, AppError> {
+        let revision = self.next_revision()?;
+        let id = self.document.add_seeded_solid(name)?;
+        self.changed(revision);
+        Ok(id)
+    }
     /// Appends a base operation with one visible body bearing the same initial name.
     pub fn add_base_solid(&mut self, name: &str) -> Result<FeatureId, AppError> {
         let revision = self.next_revision()?;
@@ -245,13 +257,38 @@ impl DocumentSession {
     pub fn rename_entity(&mut self, id: EntityId, name: String) -> Result<bool, AppError> {
         self.edit_metadata(|document| document.rename_entity(id, name))
     }
-    /// Persists tree visibility metadata; this does not filter viewport geometry.
+    /// Changes entity visibility metadata without deleting or regenerating geometry.
     pub fn set_entity_visibility(&mut self, id: EntityId, visible: bool) -> Result<bool, AppError> {
         self.edit_metadata(|document| document.set_entity_visibility(id, visible))
+    }
+    fn set_base_feature_outputs_visibility(
+        &mut self,
+        id: FeatureId,
+        visible: bool,
+    ) -> Result<bool, AppError> {
+        let Some(Feature::Base { outputs, .. }) = self.document.feature(id) else {
+            return Ok(false);
+        };
+        let outputs = outputs.clone();
+        if outputs.is_empty()
+            || outputs
+                .iter()
+                .any(|entity| self.document.entity(*entity).is_none())
+        {
+            return Ok(false);
+        }
+        self.edit_metadata(|document| {
+            let mut changed = false;
+            for entity in outputs {
+                changed |= document.set_entity_visibility(entity, visible)?;
+            }
+            Ok(changed)
+        })
     }
     /// Commits the latest UI draft before an operation, or at End when `before` is `None`.
     /// Reference and capacity preflight precede candidate editing; failure preserves the
     /// live command, model, revision and notification stream.
+    #[cfg(test)]
     pub fn confirm_before(
         &mut self,
         commands: &mut CommandController,
@@ -272,10 +309,10 @@ impl DocumentSession {
     /// Resolves a projected operation id in the current document.
     /// The caller separately validates the projection's document namespace.
     pub fn feature_id(&self, id: OpaqueTreeId) -> Option<FeatureId> {
-        self.document
-            .features()
-            .iter()
-            .find_map(|(current, _)| (current.get() == id.get()).then_some(*current))
+        self.document.features().iter().find_map(|(current, _)| {
+            (current.get() == id.get() && !self.document.is_seeded_feature(*current))
+                .then_some(*current)
+        })
     }
     fn folder_id(&self, id: OpaqueTreeId) -> Option<FolderId> {
         self.document
@@ -298,6 +335,34 @@ impl DocumentSession {
             return Ok(false);
         }
         let changed = match (target.kind, intent) {
+            (
+                TreeTargetKind::Operation(id),
+                TreeIntentKind::SetVisibility {
+                    expected_visible,
+                    visible,
+                },
+            ) => {
+                let Some(id) = self.feature_id(id) else {
+                    return Ok(false);
+                };
+                let Some(Feature::Base { outputs, .. }) = self.document.feature(id) else {
+                    return Ok(false);
+                };
+                if outputs.is_empty()
+                    || outputs
+                        .iter()
+                        .any(|entity| self.document.entity(*entity).is_none())
+                {
+                    return Ok(false);
+                }
+                let current = outputs
+                    .iter()
+                    .all(|entity| self.document.entity(*entity).is_some_and(|e| e.visible()));
+                if current != *expected_visible {
+                    return Ok(false);
+                }
+                self.set_base_feature_outputs_visibility(id, *visible)?
+            }
             (TreeTargetKind::Operation(id), TreeIntentKind::Rename { source_name, name }) => {
                 let Some(id) = self.feature_id(id) else {
                     return Ok(false);
@@ -387,30 +452,22 @@ pub fn project_document(
                 .depth
                 .checked_add(1)
                 .ok_or(AppError::InvalidDocumentProjection)?,
-            visibility: None,
+            visibility: match row.node {
+                HistoryNodeId::Operation(id) => match document.feature(id) {
+                    Some(Feature::Base { outputs, .. }) if !outputs.is_empty() => {
+                        Some(outputs.iter().all(|entity| {
+                            document
+                                .entity(*entity)
+                                .is_some_and(|entity| entity.visible())
+                        }))
+                    }
+                    _ => None,
+                },
+                HistoryNodeId::Folder(_) => None,
+            },
         });
     }
-    let mut elements = Vec::new();
-    for (feature, value) in document.features() {
-        for (output_ordinal, id) in value.outputs().iter().enumerate() {
-            let entity = document
-                .entity(*id)
-                .ok_or(AppError::InvalidDocumentProjection)?;
-            let group = match entity.kind() {
-                EntityKind::Body => ElementGroup::Bodies,
-                EntityKind::Surface => ElementGroup::Surfaces,
-                EntityKind::Construction(_) => ElementGroup::Construct,
-            };
-            elements.push(ElementTreeItem {
-                id: OpaqueTreeId::new(id.get()),
-                source_feature: OpaqueTreeId::new(feature.get()),
-                output_ordinal,
-                group,
-                name: entity.name().into(),
-                visible: entity.visible(),
-            });
-        }
-    }
+    let elements = project_entity_outputs(document)?;
     let projection = ModelTreeProjection {
         document: instance.tree(),
         features,
@@ -419,6 +476,40 @@ pub fn project_document(
     };
     projection.validate()?;
     Ok(projection)
+}
+
+/// Projects only real entity outputs into Elements; history nodes belong exclusively to
+/// `features`. Resolve each output through the document entity store instead of inferring
+/// entity rows from operation names or history rows. An operation and its output may share
+/// a display name while retaining distinct semantic identities.
+fn project_entity_outputs(document: &Document) -> Result<Vec<ElementTreeItem>, AppError> {
+    let mut elements = Vec::new();
+    let active = document.active_entities_at(None)?;
+    for (source_feature, operation) in document.features() {
+        for (output_ordinal, entity_id) in operation.outputs().iter().enumerate() {
+            if !active.contains(entity_id) {
+                continue;
+            }
+            let entity = document
+                .entity(*entity_id)
+                .ok_or(AppError::InvalidDocumentProjection)?;
+            let group = match entity.kind() {
+                EntityKind::Body => ElementGroup::Bodies,
+                EntityKind::Surface => ElementGroup::Surfaces,
+                EntityKind::Construction(_) => ElementGroup::Construct,
+            };
+            elements.push(ElementTreeItem {
+                id: OpaqueTreeId::new(entity_id.get()),
+                source_feature: OpaqueTreeId::new(source_feature.get()),
+                seeded: document.is_seeded_feature(*source_feature),
+                output_ordinal,
+                group,
+                name: entity.name().into(),
+                visible: entity.visible(),
+            });
+        }
+    }
+    Ok(elements)
 }
 
 #[derive(Debug)]
@@ -573,10 +664,99 @@ mod tests {
         })
     }
     fn draft() -> ExtrudeSpec {
-        ExtrudeSpec {
+        ExtrudeInputProjection {
             depth: ParameterValue::literal(newell_model::Length::millimetres(10.0).unwrap()),
-            ..ExtrudeSpec::default()
+            ..ExtrudeInputProjection::default()
         }
+        .into_spec()
+        .unwrap()
+    }
+
+    #[test]
+    fn seeded_cube_has_no_operation_gap_and_keeps_entity_references() {
+        let mut session = DocumentSession::default();
+        let seed = session.add_seeded_solid("Base Solid").unwrap();
+        let entity = session.document().feature(seed).unwrap().outputs()[0];
+        let projection = project_document(session.identity(), session.document()).unwrap();
+        assert!(projection.features.is_empty());
+        assert!(session.document().history_layout().is_empty());
+        assert_eq!(projection.elements.len(), 1);
+        assert_eq!(projection.elements[0].id.get(), entity.get());
+        assert_eq!(projection.elements[0].group, ElementGroup::Bodies);
+        assert!(projection.elements[0].visible);
+        assert!(projection.elements[0].seeded);
+        let mut shell = ShellState::new_application(82, 30);
+        shell.set_tree_projection(projection).unwrap();
+        assert_eq!(shell.playhead(), newell_ui::PlacedHistoryGap::default());
+        session
+            .rename_entity(entity, "Renamed fixture".into())
+            .unwrap();
+        assert!(
+            project_document(session.identity(), session.document())
+                .unwrap()
+                .features
+                .is_empty()
+        );
+        session.set_entity_visibility(entity, false).unwrap();
+        assert!(
+            !project_document(session.identity(), session.document())
+                .unwrap()
+                .elements[0]
+                .visible
+        );
+        session.set_entity_visibility(entity, true).unwrap();
+        let spec = ExtrudeInputProjection {
+            profile: Some(entity),
+            merge_scope: vec![entity],
+            ..draft().inputs()
+        }
+        .into_spec()
+        .unwrap();
+        session
+            .document()
+            .validate_extrude_insertion(&spec, None)
+            .unwrap();
+        let mut commands = CommandController::default();
+        let first = session
+            .confirm_before(&mut commands, spec.clone(), None)
+            .unwrap()
+            .unwrap();
+        session
+            .document()
+            .validate_extrude_insertion(&spec, Some(first))
+            .unwrap();
+        assert!(
+            session
+                .document()
+                .validate_extrude_insertion(&spec, Some(seed))
+                .is_err()
+        );
+        session.rename_feature(first, "Base Solid".into()).unwrap();
+        let projection = project_document(session.identity(), session.document()).unwrap();
+        assert_eq!(projection.features.len(), 1);
+        assert_eq!(projection.features[0].name, "Base Solid");
+        assert_eq!(
+            projection.features[0].id,
+            FeatureNodeId::Operation(OpaqueTreeId::new(first.get()))
+        );
+        assert_eq!(projection.elements.len(), 2);
+        assert_eq!(
+            projection.elements[1].id.get(),
+            session.document().feature(first).unwrap().outputs()[0].get()
+        );
+        assert_eq!(
+            session.document().active_entities_at(Some(first)).unwrap(),
+            [entity].into()
+        );
+        assert!(
+            !session
+                .document()
+                .clone()
+                .set_history_layout(session.document().history_layout().to_vec())
+                .unwrap()
+        );
+        shell.set_tree_projection(projection).unwrap();
+        assert_eq!(shell.playhead(), newell_ui::PlacedHistoryGap::default());
     }
 
     #[test]
@@ -688,15 +868,112 @@ mod tests {
             4
         );
         assert_eq!(projection.labels.bodies, "Bodies");
-        assert!(
+        // Folders, an empty Base and Extrude have no aggregate visibility square.
+        // The populated Base reflects all its outputs, which initially mix on and off.
+        assert_eq!(
             projection
                 .features
                 .iter()
-                .all(|item| item.visibility.is_none())
+                .map(|item| item.visibility)
+                .collect::<Vec<_>>(),
+            vec![None, None, None, None, Some(false)]
         );
+        for visible in [true, false] {
+            assert!(
+                session
+                    .set_base_feature_outputs_visibility(second, visible)
+                    .unwrap()
+            );
+            let refreshed = project_document(session.identity(), session.document()).unwrap();
+            assert_eq!(refreshed.features[4].visibility, Some(visible));
+            assert!(
+                refreshed.elements[1..]
+                    .iter()
+                    .all(|item| item.visible == visible)
+            );
+            assert!(
+                refreshed.elements[0].visible,
+                "unrelated Extrude output stays visible"
+            );
+            assert_eq!(refreshed.features[..4], projection.features[..4]);
+        }
         let mut ui = ShellState::new_application(82, 30);
         ui.set_tree_projection(projection).unwrap();
         assert_eq!(ui.playhead(), newell_ui::PlacedHistoryGap::default());
+    }
+
+    #[test]
+    fn extrude_operation_is_features_only_while_its_same_named_body_is_one_element() {
+        let mut session = DocumentSession::default();
+        // An empty source operation supplies valid history without adding a geometric row.
+        let source = session.add_base_feature("Profile".into(), vec![]).unwrap();
+        session
+            .add_base_feature("Reference".into(), vec![])
+            .unwrap();
+        let mut commands = CommandController::default();
+        let extrude = session
+            .confirm_before(&mut commands, draft(), None)
+            .unwrap()
+            .unwrap();
+
+        let projection = project_document(session.identity(), session.document()).unwrap();
+        let operation_id = OpaqueTreeId::new(extrude.get());
+        let matching_operations = projection
+            .features
+            .iter()
+            .filter(|item| {
+                item.id == FeatureNodeId::Operation(operation_id) && item.name == "Extrude"
+            })
+            .count();
+        assert_eq!(matching_operations, 1);
+        assert_eq!(
+            projection
+                .features
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Profile", "Reference", "Extrude"]
+        );
+        assert_eq!(
+            projection.elements.len(),
+            1,
+            "Elements contains only the real output entity, never an operation row"
+        );
+
+        let entity = &projection.elements[0];
+        let expected_entity = session.document().feature(extrude).unwrap().outputs()[0];
+        assert_eq!(entity.id, OpaqueTreeId::new(expected_entity.get()));
+        assert_ne!(entity.id, operation_id);
+        assert_eq!(entity.source_feature, operation_id);
+        assert_eq!(entity.name, "Extrude");
+        assert_eq!(entity.group, ElementGroup::Bodies);
+        assert_eq!(
+            projection
+                .elements
+                .iter()
+                .filter(|item| item.group == ElementGroup::Bodies)
+                .count(),
+            1,
+            "the Bodies group count is derived from its one actual entity"
+        );
+        assert_ne!(
+            projection.target(newell_ui::TreeTargetKind::Operation(operation_id)),
+            projection.target(newell_ui::TreeTargetKind::Entity(entity.id)),
+            "same-named operation and entity retain distinct semantic identities"
+        );
+
+        let refreshed = project_document(session.identity(), session.document()).unwrap();
+        assert_eq!(refreshed.elements, projection.elements);
+        assert_eq!(refreshed.features, projection.features);
+        assert_eq!(
+            refreshed
+                .elements
+                .iter()
+                .filter(|item| item.group == ElementGroup::Bodies)
+                .count(),
+            1
+        );
+        assert!(session.document().feature(source).is_some());
     }
 
     #[test]
@@ -715,28 +992,39 @@ mod tests {
         let preview = command.preview().cloned();
         let revision = session.revision();
         for spec in [
-            ExtrudeSpec {
+            ExtrudeInputProjection {
                 profile: Some(entity),
-                ..draft()
-            },
-            ExtrudeSpec {
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap(),
+            ExtrudeInputProjection {
                 profile: Some(EntityId::from_raw(999)),
-                ..draft()
-            },
-            ExtrudeSpec {
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap(),
+            ExtrudeInputProjection {
                 merge_scope: vec![entity],
-                merge_with_all: true,
-                ..draft()
-            },
-            ExtrudeSpec {
+                merge_with_all: false,
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap(),
+            ExtrudeInputProjection {
                 merge_scope: vec![EntityId::from_raw(999)],
-                ..draft()
-            },
-            ExtrudeSpec {
+                merge_with_all: false,
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap(),
+            ExtrudeInputProjection {
                 merge_scope: vec![later_entity],
-                merge_with_all: true,
-                ..draft()
-            },
+                merge_with_all: false,
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap(),
         ] {
             assert!(
                 session
@@ -752,11 +1040,13 @@ mod tests {
         let error = session
             .confirm_before(
                 &mut command,
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     profile: Some(EntityId::from_raw(999)),
                     merge_scope: vec![entity],
-                    ..draft()
-                },
+                    ..draft().inputs()
+                }
+                .into_spec()
+                .unwrap(),
                 Some(base),
             )
             .unwrap_err();
@@ -770,11 +1060,13 @@ mod tests {
         let inserted = session
             .confirm_before(
                 &mut command,
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     profile: Some(entity),
                     merge_scope: vec![entity, entity],
-                    ..draft()
-                },
+                    ..draft().inputs()
+                }
+                .into_spec()
+                .unwrap(),
                 None,
             )
             .unwrap()

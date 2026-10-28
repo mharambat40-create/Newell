@@ -34,8 +34,7 @@ const PANE_MIN: u32 = 3;
 /// Rows of the StatusBar frame.
 const STATUS_ROWS: u32 = 3;
 /// NavCube placeholder size, frame included.
-const CUBE_WIDTH: u32 = 9;
-const CUBE_HEIGHT: u32 = 4;
+const ACTION_PANEL_TOP_RESERVATION: u32 = 4;
 /// Action Box width, frame included: fixed (`README_UI.md` §2.2, `Interface_Exemple.txt`).
 pub(super) const PANEL_WIDTH: u32 = crate::action_box::BOX_WIDTH;
 /// Window controls drawn at the right end of the MenuBar, with a trailing space.
@@ -227,7 +226,7 @@ impl Layout {
     pub(super) fn action_panel(&self, rows: usize) -> GridRect {
         let inner = self.viewport.inset(1);
         let height = u32::try_from(rows).unwrap_or(u32::MAX);
-        let top = CUBE_HEIGHT.min(inner.height().saturating_sub(height));
+        let top = ACTION_PANEL_TOP_RESERVATION.min(inner.height().saturating_sub(height));
         inner
             .split_top(top)
             .1
@@ -436,7 +435,12 @@ impl ShellState {
         let mut lines = Vec::new();
         let mut inserted = false;
         for row in rows {
-            if !inserted && boundary.is_some_and(|boundary| row.index > boundary) {
+            if !inserted
+                && boundary.is_some_and(|boundary| {
+                    self.history_index(nodes[row.index].target)
+                        .is_some_and(|index| index >= boundary)
+                })
+            {
                 lines.push(Line::Playhead);
                 inserted = true;
             }
@@ -590,7 +594,12 @@ fn draw_playhead(
         }
     }
     let start = depth.saturating_mul(2).saturating_add(1);
-    let count = canvas.width().saturating_sub(start).min(canvas.reach());
+    // Keep the final interior cell blank before the panel-owned right border.
+    let count = canvas
+        .width()
+        .saturating_sub(start)
+        .saturating_sub(1)
+        .min(canvas.reach());
     canvas.text(
         start,
         0,
@@ -603,30 +612,9 @@ fn draw_playhead(
 fn draw_viewport(grid: &mut CellGrid, ctx: &WidgetContext<'_>, frame: GridRect, show_cube: bool) {
     let style = ctx.styles.normal;
     let inner = frame.inset(1);
-    let (strip, rest) = inner.split_right(CUBE_WIDTH);
-    draw_label(grid, rest, " 3D Viewport", style);
-    // Static NavCube placeholder: no camera control, no interaction ids.
-    let cube = strip.split_top(CUBE_HEIGHT).0;
-    if show_cube && cube.width() == CUBE_WIDTH && cube.height() == CUBE_HEIGHT {
-        draw_border(grid, cube, BorderLine::Single, style);
-        // Exact rounded corners of Interface_Exemple.txt; the placeholder is inert.
-        for (dx, dy, glyph) in [
-            (0, 0, '╭'),
-            (CUBE_WIDTH - 1, 0, '╮'),
-            (0, CUBE_HEIGHT - 1, '╰'),
-            (CUBE_WIDTH - 1, CUBE_HEIGHT - 1, '╯'),
-        ] {
-            if let Some(cell) = grid.get_mut(cube.col() + dx, cube.row() + dy) {
-                cell.content = crate::CellContent::Glyph(glyph);
-            }
-        }
-        draw_label(
-            grid,
-            GridRect::new(cube.col().saturating_add(1), cube.row(), CUBE_WIDTH - 2, 1),
-            "NavCube",
-            style,
-        );
-    }
+    draw_label(grid, inner, " 3D Viewport", style);
+    // Navigation is rendered separately; all of the old placeholder cells are empty.
+    let _ = show_cube;
 }
 
 /// Appends each distinct widget id of `rect` to `out`, row by row.

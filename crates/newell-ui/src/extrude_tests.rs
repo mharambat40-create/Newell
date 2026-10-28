@@ -435,17 +435,19 @@ fn end_offset_under_blind_is_the_last_child() {
 }
 
 #[test]
-fn up_to_offset_toggles_only_its_glyph() {
+fn up_to_offset_reveals_the_approved_unsigned_clearance_row() {
     let mut u = with(|v| v.termination = ExtrudeTermination::UpTo);
     let before = rows(&u);
+    let offset = find(&u, "Offset");
     assert!(click(&mut u, K_OFFSET, 0));
     let after = rows(&u);
-    assert_eq!(before.len(), after.len());
-    let diff: Vec<usize> = (0..before.len())
-        .filter(|&i| before[i] != after[i])
-        .collect();
-    assert_eq!(diff, [find(&u, "Offset")]);
-    assert_eq!(after[diff[0]], "│ ╰╴■ Offset                  │");
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after[offset], "│ ╰╴■ Offset                  │");
+    assert_eq!(after[offset + 1], "│   ╰╴Dist  [0.0 mm         ☰]│");
+    assert_eq!(&before[..offset], &after[..offset]);
+    assert_eq!(&before[offset + 1..], &after[offset + 2..]);
+    assert!(click(&mut u, K_OFFSET, 0));
+    assert_eq!(rows(&u), before);
 }
 
 // ---- Symetric, 2nd side, Merge, Invert ----

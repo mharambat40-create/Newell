@@ -7,14 +7,14 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma…║                                               │       │║
-║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║                                               ╰───────╯║
+║[-]Features            ║ 3D Viewport                                            ║
+║ ├ □ Sketch_Profile_Ma…║                                                        ║
+║ ├[-] Hub_Features     ║                                                        ║
+║ │ ├ Extrude_Base      ║                                                        ║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Boolean─┬───────┬───────────╮║
 ║ │ ╰╴Extrude_Cut_Center║                         │   Add   │  Cut  │   Inter   │║
 ║ ├ Fillet_Inner        ║                         │╴╴╴╴╴╴╴╴╴┴───────┘╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ────────────────────║                         │ Target      [Select…       ]│║
+║ │ ─────────────────── ║                         │ Target      [Select…       ]│║
 ║ ├ Chamfer_Edges       ║                         │ Tools       [Select…       ]│║
 ║ ╰╴Pattern_Circular    ║                         │ ■ Offset                    │║
 ║                       ║                         │ ╰╴□ Offset all              │║

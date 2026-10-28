@@ -42,6 +42,23 @@ pub enum FrameOutcome {
     Skipped,
 }
 
+/// One renderer-owned mesh and its application-projected selection state.
+#[derive(Debug, Clone)]
+pub struct SceneMeshItem {
+    pub mesh: NewellMesh,
+    pub selected: bool,
+}
+/// Fully uploaded resources held privately until the matching UI/scene publication succeeds.
+pub struct PreparedScene {
+    scene: Scene,
+    device: wgpu::Device,
+    basis: crate::scene::SceneBasis,
+}
+impl std::fmt::Debug for PreparedScene {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedScene").finish_non_exhaustive()
+    }
+}
 /// Owns the surface, device and queue, and draws the viewport and the ASCII overlay.
 pub struct Renderer {
     // Declaration order is drop order: the surface (which holds the window handle)
@@ -59,6 +76,8 @@ pub struct Renderer {
     palette: UiPalette,
     /// The M3 scene is drawn before the transparent ASCII overlay.
     scene: Scene,
+    navigation: crate::navigation_widgets::NavOverlay,
+    scene_available: bool,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
 }
@@ -122,6 +141,21 @@ impl Renderer {
         let font = load_font(FONT.to_vec())?;
         let atlas = GlyphAtlas::build(&font, metrics)?;
         let ui = UiOverlay::new(&device, &queue, format, atlas);
+        for format in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Depth32Float,
+        ] {
+            if !adapter
+                .get_texture_format_features(format)
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4)
+            {
+                return Err(RenderError::Navigation(
+                    "4x navigation targets unsupported".into(),
+                ));
+            }
+        }
+        let navigation = crate::navigation_widgets::NavOverlay::new(&device, format);
         let scene = Scene::new(&device, format, (width, height));
         Ok(Self {
             surface,
@@ -134,8 +168,32 @@ impl Renderer {
             atlas_builds: 1,
             palette: UiPalette::default(),
             scene,
+            navigation,
+            scene_available: true,
             gpu_errors,
         })
+    }
+
+    /// Publishes immutable navigation graphics; on error disable this path atomically.
+    pub fn set_navigation(
+        &mut self,
+        snapshot: Option<crate::navigation_widgets::NavSnapshot>,
+    ) -> Result<(), RenderError> {
+        self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let result = self
+            .navigation
+            .prepare(&self.device, &self.queue, &self.font, snapshot);
+        let validation = block_on(self.device.pop_error_scope());
+        let memory = block_on(self.device.pop_error_scope());
+        if let Some(error) = validation.or(memory) {
+            self.navigation.clear();
+            return Err(error.into());
+        }
+        if result.is_err() {
+            self.navigation.clear();
+        }
+        result
     }
 
     /// Physical pixels. A zero dimension (minimised) deactivates the surface without error.
@@ -144,6 +202,88 @@ impl Renderer {
         self.scene.resize(&self.device, (width, height));
     }
 
+    /// Prevents stale geometry being displayed while a coherent replacement is unavailable.
+    pub fn set_scene_available(&mut self, available: bool) {
+        self.scene_available = available;
+    }
+    /// Uploads a complete scene atomically, preserving the previous GPU scene on failure.
+    ///
+    /// # Errors
+    /// Returns validation/out-of-memory errors before replacing the published resources.
+    pub fn prepare_scene_items(
+        &self,
+        items: Vec<SceneMeshItem>,
+    ) -> Result<PreparedScene, RenderError> {
+        self.prepare_scene_items_for_camera(items, self.scene.camera_snapshot())
+    }
+    /// Stages the prospective mesh's camera matrices while certifying the current render basis.
+    ///
+    /// # Errors
+    /// Reports invalid meshes or GPU allocation/validation failures without replacing the view.
+    pub fn prepare_scene_items_for_camera(
+        &self,
+        items: Vec<SceneMeshItem>,
+        camera: CameraSnapshot,
+    ) -> Result<PreparedScene, RenderError> {
+        for item in &items {
+            if item.mesh.positions().len() != item.mesh.normals().len()
+                || item.mesh.indices().iter().any(|index| {
+                    usize::try_from(*index)
+                        .map_or(true, |index| index >= item.mesh.positions().len())
+                })
+            {
+                return Err(RenderError::Uncaptured("invalid scene mesh".into()));
+            }
+        }
+        self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let candidate = self.scene.prepare_items_with_camera(
+            &self.device,
+            items
+                .into_iter()
+                .map(|item| (item.mesh, item.selected))
+                .collect(),
+            camera,
+        );
+        let validation = block_on(self.device.pop_error_scope());
+        let memory = block_on(self.device.pop_error_scope());
+        if let Some(error) = validation.or(memory) {
+            return Err(error.into());
+        }
+        Ok(PreparedScene {
+            scene: candidate,
+            device: self.device.clone(),
+            basis: self.scene.basis(),
+        })
+    }
+    /// Checks the window GPU device and the unchanged source camera/layout basis.
+    #[must_use]
+    pub fn owns_prepared_scene(&self, prepared: &PreparedScene) -> bool {
+        self.device == prepared.device && self.scene.matches_basis(&prepared.basis)
+    }
+    /// Installs a preflighted GPU scene without allocating or uploading more resources.
+    ///
+    /// # Errors
+    /// Rejects resources prepared by a different renderer device.
+    pub fn publish_prepared_scene(&mut self, prepared: PreparedScene) -> Result<(), RenderError> {
+        if !self.owns_prepared_scene(&prepared) {
+            return Err(RenderError::Uncaptured("foreign prepared scene".into()));
+        }
+        self.scene = prepared.scene;
+        Ok(())
+    }
+    /// Stages and publishes a complete scene when no coordinated UI transaction is required.
+    ///
+    /// # Errors
+    /// Reports upload failures while retaining the previously published complete scene.
+    pub fn set_scene_items(&mut self, items: Vec<SceneMeshItem>) -> Result<(), RenderError> {
+        let prepared = self.prepare_scene_items(items)?;
+        self.publish_prepared_scene(prepared)
+    }
+    /// Updates one projected item flag without rebuilding geometry or accumulating brightness.
+    pub fn set_scene_item_selected(&mut self, index: usize, selected: bool) {
+        self.scene.set_item_selected(index, selected);
+    }
     /// Uploads an owned Newell mesh to the 3D viewport. BrepKIT types cannot cross this API.
     pub fn set_scene_mesh(&mut self, mesh: NewellMesh) {
         self.scene.set_mesh(&self.device, mesh);
@@ -186,6 +326,8 @@ impl Renderer {
     /// # Errors
     /// If the atlas cannot be built for `metrics`.
     pub fn prepare_metrics(&mut self, metrics: GridMetrics) -> Result<(), RenderError> {
+        self.navigation
+            .prepare_metrics(&self.device, &self.queue, &self.font, metrics)?;
         let size = (metrics.cell_width_px(), metrics.cell_height_px());
         if !self.ui.has_atlas(size) {
             let atlas = GlyphAtlas::build(&self.font, metrics)?;
@@ -293,7 +435,10 @@ impl Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         }));
-        self.scene.draw(&self.queue, &mut encoder, &view);
+        if self.scene_available {
+            self.scene.draw(&self.queue, &mut encoder, &view);
+        }
+        self.navigation.draw(&mut encoder, &view);
         // Separate overlay pass: the viewport pass above stays untouched.
         let mut overlay = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ascii ui"),

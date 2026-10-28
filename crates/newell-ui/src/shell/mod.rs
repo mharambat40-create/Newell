@@ -200,6 +200,9 @@ pub struct ShellState {
     command_started: bool,
     selection_field_counts: std::collections::BTreeMap<crate::SelectionFieldKey, usize>,
     tree_focus: Option<TreeTarget>,
+    properties_request: Option<crate::PropertiesOpenRequest>,
+    properties_origin: Option<crate::ProjectionGeneration>,
+    next_properties_id: u64,
     playhead: PlacedHistoryGap,
     gap_policy: HistoryGapPolicy,
     tree_scroll: [usize; 2],
@@ -253,7 +256,7 @@ impl ShellState {
     #[must_use]
     pub fn new(cols: u32, rows: u32) -> Self {
         let (projection, initial) = data::reference_trees();
-        let nodes = data::projection_nodes(&projection);
+        let nodes = data::projection_nodes(&projection, false);
         let selection_document = projection.document;
         let mut state = Self {
             cols,
@@ -283,6 +286,9 @@ impl ShellState {
             command_started: false,
             selection_field_counts: Default::default(),
             tree_focus: None,
+            properties_request: None,
+            properties_origin: None,
+            next_properties_id: 0,
             playhead: initial.playhead,
             gap_policy: initial.gap_policy,
             tree_scroll: [0, 0],
@@ -382,6 +388,11 @@ impl ShellState {
     #[must_use]
     pub fn action_width(&self) -> u32 {
         self.layout().action
+    }
+
+    /// Selected navigation representation, independent of its visibility checkbox.
+    pub fn navigator_kind(&self) -> crate::navigation_widgets::NavigatorKind {
+        self.view.navigator_kind
     }
 
     /// The full viewport interior reserved for the scene renderer.
@@ -552,7 +563,12 @@ impl ShellState {
                     return false;
                 }
                 Some(Line::Node(shown)) if shown.index > 0 => {
-                    let item = &self.projection.features[shown.index - 1];
+                    let Some(history_index) =
+                        self.history_index(self.nodes[Tree::Features.slot()][shown.index].target)
+                    else {
+                        return false;
+                    };
+                    let item = &self.projection.features[history_index];
                     GapDisplayLocation::AfterSubtree(item.id)
                 }
                 _ => GapDisplayLocation::EndOfTree,
@@ -562,18 +578,21 @@ impl ShellState {
             return false;
         };
         if let HistoryGapPolicy::ExplicitGaps(allowed) = &self.gap_policy {
-            let reference_display = match lines.get(index) {
-                Some(Line::Node(shown))
-                    if shown.index > 0 && self.projection.features[shown.index - 1].depth > 1 =>
-                {
-                    self.projection.features[..shown.index]
+            let history_index = lines.get(index).and_then(|line| match line {
+                Line::Node(shown) => {
+                    self.history_index(self.nodes[Tree::Features.slot()][shown.index].target)
+                }
+                _ => None,
+            });
+            let reference_display = history_index
+                .filter(|i| self.projection.features[*i].depth > 1)
+                .and_then(|i| {
+                    self.projection.features[..=i]
                         .iter()
                         .rev()
                         .find(|item| item.depth == 1)
-                        .map_or(display, |item| GapDisplayLocation::AfterSubtree(item.id))
-                }
-                _ => display,
-            };
+                })
+                .map_or(display, |item| GapDisplayLocation::AfterSubtree(item.id));
             let boundary = self
                 .projection
                 .display_boundary(reference_display)
@@ -724,6 +743,53 @@ impl ShellState {
     )> {
         self.numeric_identity
     }
+    /// Whether unaccepted numeric text currently owns keyboard input.
+    #[must_use]
+    pub fn numeric_editing(&self) -> bool {
+        self.editing_field().is_some()
+    }
+    /// Controller-provided published origin for an application action.
+    pub fn set_action_origin(&mut self, origin: crate::ProjectionGeneration) {
+        self.properties_origin = Some(origin);
+    }
+    /// Semantic focused operation; opening a menu does not replace this context.
+    #[must_use]
+    pub fn focused_features_operation(&self) -> Option<TreeTarget> {
+        self.tree_focus.filter(|target| {
+            matches!(target.kind, TreeTargetKind::Operation(_))
+                && self.nodes[Tree::Features.slot()]
+                    .iter()
+                    .any(|node| node.target == *target)
+        })
+    }
+    #[must_use]
+    pub fn properties_open(&self) -> Option<crate::PropertiesOpenRequest> {
+        self.properties_request
+    }
+    pub fn take_properties_open(&mut self) -> Option<crate::PropertiesOpenRequest> {
+        self.properties_request.take()
+    }
+    /// Keeps one-shot action ids consumed even if a candidate publication rolls back.
+    pub fn retain_properties_counter(&mut self, id: crate::PropertiesRequestId) {
+        self.next_properties_id = self.next_properties_id.max(id.0);
+    }
+    /// Hydrates an existing operation after the app has validated its certified request.
+    pub fn open_extrude_edit(&mut self, values: crate::ExtrudeValues) {
+        self.show_operation(ActionOperation::Extrude);
+        self.command_started = false;
+        self.extrude.values = values;
+        self.extrude.status = crate::ExtrudeStatus::Editing;
+        self.numeric[ActionOperation::Extrude.slot()].reset();
+        self.sync();
+    }
+    /// Ordinary contextual diagnostic, drawn in the existing free-text status segment.
+    pub fn set_contextual_status(&mut self, message: Option<String>) -> bool {
+        if self.formula_diagnostic == message {
+            return false;
+        }
+        self.formula_diagnostic = message;
+        true
+    }
     /// Tests active eligibility from semantic branch state, excluding closed/other panels.
     pub fn numeric_field_visible(&self, field: crate::NumericFieldKey) -> bool {
         if field.operation != self.operation || !self.panel().showing() {
@@ -735,6 +801,7 @@ impl ShellState {
                 let v = &self.extrude.values;
                 match field.key {
                     4 => v.termination == Term::Blind,
+                    29 => v.termination == Term::UpTo && v.offset,
                     11 => {
                         matches!(v.termination, Term::Blind | Term::ThroughAll)
                             && v.starting_offset
@@ -1516,7 +1583,7 @@ impl ShellState {
     }
 
     /// Source Action Box footprint; centered modals have separate overlay rectangles.
-    fn action_panel_rect(&self) -> Option<GridRect> {
+    pub fn action_panel_rect(&self) -> Option<GridRect> {
         let panel = self.panel().compose_box()?;
         Some(self.layout().action_panel(panel.height()))
     }
@@ -1776,6 +1843,19 @@ impl ShellState {
                 true
             }
             MenuResult::Cycled(action, step) => {
+                if action.get() == data::ACT_VIEW_NAVIGATOR_KIND {
+                    if self.view.checks[3] {
+                        self.view.navigator_kind = match self.view.navigator_kind {
+                            crate::navigation_widgets::NavigatorKind::Gizmo => {
+                                crate::navigation_widgets::NavigatorKind::Cube
+                            }
+                            crate::navigation_widgets::NavigatorKind::Cube => {
+                                crate::navigation_widgets::NavigatorKind::Gizmo
+                            }
+                        };
+                    }
+                    return true;
+                }
                 let (slot, len) = match action.get() {
                     ACT_VIEW_PROJECTION => (&mut self.view.projection, PROJECTION.len()),
                     ACT_VIEW_SHADING => (&mut self.view.shading, SHADING.len()),
@@ -1810,6 +1890,21 @@ impl ShellState {
                     let _ = self.menu_bar.handle_key(menus, MenuKey::Down);
                 }
             });
+        } else if action == 353 {
+            if let (Some(target), Some(origin), Some(id)) = (
+                self.focused_features_operation(),
+                self.properties_origin,
+                self.next_properties_id.checked_add(1),
+            ) {
+                self.next_properties_id = id;
+                self.properties_request = Some(crate::PropertiesOpenRequest {
+                    id: crate::PropertiesRequestId(id),
+                    target,
+                    origin,
+                });
+            } else {
+                self.formula_diagnostic = Some("Focus an Extrude in Features".into());
+            }
         } else if action == ACT_VIEW_FULLSCREEN {
             self.fullscreen_request = true;
         } else if action == 220 {
@@ -2036,7 +2131,18 @@ impl ShellState {
             self.decode_tree(id)
                 .map(|(tree, index, _)| self.nodes[tree.slot()][index].target)
         });
-        self.interaction.set_focused(next)
+        let changed = self.interaction.set_focused(next);
+        if changed
+            && !self.modal_open()
+            && !self.numeric_delivery_pending()
+            && let Some(id) = next
+            && self.panel().is_numeric_field(id)
+            && let Some(descriptor) = self.numeric_descriptor(id)
+            && self.numeric_field_visible(descriptor.field)
+        {
+            self.numeric[self.operation.slot()].begin(id, descriptor);
+        }
+        changed
     }
 }
 

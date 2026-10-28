@@ -203,7 +203,7 @@ fn fullscreen_item_leaves_one_request_and_closes_the_menu() {
     let mut s = shell();
     assert!(!s.take_fullscreen_request());
     open_view(&mut s);
-    keys(&mut s, &[ShellKey::Down; 12]);
+    keys(&mut s, &[ShellKey::Down; 13]);
     s.key(ShellKey::Enter);
     assert!(s.take_fullscreen_request());
     assert!(!s.take_fullscreen_request(), "taken once");

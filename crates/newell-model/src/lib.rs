@@ -46,15 +46,14 @@ impl EntityId {
     }
 }
 
-/// A typed literal or transitional source adapter delegating to the typed formula parser.
+/// Full-precision literal or stable registry identity. Formula source and AST
+/// belong exclusively to the registry definition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParameterValue {
     /// Full-precision canonical data; formatting is never part of literal construction.
     Literal(Quantity),
     /// Stable definition identity; direction remains field metadata.
     Bound(formula::ParameterId),
-    /// Preserved source text; delegated to the same parser as stable registry definitions.
-    Expression(String),
 }
 impl ParameterValue {
     /// Wraps a length directly, retaining its original canonical value.
@@ -73,7 +72,6 @@ impl ParameterValue {
         match self {
             Self::Literal(Quantity::Length(length)) => Ok(*length),
             Self::Literal(_) => Err(ModelError::DimensionMismatch),
-            Self::Expression(source) => evaluate_length(source, parameters),
             Self::Bound(id) => match parameters
                 .definition(*id)
                 .map(|definition| definition.value)
@@ -102,13 +100,12 @@ impl ParameterValue {
             Self::Bound(id) => parameters
                 .definition(*id)
                 .map(|definition| definition.value)
-                .ok_or_else(|| {
+                .ok_or({
                     ModelError::Formula(formula::FormulaError {
                         code: formula::FormulaErrorCode::MissingParameter,
                         span: formula::SourceSpan { start: 0, end: 0 },
                     })
                 })?,
-            Self::Expression(source) => evaluate_expression(source, expected, parameters)?,
         };
         if value.kind() != expected {
             return Err(ModelError::DimensionMismatch);
@@ -124,7 +121,7 @@ pub enum Feature {
         name: String,
         outputs: Vec<EntityId>,
     },
-    Extrude(ExtrudeFeature),
+    Extrude(Box<ExtrudeFeature>),
 }
 impl Feature {
     #[must_use]
@@ -164,11 +161,196 @@ pub enum ExtrudeTermination {
     ThroughAll,
 }
 
-/// Semantic values supplied by the Extrude Action Panel.
+/// An active offset; hidden UI drafts are never stored in history.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OffsetSpec {
+    Blind {
+        distance: ParameterValue,
+        direction: Direction,
+    },
+    UpTo(geometry::FaceRef),
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtentSpec {
+    Blind {
+        depth: ParameterValue,
+        direction: Direction,
+        along: Option<geometry::DirectionRef>,
+        start: Option<OffsetSpec>,
+        end: Option<OffsetSpec>,
+    },
+    UpTo {
+        target: geometry::FaceRef,
+        clearance: Option<ParameterValue>,
+    },
+    ThroughAll {
+        invert: bool,
+        start: Option<OffsetSpec>,
+    },
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum SecondSpec {
+    Blind {
+        depth: ParameterValue,
+        direction: Direction,
+    },
+    UpTo {
+        target: geometry::FaceRef,
+        end: Option<SecondOffsetSpec>,
+    },
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum SecondOffsetSpec {
+    Clearance(ParameterValue),
+    UpTo(geometry::FaceRef),
+}
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SidesSpec {
+    #[default]
+    One,
+    Symmetric,
+    Second(SecondSpec),
+}
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum MergePolicy {
+    #[default]
+    All,
+    Explicit(Vec<EntityId>),
+}
+/// Model-owned active recipe. A missing profile is permitted only in an unprepared
+/// command draft; geometry preparation rejects it before allocating any output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeSpec {
+    pub profile: Option<geometry::ProfileRef>,
+    pub geometry: ExtrudeGeometry,
+    pub result: ExtrudeResult,
+    pub extent: ExtentSpec,
+    pub sides: SidesSpec,
+    pub targets: MergePolicy,
+}
+impl Default for ExtrudeSpec {
+    fn default() -> Self {
+        Self {
+            profile: None,
+            geometry: ExtrudeGeometry::Solid,
+            result: ExtrudeResult::New,
+            extent: ExtentSpec::Blind {
+                depth: ParameterValue::literal(Length::ZERO),
+                direction: Direction::Forward,
+                along: None,
+                start: None,
+                end: None,
+            },
+            sides: SidesSpec::One,
+            targets: MergePolicy::All,
+        }
+    }
+}
+impl ExtrudeSpec {
+    /// Derived field projection for command hydration and kernel lowering. It has
+    /// no independent lifetime or authority and never contains inactive drafts.
+    #[must_use]
+    pub fn inputs(&self) -> ExtrudeInputProjection {
+        let mut fields = ExtrudeInputProjection {
+            profile_geometry: self.profile,
+            profile: self.profile.map(|p| p.support().entity),
+            geometry: self.geometry,
+            result: self.result,
+            ..ExtrudeInputProjection::default()
+        };
+        fn offset(
+            value: &Option<OffsetSpec>,
+            distance: &mut Option<ParameterValue>,
+            direction: &mut Direction,
+            target: &mut Option<geometry::FaceRef>,
+        ) {
+            match value {
+                Some(OffsetSpec::Blind {
+                    distance: v,
+                    direction: d,
+                }) => {
+                    *distance = Some(v.clone());
+                    *direction = *d;
+                }
+                Some(OffsetSpec::UpTo(face)) => *target = Some(*face),
+                None => {}
+            }
+        }
+        match &self.extent {
+            ExtentSpec::Blind {
+                depth,
+                direction,
+                along,
+                start,
+                end,
+            } => {
+                fields.depth = depth.clone();
+                fields.directions.depth = *direction;
+                fields.along_geometry = *along;
+                offset(
+                    start,
+                    &mut fields.starting_offset,
+                    &mut fields.directions.starting_offset,
+                    &mut fields.targets.start,
+                );
+                offset(
+                    end,
+                    &mut fields.end_offset,
+                    &mut fields.directions.end_offset,
+                    &mut fields.targets.end,
+                );
+            }
+            ExtentSpec::UpTo { target, clearance } => {
+                fields.termination = ExtrudeTermination::UpTo;
+                fields.targets.main = Some(*target);
+                fields.main_clearance = clearance.clone();
+            }
+            ExtentSpec::ThroughAll { invert, start } => {
+                fields.termination = ExtrudeTermination::ThroughAll;
+                fields.invert = *invert;
+                offset(
+                    start,
+                    &mut fields.starting_offset,
+                    &mut fields.directions.starting_offset,
+                    &mut fields.targets.start,
+                );
+            }
+        }
+        match &self.sides {
+            SidesSpec::One => {}
+            SidesSpec::Symmetric => fields.symmetric = true,
+            SidesSpec::Second(SecondSpec::Blind { depth, direction }) => {
+                fields.second_end = Some(depth.clone());
+                fields.directions.second_end = *direction;
+            }
+            SidesSpec::Second(SecondSpec::UpTo { target, end }) => {
+                fields.targets.second = Some(*target);
+                match end {
+                    Some(SecondOffsetSpec::Clearance(value)) => {
+                        fields.second_end_offset = Some(value.clone())
+                    }
+                    Some(SecondOffsetSpec::UpTo(target)) => fields.targets.nested = Some(*target),
+                    None => {}
+                }
+            }
+        }
+        if let MergePolicy::Explicit(targets) = &self.targets {
+            fields.merge_with_all = false;
+            fields.merge_scope = targets.clone();
+        }
+        fields
+    }
+}
+/// Semantic values supplied by the Extrude Action Panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtrudeInputProjection {
     /// Generation-qualified real supporting face/boundary for prepared geometry.
     pub profile_geometry: Option<geometry::ProfileRef>,
+    pub along_geometry: Option<geometry::DirectionRef>,
+    /// Active, generation-qualified target conditions; hidden branches are absent.
+    pub targets: geometry::ExtrudeTargets,
+    /// Unsigned main Up to clearance, measured toward the displaced start.
+    pub main_clearance: Option<ParameterValue>,
     pub profile: Option<EntityId>,
     pub geometry: ExtrudeGeometry,
     pub result: ExtrudeResult,
@@ -202,10 +384,13 @@ pub struct ExtrudeDirections {
     /// Orientation relative to the second-side reference.
     pub second_end: Direction,
 }
-impl Default for ExtrudeSpec {
+impl Default for ExtrudeInputProjection {
     fn default() -> Self {
         Self {
             profile_geometry: None,
+            along_geometry: None,
+            targets: geometry::ExtrudeTargets::default(),
+            main_clearance: None,
             profile: None,
             geometry: ExtrudeGeometry::Solid,
             result: ExtrudeResult::New,
@@ -224,18 +409,110 @@ impl Default for ExtrudeSpec {
     }
 }
 
+impl ExtrudeInputProjection {
+    /// Freezes only active branches. Missing selected targets are errors, not
+    /// sentinel references or alternative extent behavior.
+    pub fn into_spec(self) -> Result<ExtrudeSpec, ModelError> {
+        let offset =
+            |distance: Option<ParameterValue>, direction, target: Option<geometry::FaceRef>| {
+                target.map(OffsetSpec::UpTo).or_else(|| {
+                    distance.map(|distance| OffsetSpec::Blind {
+                        distance,
+                        direction,
+                    })
+                })
+            };
+        let start = offset(
+            self.starting_offset,
+            self.directions.starting_offset,
+            self.targets.start,
+        );
+        let extent = match self.termination {
+            ExtrudeTermination::Blind => ExtentSpec::Blind {
+                depth: self.depth,
+                direction: self.directions.depth,
+                along: self.along_geometry,
+                start,
+                end: offset(
+                    self.end_offset,
+                    self.directions.end_offset,
+                    self.targets.end,
+                ),
+            },
+            ExtrudeTermination::UpTo => ExtentSpec::UpTo {
+                target: self
+                    .targets
+                    .main
+                    .ok_or(ModelError::MissingTarget("Up to"))?,
+                clearance: self.main_clearance,
+            },
+            ExtrudeTermination::ThroughAll => ExtentSpec::ThroughAll {
+                invert: self.invert,
+                start,
+            },
+        };
+        let sides = if self.symmetric {
+            SidesSpec::Symmetric
+        } else if let Some(target) = self.targets.second {
+            SidesSpec::Second(SecondSpec::UpTo {
+                target,
+                end: self
+                    .targets
+                    .nested
+                    .map(SecondOffsetSpec::UpTo)
+                    .or_else(|| self.second_end_offset.map(SecondOffsetSpec::Clearance)),
+            })
+        } else if let Some(depth) = self.second_end {
+            SidesSpec::Second(SecondSpec::Blind {
+                depth,
+                direction: self.directions.second_end,
+            })
+        } else {
+            SidesSpec::One
+        };
+        Ok(ExtrudeSpec {
+            profile: self.profile_geometry.or_else(|| {
+                self.profile.map(|entity| {
+                    geometry::ProfileRef::Face(geometry::FaceRef {
+                        entity,
+                        generation: geometry::GeometryGeneration(0),
+                        face: 0,
+                    })
+                })
+            }),
+            geometry: self.geometry,
+            result: self.result,
+            extent,
+            sides,
+            targets: if self.merge_with_all {
+                MergePolicy::All
+            } else {
+                MergePolicy::Explicit(self.merge_scope)
+            },
+        })
+    }
+}
 /// A committed extrude in the parametric history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeFeature {
+    pub(crate) consumed: Vec<EntityId>,
     pub name: String,
     pub outputs: Vec<EntityId>,
     pub spec: ExtrudeSpec,
+}
+impl ExtrudeFeature {
+    /// Historical input versions replaced by this operation's actual result.
+    #[must_use]
+    pub fn consumed_inputs(&self) -> &[EntityId] {
+        &self.consumed
+    }
 }
 
 /// Persisted parametric document.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Document {
     features: Vec<(FeatureId, Feature)>,
+    seeded_features: BTreeSet<FeatureId>,
     parameter_registry: parameters::ParameterRegistry,
     base_geometry: BTreeMap<EntityId, geometry::BaseGeometryRecipe>,
     entity_geometry: BTreeMap<EntityId, geometry::EntityGeometry>,
@@ -391,6 +668,20 @@ impl Document {
         &self.layout
     }
 
+    /// Creates a geometry seed with a stable producer identity, outside operation layout.
+    pub fn add_seeded_solid(&mut self, name: impl Into<String>) -> Result<FeatureId, ModelError> {
+        let id = self.add_base_solid(name)?;
+        self.seeded_features.insert(id);
+        self.layout
+            .retain(|row| row.node != HistoryNodeId::Operation(id));
+        Ok(id)
+    }
+    /// Seed producers remain available to geometry replay and entity dependencies.
+    #[must_use]
+    pub fn is_seeded_feature(&self, id: FeatureId) -> bool {
+        self.seeded_features.contains(&id)
+    }
+
     pub fn add_base_solid(&mut self, name: impl Into<String>) -> Result<FeatureId, ModelError> {
         let name = name.into();
         let unit = Length::millimetres(1.)?;
@@ -463,17 +754,22 @@ impl Document {
                 return Err(ModelError::InvalidHistoryLayout);
             }
             match row.node {
-                HistoryNodeId::Operation(id) if self.feature(id).is_some() => operations.push(id),
+                HistoryNodeId::Operation(id)
+                    if self.feature(id).is_some() && !self.is_seeded_feature(id) =>
+                {
+                    operations.push(id)
+                }
                 HistoryNodeId::Folder(id) if self.folder(id).is_some() => {}
                 _ => return Err(ModelError::InvalidHistoryLayout),
             }
             previous = Some(*row);
         }
-        if seen.len() != self.features.len() + self.folders.len()
-            || !operations
+        if seen.len() != self.features.len() - self.seeded_features.len() + self.folders.len()
+            || !operations.iter().copied().eq(self
+                .features
                 .iter()
-                .copied()
-                .eq(self.features.iter().map(|(id, _)| *id))
+                .map(|(id, _)| *id)
+                .filter(|id| !self.is_seeded_feature(*id)))
         {
             return Err(ModelError::InvalidHistoryLayout);
         }
@@ -533,6 +829,9 @@ impl Document {
     }
     fn insertion_index(&self, before: Option<FeatureId>) -> Result<usize, ModelError> {
         before.map_or(Ok(self.features.len()), |id| {
+            if self.is_seeded_feature(id) {
+                return Err(ModelError::UnknownFeature(id));
+            }
             self.features
                 .iter()
                 .position(|(current, _)| *current == id)
@@ -554,12 +853,14 @@ impl Document {
         before: Option<FeatureId>,
     ) -> Result<(), ModelError> {
         let insertion_index = self.insertion_index(before)?;
-        let references = spec
+        let inputs = spec.inputs();
+        let references = inputs
             .profile
             .map(|id| (id, ExtrudeReference::Profile))
             .into_iter()
             .chain(
-                spec.merge_scope
+                inputs
+                    .merge_scope
                     .iter()
                     .enumerate()
                     .map(|(index, id)| (*id, ExtrudeReference::MergeScope { index })),
@@ -623,11 +924,12 @@ impl Document {
         }]);
         let id = self.insert_feature(
             index,
-            Feature::Extrude(ExtrudeFeature {
+            Feature::Extrude(Box::new(ExtrudeFeature {
+                consumed: Vec::new(),
                 name: "Extrude".to_owned(),
                 outputs,
                 spec,
-            }),
+            })),
         );
         self.layout.insert(
             layout_index,
@@ -713,7 +1015,7 @@ pub enum CommandState {
     #[default]
     Idle,
     Extrude {
-        draft: ExtrudeSpec,
+        draft: Box<ExtrudeSpec>,
     },
 }
 
@@ -732,12 +1034,14 @@ impl CommandController {
     pub const fn preview(&self) -> Option<&ExtrudeSpec> {
         self.preview.as_ref()
     }
-    pub fn begin_extrude(&mut self, selection: &Selection) {
+    pub fn begin_extrude(&mut self, _selection: &Selection) {
         let draft = ExtrudeSpec {
-            profile: selection.entities().first().copied(),
+            profile: None,
             ..ExtrudeSpec::default()
         };
-        self.state = CommandState::Extrude { draft };
+        self.state = CommandState::Extrude {
+            draft: Box::new(draft),
+        };
         self.preview = None;
     }
     pub fn edit_extrude(
@@ -747,7 +1051,25 @@ impl CommandController {
     ) -> Result<(), ModelError> {
         validate_extrude(&draft, document.parameters())?;
         self.preview = Some(draft.clone());
-        self.state = CommandState::Extrude { draft };
+        self.state = CommandState::Extrude {
+            draft: Box::new(draft),
+        };
+        Ok(())
+    }
+    /// Accepts command-local evaluated parameters without publishing them to the document.
+    ///
+    /// # Errors
+    /// Rejects invalid active quantities; exact geometry remains the worker's responsibility.
+    pub fn edit_extrude_with_parameters(
+        &mut self,
+        draft: ExtrudeSpec,
+        parameters: &parameters::ParameterRegistry,
+    ) -> Result<(), ModelError> {
+        validate_extrude(&draft, parameters)?;
+        self.preview = Some(draft.clone());
+        self.state = CommandState::Extrude {
+            draft: Box::new(draft),
+        };
         Ok(())
     }
     pub fn confirm(&mut self, document: &mut Document) -> Result<Option<FeatureId>, ModelError> {
@@ -761,7 +1083,7 @@ impl CommandController {
         let CommandState::Extrude { draft } = &self.state else {
             return Ok(None);
         };
-        let feature = document.commit_extrude_before(draft.clone(), before)?;
+        let feature = document.commit_extrude_before(draft.as_ref().clone(), before)?;
         self.cancel();
         Ok(Some(feature))
     }
@@ -872,6 +1194,7 @@ fn validate_extrude(
     spec: &ExtrudeSpec,
     parameters: &parameters::ParameterRegistry,
 ) -> Result<(), ModelError> {
+    let spec = spec.inputs();
     if spec.termination == ExtrudeTermination::Blind {
         validate_active_length(&spec.depth, parameters, true)?;
     }
@@ -884,10 +1207,13 @@ fn validate_extrude(
     if let Some(value) = &spec.second_end {
         validate_active_length(value, parameters, true)?;
     }
+    if let Some(value) = &spec.main_clearance {
+        validate_active_length(value, parameters, false)?;
+    }
     if let Some(value) = &spec.second_end_offset {
         validate_active_length(value, parameters, false)?;
     }
-    if spec.termination == ExtrudeTermination::UpTo && spec.profile.is_none() {
+    if spec.termination == ExtrudeTermination::UpTo && spec.targets.main.is_none() {
         return Err(ModelError::MissingTarget("Up to"));
     }
     if matches!(spec.result, ExtrudeResult::Add | ExtrudeResult::Remove)
@@ -921,35 +1247,16 @@ fn validate_active_length(
     Ok(())
 }
 
-fn evaluate_expression(
-    source: &str,
-    destination: QuantityKind,
-    parameters: &parameters::ParameterRegistry,
-) -> Result<Quantity, ModelError> {
-    Ok(
-        formula::parse_expression(source, destination, parameters.names())?
-            .evaluate(|id| parameters.definition(id).map(|definition| definition.value))?,
-    )
-}
-
-fn evaluate_length(
-    source: &str,
-    parameters: &parameters::ParameterRegistry,
-) -> Result<Length, ModelError> {
-    match evaluate_expression(source, QuantityKind::Length, parameters)? {
-        Quantity::Length(length) => Ok(length),
-        _ => Err(ModelError::DimensionMismatch),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     fn draft() -> ExtrudeSpec {
-        ExtrudeSpec {
+        ExtrudeInputProjection {
             depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
-            ..ExtrudeSpec::default()
+            ..ExtrudeInputProjection::default()
         }
+        .into_spec()
+        .unwrap()
     }
     #[test]
     fn insertion_preflights_all_explicit_references_atomically() {
@@ -962,10 +1269,12 @@ mod tests {
         let unchanged = document.clone();
         assert_eq!(
             document.commit_extrude_before(
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     profile: Some(unknown),
-                    ..draft()
-                },
+                    ..draft().inputs()
+                }
+                .into_spec()
+                .unwrap(),
                 Some(FeatureId(999))
             ),
             Err(ModelError::UnknownFeature(FeatureId(999)))
@@ -976,11 +1285,13 @@ mod tests {
         );
         assert_eq!(
             document.commit_extrude_before(
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     merge_scope: vec![later],
-                    merge_with_all: true,
-                    ..draft()
-                },
+                    merge_with_all: false,
+                    ..draft().inputs()
+                }
+                .into_spec()
+                .unwrap(),
                 Some(first)
             ),
             Err(ModelError::ReferenceNotBeforeInsertion {
@@ -1033,11 +1344,14 @@ mod tests {
             ),
         ];
         for (profile, merge_scope, error) in cases {
-            let spec = ExtrudeSpec {
+            let spec = ExtrudeInputProjection {
                 profile,
                 merge_scope,
-                ..draft()
-            };
+                merge_with_all: false,
+                ..draft().inputs()
+            }
+            .into_spec()
+            .unwrap();
             let mut command = CommandController::default();
             command.edit_extrude(spec.clone(), &document).unwrap();
             let original = document.clone();
@@ -1054,11 +1368,14 @@ mod tests {
         }
         let id = document
             .commit_extrude_before(
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     profile: Some(earlier),
                     merge_scope: vec![earlier, earlier],
-                    ..draft()
-                },
+                    merge_with_all: false,
+                    ..draft().inputs()
+                }
+                .into_spec()
+                .unwrap(),
                 Some(second),
             )
             .unwrap();
@@ -1171,10 +1488,28 @@ mod tests {
             .unwrap();
         let mut command = CommandController::default();
         command.begin_extrude(&Selection::default());
-        let draft = ExtrudeSpec {
-            depth: ParameterValue::Expression("#wall + 7.5 mm".to_owned()),
-            ..ExtrudeSpec::default()
-        };
+        let candidate = document
+            .parameters()
+            .stage_edit(
+                parameters::ParameterEdit {
+                    parameter: None,
+                    owner: parameters::ParameterOwner::Document,
+                    source: "#wall + 7.5 mm".into(),
+                    destination: QuantityKind::Length,
+                    source_edit: None,
+                    source_origins: None,
+                },
+                &Default::default(),
+            )
+            .unwrap();
+        let parameter = candidate.parameter();
+        document.parameter_registry = candidate.into_registry();
+        let draft = ExtrudeInputProjection {
+            depth: ParameterValue::Bound(parameter),
+            ..ExtrudeInputProjection::default()
+        }
+        .into_spec()
+        .unwrap();
         command.edit_extrude(draft, &document).unwrap();
         assert!(command.preview().is_some());
         assert!(command.confirm(&mut document).unwrap().is_some());
@@ -1188,10 +1523,12 @@ mod tests {
         command.begin_extrude(&Selection::default());
         command
             .edit_extrude(
-                ExtrudeSpec {
+                ExtrudeInputProjection {
                     depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
-                    ..ExtrudeSpec::default()
-                },
+                    ..ExtrudeInputProjection::default()
+                }
+                .into_spec()
+                .unwrap(),
                 &document,
             )
             .unwrap();
@@ -1204,12 +1541,14 @@ mod tests {
         let document = Document::default();
         let mut command = CommandController::default();
         command.begin_extrude(&Selection::default());
-        let draft = ExtrudeSpec {
+        let draft = ExtrudeInputProjection {
             result: ExtrudeResult::Add,
             merge_with_all: false,
             depth: ParameterValue::literal(Length::millimetres(10.0).unwrap()),
-            ..ExtrudeSpec::default()
-        };
+            ..ExtrudeInputProjection::default()
+        }
+        .into_spec()
+        .unwrap();
         assert_eq!(
             command.edit_extrude(draft, &document),
             Err(ModelError::MissingMergeTarget)
@@ -1229,18 +1568,17 @@ mod quantity_parameter_tests {
         }
         let good = ParameterValue::literal(Length::millimetres(12.3).unwrap());
         let zero = ParameterValue::literal(Length::ZERO);
-        let mut spec = ExtrudeSpec {
+        let mut spec = ExtrudeInputProjection {
             depth: good.clone(),
             starting_offset: Some(zero.clone()),
             end_offset: Some(zero.clone()),
             second_end: Some(good.clone()),
             second_end_offset: Some(zero.clone()),
-            ..ExtrudeSpec::default()
+            ..ExtrudeInputProjection::default()
         };
-        assert!(validate_extrude(&spec, &parameters).is_ok());
+        assert!(validate_extrude(&spec.clone().into_spec().unwrap(), &parameters).is_ok());
         for bad in [
             ParameterValue::literal(Length::millimetres(-1.0).unwrap()),
-            ParameterValue::Expression("-1 mm".to_owned()),
             ParameterValue::Literal(Quantity::Angle(Angle::degrees(0.0).unwrap())),
             ParameterValue::Literal(Quantity::Scalar(Scalar::new(0.0).unwrap())),
             ParameterValue::literal(Length::millimetres(100_000_000.0).unwrap()),
@@ -1252,23 +1590,31 @@ mod quantity_parameter_tests {
                     1 => candidate.starting_offset = Some(bad.clone()),
                     2 => candidate.end_offset = Some(bad.clone()),
                     3 => candidate.second_end = Some(bad.clone()),
-                    _ => candidate.second_end_offset = Some(bad.clone()),
+                    _ => {
+                        candidate.second_end = None;
+                        candidate.targets.second = Some(geometry::FaceRef {
+                            entity: EntityId::from_raw(0),
+                            generation: geometry::GeometryGeneration(1),
+                            face: 0,
+                        });
+                        candidate.second_end_offset = Some(bad.clone());
+                    }
                 };
                 assert!(
-                    validate_extrude(&candidate, &parameters).is_err(),
+                    validate_extrude(&candidate.into_spec().unwrap(), &parameters).is_err(),
                     "destination {destination}"
                 );
             }
         }
         spec.second_end = Some(zero.clone());
         assert_eq!(
-            validate_extrude(&spec, &parameters),
+            validate_extrude(&spec.clone().into_spec().unwrap(), &parameters),
             Err(ModelError::NonPositiveDepth)
         );
         spec.second_end = None;
-        spec.depth = ParameterValue::Expression("not-yet-defined".to_owned());
+        spec.depth = ParameterValue::Literal(Quantity::Angle(Angle::degrees(42.).unwrap()));
         spec.termination = ExtrudeTermination::ThroughAll;
-        assert!(validate_extrude(&spec, &parameters).is_ok());
+        assert!(validate_extrude(&spec.clone().into_spec().unwrap(), &parameters).is_ok());
         spec.termination = ExtrudeTermination::Blind;
         spec.depth = good;
         spec.directions = ExtrudeDirections {
@@ -1277,7 +1623,7 @@ mod quantity_parameter_tests {
             end_offset: Direction::Forward,
             second_end: Direction::Reverse,
         };
-        assert!(validate_extrude(&spec, &parameters).is_ok());
+        assert!(validate_extrude(&spec.clone().into_spec().unwrap(), &parameters).is_ok());
         assert_eq!(
             spec.depth.evaluate(&parameters).unwrap().as_millimetres(),
             12.3

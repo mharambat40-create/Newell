@@ -62,7 +62,7 @@ impl SelectionEdit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A model-free candidate; equal labels do not imply equal identities.
 pub struct SelectionRow {
-    /// Entity identity qualified by the containing request's document namespace.
+    /// Opaque row key. Whole-entity lists use entity ids; geometry fields use captured app row keys.
     pub entity: OpaqueTreeId,
     /// Full stored name, clipped only when composing the panel.
     pub label: String,
@@ -74,6 +74,14 @@ pub struct SelectionFieldKey {
     pub operation: ActionOperation,
     /// The Action Box's semantic selection-control key.
     pub key: u32,
+}
+impl SelectionFieldKey {
+    /// Fields whose row keys resolve to a captured supporting face/boundary in the app.
+    #[must_use]
+    pub const fn geometry_qualified(self) -> bool {
+        matches!(self.operation, ActionOperation::Extrude)
+            && matches!(self.key, 2 | 5 | 6 | 12 | 16 | 21 | 25)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Candidate policy interpreted by the application, without model types in the UI.
@@ -206,4 +214,15 @@ pub enum SelectionUiRequest {
 }
 pub(crate) fn unique(ids: &[OpaqueTreeId]) -> bool {
     ids.iter().copied().collect::<BTreeSet<_>>().len() == ids.len()
+}
+
+/// One explicit Utilities > Properties activation, independent of entity selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertiesRequestId(pub u64);
+/// The focused Features operation captured under the published pre-input generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertiesOpenRequest {
+    pub id: PropertiesRequestId,
+    pub target: crate::TreeTarget,
+    pub origin: crate::ProjectionGeneration,
 }

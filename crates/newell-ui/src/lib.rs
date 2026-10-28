@@ -20,6 +20,7 @@ mod layout;
 mod loft;
 mod menu;
 mod metrics;
+pub mod navigation_widgets;
 mod numeric;
 mod overlays;
 mod revolve;
@@ -69,9 +70,9 @@ pub use selection::*;
 pub use shell::{ActionOperation, Separator, ShellKey, ShellState, ThemeChoice};
 pub use shell::{
     ElementGroup, ElementTreeItem, FeatureNodeId, FeatureTreeItem, GapDisplayLocation, HistoryGap,
-    HistoryGapPolicy, ModelTreeProjection, OpaqueTreeId, PlacedHistoryGap, ProjectionGeneration,
-    TreeDocumentId, TreeHitToken, TreeInitialState, TreeIntent, TreeIntentKind, TreeLabels,
-    TreePart, TreeTarget, TreeTargetKind,
+    HistoryGapPolicy, ModelTreeProjection, OpaqueTreeId, OriginReference, PlacedHistoryGap,
+    ProjectionGeneration, TreeDocumentId, TreeHitToken, TreeInitialState, TreeIntent,
+    TreeIntentKind, TreeLabels, TreePart, TreeTarget, TreeTargetKind,
 };
 pub use style::StyleId;
 pub use sweep::{SweepUi, SweepValues};

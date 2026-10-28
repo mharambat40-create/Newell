@@ -7,14 +7,14 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma…║                                               │       │║
-║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║                                               ╰───────╯║
+║[-]Features            ║ 3D Viewport                                            ║
+║ ├ □ Sketch_Profile_Ma…║                                                        ║
+║ ├[-] Hub_Features     ║                                                        ║
+║ │ ├ Extrude_Base      ║                                                        ║
 ║ │ ├ ■ Sketch_Hole     ║ ╔════════════════════════════╗ude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║ ║Selection                   ║olid    │    Surface    │║
 ║ ├ Fillet_Inner        ║ ║□ Rim_Body                 ▲║──┬─────┴───┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ────────────────────║ ║■ Hub_Body                 ┃║  │   Add   │  Remove   │║
+║ │ ─────────────────── ║ ║■ Hub_Body                 ┃║  │   Add   │  Remove   │║
 ║ ├ Chamfer_Edges       ║ ║□ Inner_Surface             ║╴╴┴─────────┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║ ║□ Flange_Body               ║ile     [Select…       ]│║
 ║                       ║ ║□ Shaft_Body               ▼║nd   ◀     Blind     ▶  │║

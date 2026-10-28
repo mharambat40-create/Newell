@@ -13,6 +13,27 @@ use newell_kernel::NewellMesh;
 use newell_render::{CameraSnapshot, SceneViewport, exposed_regions};
 use winit::event::{MouseButton, TouchPhase};
 
+const WORLD_REFERENCE_CLIP_SPHERE: (Vec3, f64) = ([0.0; 3], 1.01);
+
+fn enclosing_sphere(a: (Vec3, f64), b: (Vec3, f64)) -> (Vec3, f64) {
+    let offset = sub(b.0, a.0);
+    let distance = crate::camera::length(offset);
+    if a.1 >= distance + b.1 {
+        return a;
+    }
+    if b.1 >= distance + a.1 {
+        return b;
+    }
+    if distance <= f64::EPSILON {
+        return (a.0, a.1.max(b.1));
+    }
+    let radius = (distance + a.1 + b.1) * 0.5;
+    (
+        crate::camera::add(a.0, scale(offset, (radius - a.1) / distance)),
+        radius,
+    )
+}
+
 /// Mouse mapping belongs to the Controller rather than the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragKind {
@@ -516,6 +537,10 @@ impl Navigation {
             self.drag = None;
         }
     }
+    /// Any accepted or pending scene gesture suppresses navigation marker hover.
+    pub fn has_capture(&self) -> bool {
+        self.drag.is_some() || self.pending_drag.is_some() || self.zoom.is_some()
+    }
     /// Cancels captures without altering pose. Ongoing trackpad streams stay rejected.
     pub fn cancel(&mut self) {
         self.drag = None;
@@ -620,6 +645,34 @@ impl Navigation {
         self.camera.set_perspective(perspective);
         self.record(before)
     }
+    /// Current camera/mesh/layout generation for immutable widget capture certificates.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// Routes widget orientations through the existing sole camera authority.
+    pub fn align_view(&mut self, direction: newell_ui::navigation_widgets::ViewDirection) -> bool {
+        self.cancel();
+        let before = self.camera;
+        let viewport = self.camera.viewport;
+        let anchor_pixel = (
+            f64::from(viewport.x) + f64::from(viewport.width) * 0.5,
+            f64::from(viewport.y) + f64::from(viewport.height) * 0.5,
+        );
+        let contextual_pivot = self.pivot(anchor_pixel);
+        let (pivot, screen_point) = self
+            .camera
+            .project(contextual_pivot)
+            .map(|screen| (contextual_pivot, screen))
+            .or_else(|| {
+                let target = self.camera.target();
+                self.camera.project(target).map(|screen| (target, screen))
+            })
+            .unzip();
+        if let (Some(pivot), Some(screen_point)) = (pivot, screen_point) {
+            self.camera.align_view_about(direction, pivot, screen_point);
+        }
+        self.record(before)
+    }
     /// Explicit principal-axis alignment, with a stable vertical-view heading.
     pub fn normal_to_axis(&mut self) -> bool {
         self.cancel();
@@ -681,11 +734,55 @@ impl Navigation {
         self.camera.lens_shift = [0.0; 2];
         self.record(before)
     }
+    /// Computes the exact post-publication matrices without mutating the displayed query cache.
+    /// GPU resources can therefore be uploaded before the new mesh is made visible.
+    pub(crate) fn snapshot_for_mesh(
+        &self,
+        mesh: &NewellMesh,
+        center: bool,
+    ) -> Option<CameraSnapshot> {
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        for index in mesh.indices() {
+            let point = mesh.positions().get(usize::try_from(*index).ok()?)?;
+            for axis in 0..3 {
+                minimum[axis] = minimum[axis].min(f64::from(point[axis]));
+                maximum[axis] = maximum[axis].max(f64::from(point[axis]));
+            }
+        }
+        let bounds = (!mesh.indices().is_empty()).then_some(crate::picking::Bounds {
+            min: minimum,
+            max: maximum,
+        });
+        let mut camera = self.camera;
+        let mut revision = self.revision.wrapping_add(1);
+        if center && let Some(bounds) = bounds {
+            let before = camera;
+            camera.eye = sub(
+                bounds.centre(),
+                scale(camera.basis().2, camera.focal_distance),
+            );
+            camera.lens_shift = [0.; 2];
+            if camera != before {
+                revision = revision.wrapping_add(1);
+            }
+        }
+        camera.snapshot(
+            enclosing_sphere(
+                bounds.map_or(([0.5; 3], 1.), |bounds| bounds.sphere()),
+                WORLD_REFERENCE_CLIP_SPHERE,
+            ),
+            revision,
+        )
+    }
     /// Immutable payload for the View. Invalid float conversion never enters GPU uniforms.
     #[must_use]
     pub fn snapshot(&self) -> Option<CameraSnapshot> {
         self.camera.snapshot(
-            self.scene.bounds().map_or(([0.5; 3], 1.0), |b| b.sphere()),
+            enclosing_sphere(
+                self.scene.bounds().map_or(([0.5; 3], 1.0), |b| b.sphere()),
+                WORLD_REFERENCE_CLIP_SPHERE,
+            ),
             self.revision,
         )
     }
@@ -694,6 +791,28 @@ impl Navigation {
 #[cfg(test)]
 mod click_certificate_tests {
     use super::*;
+
+    #[test]
+    fn camera_clip_encloses_world_references_without_reframing_model_bounds() {
+        let model_sphere = ([40.0, 0.0, 0.0], 2.0);
+        let refs = WORLD_REFERENCE_CLIP_SPHERE;
+        let combined = enclosing_sphere(model_sphere, refs);
+        assert!(
+            crate::camera::length(sub(combined.0, model_sphere.0)) + model_sphere.1
+                <= combined.1 + 1e-9
+        );
+        assert!(crate::camera::length(combined.0) + refs.1 <= combined.1 + 1e-9);
+
+        let camera = Camera::look_at(
+            [0.0, 0.0, 20.0],
+            [0.0, 0.0, 0.0],
+            SceneViewport::new(0, 0, 640, 480),
+        );
+        let (near, far) = camera.clip(combined);
+        let origin_depth = crate::camera::dot(sub([0.0; 3], camera.eye), camera.basis().2);
+        assert!(origin_depth >= near && origin_depth <= far);
+    }
+
     #[test]
     fn click_release_checks_final_displacement_dpi_button_owner_and_cancellation() {
         for scale in [1.0, 2.0] {

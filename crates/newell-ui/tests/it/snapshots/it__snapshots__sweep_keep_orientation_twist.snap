@@ -7,14 +7,14 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma…║                                               │       │║
-║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║                                               ╰───────╯║
+║[-]Features            ║ 3D Viewport                                            ║
+║ ├ □ Sketch_Profile_Ma…║                                                        ║
+║ ├[-] Hub_Features     ║                                                        ║
+║ │ ├ Extrude_Base      ║                                                        ║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Sweep───────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║                         │    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║                         ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ────────────────────║                         │  New  │   Add   ┆  Remove   │║
+║ │ ─────────────────── ║                         │  New  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║                         ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║                         │ Profile     [Select…       ]│║
 ║                       ║                         │ Path        [Select…       ]│║

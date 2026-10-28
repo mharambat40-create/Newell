@@ -7,14 +7,14 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma…║                                               │       │║
-║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║      ╭─Create──────────╮                      ╰───────╯║
+║[-]Features            ║ 3D Viewport                                            ║
+║ ├ □ Sketch_Profile_Ma…║                                                        ║
+║ ├[-] Hub_Features     ║                                                        ║
+║ │ ├ Extrude_Base      ║      ╭─Create──────────╮                               ║
 ║ │ ├ ■ Sketch_Hole     ║      │ [E]xtrude       │╭─Extrude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║      │ [R]evolve       ││    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║      │ [L]oft          │├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ────────────────────║      │ [S]weep         ││  New  │   Add   ┆  Remove   │║
+║ │ ─────────────────── ║      │ [S]weep         ││  New  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║      │─────────────────│├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║      │ Hole            ││ Profile     [Select…       ]│║
 ║                       ║      │ Thread          ││ Extend   ◀     Blind     ▶  │║

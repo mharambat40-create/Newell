@@ -183,6 +183,11 @@ pub(crate) fn draw_numeric_view(
     }
     let shown = caret_window(&view.body, &view.suffix, view.caret, area as usize);
     canvas.text(1 + prefix, 0, &shown, style, Some(field));
+    if view.is_placeholder && view.caret.is_none() {
+        for offset in 0..area.min(view.body.len() as u32) {
+            canvas.ink_at(1 + prefix + offset, 0, crate::InkRole::Placeholder);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +326,7 @@ mod tests {
 
     fn view(prefix: &'static str, body: &str, caret: Option<usize>) -> NumericView {
         NumericView {
+            is_placeholder: false,
             prefix,
             body: body.chars().collect(),
             suffix: " mm".to_owned(),
@@ -407,5 +413,30 @@ mod tests {
     fn fields_are_deterministic() {
         assert_eq!(numeric(12, "0.0 mm"), numeric(12, "0.0 mm"));
         assert_ne!(numeric(12, "0.0 mm"), numeric(12, "1.0 mm"));
+    }
+    #[test]
+    fn placeholder_ink_is_limited_to_inactive_body_and_never_caret_or_unit() {
+        let mut v = view("+|", "0.0", None);
+        v.is_placeholder = true;
+        let g = edited(18, &v);
+        for x in 0..18 {
+            let expected = match x {
+                0 | 2 | 17 => crate::InkRole::Contour,
+                1 | 16 => crate::InkRole::Action,
+                3..=5 => crate::InkRole::Placeholder,
+                _ => crate::InkRole::Text,
+            };
+            assert_eq!(g.get(x, 0).unwrap().ink, expected, "cell {x}");
+        }
+        v.body.clear();
+        v.caret = Some(0);
+        let g = edited(18, &v);
+        assert_eq!(g.get(3, 0).unwrap().content, CellContent::Glyph('▏'));
+        assert_eq!(g.get(3, 0).unwrap().ink, crate::InkRole::Text);
+        assert!(
+            !g.cells()
+                .iter()
+                .any(|c| c.ink == crate::InkRole::Placeholder)
+        );
     }
 }

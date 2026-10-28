@@ -10,3 +10,5 @@ mod gpu;
 mod harness;
 mod surface;
 mod ui_gpu;
+
+mod navigation_gpu;

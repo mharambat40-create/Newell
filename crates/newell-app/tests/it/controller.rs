@@ -75,6 +75,7 @@ fn open_numeric_modal(c: &mut ShellController) {
             .numeric_descriptors()
             .into_iter()
             .map(|d| newell_ui::NumericFieldView {
+                initial_placeholder: true,
                 field: d.field,
                 magnitude: d.default_magnitude.to_owned(),
                 direction: newell_ui::NumericDirection::Forward,

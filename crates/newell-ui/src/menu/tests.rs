@@ -590,6 +590,7 @@ fn view_entries(checked: bool, persp: usize) -> [MenuEntry<'static>; 13] {
     };
     [
         MenuEntry::Cyclic(MenuCycle {
+            control_width: None,
             label: "",
             action: MenuAction::new(30),
             values: &VALUES,
@@ -598,6 +599,7 @@ fn view_entries(checked: bool, persp: usize) -> [MenuEntry<'static>; 13] {
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
+            control_width: None,
             label: "",
             action: MenuAction::new(31),
             values: &SHADES,
@@ -930,6 +932,7 @@ fn command_items_unchanged_in_mixed_menu() {
 fn cyclic_with_empty_values_or_bad_current_is_safe() {
     let e = [
         MenuEntry::Cyclic(MenuCycle {
+            control_width: None,
             label: "",
             action: MenuAction::new(50),
             values: &[],
@@ -938,6 +941,7 @@ fn cyclic_with_empty_values_or_bad_current_is_safe() {
             enabled: true,
         }),
         MenuEntry::Cyclic(MenuCycle {
+            control_width: None,
             label: "",
             action: MenuAction::new(51),
             values: &VALUES,

@@ -11,6 +11,7 @@ use crate::{
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NumericView {
+    pub(crate) is_placeholder: bool,
     pub(crate) prefix: &'static str,
     pub(crate) body: Vec<char>,
     pub(crate) suffix: String,
@@ -25,6 +26,7 @@ fn suffix(d: NumericFieldDescriptor) -> &'static str {
 }
 pub(crate) fn default_view(d: NumericFieldDescriptor) -> NumericView {
     NumericView {
+        is_placeholder: true,
         prefix: if d.directional { "+|" } else { "" },
         body: d.default_magnitude.chars().collect(),
         suffix: suffix(d).to_owned(),
@@ -60,6 +62,7 @@ fn direction(reverse: bool) -> NumericDirection {
 /// Presentation cache only, including an optimistic view while an emitted candidate resolves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
+    initial_placeholder: bool,
     id: u32,
     negative: bool,
     magnitude: String,
@@ -68,6 +71,8 @@ struct Entry {
 /// Raw editor and its initial rounded view, used solely to distinguish explicit changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Active {
+    initial_placeholder: bool,
+    text_mutated: bool,
     id: u32,
     descriptor: NumericFieldDescriptor,
     negative: bool,
@@ -96,6 +101,7 @@ impl NumericFields {
             Some(at) => at,
             None => {
                 self.entries.push(Entry {
+                    initial_placeholder: true,
                     id,
                     negative: false,
                     magnitude: d.default_magnitude.to_owned(),
@@ -115,13 +121,16 @@ impl NumericFields {
             || (false, d.default_magnitude.to_owned()),
             |e| (e.negative, e.magnitude.clone()),
         );
+        let initial_placeholder = self.entry(id.get()).is_none_or(|e| e.initial_placeholder);
         self.active = Some(Active {
+            initial_placeholder,
+            text_mutated: false,
             id: id.get(),
             descriptor: d,
             negative,
             initial_negative: negative,
             initial: magnitude.clone(),
-            edit: TextEdit::new(&magnitude),
+            edit: TextEdit::new(if initial_placeholder { "" } else { &magnitude }),
         });
     }
     pub(crate) fn toggle_sign(&mut self, id: WidgetId, d: NumericFieldDescriptor) -> bool {
@@ -144,11 +153,16 @@ impl NumericFields {
     pub(crate) fn commit(&mut self) {
         let Some(a) = self.active.take() else { return };
         let raw = a.edit.string();
-        if raw == a.initial && a.negative == a.initial_negative {
+        let unchanged = if a.initial_placeholder {
+            !a.text_mutated
+        } else {
+            raw == a.initial
+        };
+        if unchanged && a.negative == a.initial_negative {
             self.entry_mut(a.id, a.descriptor);
             return;
         }
-        let edit = if raw == a.initial {
+        let edit = if unchanged {
             NumericEdit::Direction(direction(a.negative))
         } else if let Some(text) = normalize(&raw) {
             NumericEdit::Literal {
@@ -164,6 +178,7 @@ impl NumericFields {
                 e.magnitude = magnitude.clone();
                 e.negative = a.negative;
                 e.formula.clear();
+                e.initial_placeholder = false;
             }
             NumericEdit::Direction(_) => self.entry_mut(a.id, a.descriptor).negative = a.negative,
             _ => {}
@@ -184,7 +199,10 @@ impl NumericFields {
             }
             '0'..='9' | '.' => {
                 let d = a.descriptor;
-                a.edit.insert(c, |s| accepts(d, s))
+                let before = a.edit.chars().to_vec();
+                let changed = a.edit.insert(c, |s| accepts(d, s));
+                a.text_mutated |= a.edit.chars() != before;
+                changed
             }
             _ => false,
         }
@@ -194,14 +212,20 @@ impl NumericFields {
             return false;
         };
         let d = a.descriptor;
-        a.edit.backspace(|s| accepts(d, s))
+        let before = a.edit.chars().to_vec();
+        let changed = a.edit.backspace(|s| accepts(d, s));
+        a.text_mutated |= a.edit.chars() != before;
+        changed
     }
     pub(crate) fn edit_key(&mut self, k: EditKey) -> bool {
         let Some(a) = self.active.as_mut() else {
             return false;
         };
         let d = a.descriptor;
-        a.edit.apply(k, |s| accepts(d, s))
+        let before = a.edit.chars().to_vec();
+        let changed = a.edit.apply(k, |s| accepts(d, s));
+        a.text_mutated |= a.edit.chars() != before;
+        changed
     }
     pub(crate) fn view(&self, id: WidgetId, d: NumericFieldDescriptor) -> Option<NumericView> {
         let e = self.entry(id.get());
@@ -211,6 +235,7 @@ impl NumericFields {
         }
         let reverse = a.map_or_else(|| e.is_some_and(|e| e.negative), |a| a.negative);
         Some(NumericView {
+            is_placeholder: a.is_none() && e.is_none_or(|e| e.initial_placeholder),
             prefix: if !d.directional {
                 ""
             } else if reverse {
@@ -234,7 +259,11 @@ impl NumericFields {
         self.entry(id.get()).map_or("", |e| e.formula.as_str())
     }
     pub(crate) fn set_formula(&mut self, id: WidgetId, d: NumericFieldDescriptor, text: &str) {
-        self.entry_mut(id.get(), d).formula = text.to_owned();
+        let e = self.entry_mut(id.get(), d);
+        e.formula = text.to_owned();
+        if !text.trim().is_empty() {
+            e.initial_placeholder = false;
+        }
         self.pending
             .push((id, NumericEdit::Formula(text.to_owned())));
     }
@@ -249,6 +278,7 @@ impl NumericFields {
         e.magnitude = v.magnitude.clone();
         e.negative = v.direction == NumericDirection::Reverse;
         e.formula = v.formula.clone();
+        e.initial_placeholder = v.initial_placeholder;
     }
     pub(crate) fn take_edits(&mut self) -> Vec<(WidgetId, NumericEdit)> {
         std::mem::take(&mut self.pending)
@@ -360,7 +390,7 @@ mod tests {
         f.begin(id(1), MM);
         assert!(f.typed('-'));
         assert!(!f.typed('-'), "already negative");
-        assert_eq!(shown(&f, 1, MM), "-|0.0 mm");
+        assert_eq!(shown(&f, 1, MM), "-| mm");
         assert!(f.typed('+'));
         f.commit();
         assert_eq!(shown(&f, 1, MM), "+|0.0 mm");
@@ -455,5 +485,79 @@ mod tests {
         assert_eq!(shown(&f, 1, MM), "+|6.0 mm");
         assert!(f.view(id(2), MM).unwrap().caret.is_some());
         assert!(f.view(id(1), MM).unwrap().caret.is_none());
+    }
+    #[test]
+    fn placeholder_entry_is_empty_idempotent_and_never_a_candidate() {
+        let mut f = NumericFields::default();
+        for _ in 0..2 {
+            f.begin(id(1), MM);
+            let v = f.view(id(1), MM).unwrap();
+            assert!(v.body.is_empty());
+            assert_eq!(v.caret, Some(0));
+            assert!(!v.is_placeholder);
+            f.edit_key(EditKey::SelectAll);
+            f.edit_key(EditKey::Left);
+            assert!(!f.typed('x'));
+            f.begin(id(1), MM);
+            f.commit();
+            assert!(f.take_edits().is_empty());
+            assert!(f.view(id(1), MM).unwrap().is_placeholder);
+        }
+        f.begin(id(1), MM);
+        f.typed('7');
+        f.begin(id(1), MM);
+        assert_eq!(shown(&f, 1, MM), "+|7 mm");
+        f.discard();
+        assert!(f.view(id(1), MM).unwrap().is_placeholder);
+    }
+
+    #[test]
+    fn explicit_zero_is_real_but_deleted_draft_is_incomplete() {
+        for zero in ["0", "0.0", ".0"] {
+            let mut f = NumericFields::default();
+            f.begin(id(1), MM);
+            type_str(&mut f, zero);
+            f.commit();
+            assert!(
+                matches!(&f.take_edits()[0].1, NumericEdit::Literal { magnitude, .. } if magnitude == "0.0")
+            );
+            assert!(!f.view(id(1), MM).unwrap().is_placeholder);
+            f.begin(id(1), MM);
+            assert_eq!(shown(&f, 1, MM), "+|0.0 mm");
+            f.commit();
+            assert!(f.take_edits().is_empty());
+            f.begin(id(1), MM);
+            f.edit_key(EditKey::SelectAll);
+            f.backspace();
+            f.commit();
+            assert_eq!(f.take_edits()[0].1, NumericEdit::Incomplete(String::new()));
+            assert_eq!(shown(&f, 1, MM), "+|0.0 mm");
+        }
+        let mut f = NumericFields::default();
+        f.begin(id(1), MM);
+        f.typed('1');
+        f.backspace();
+        f.commit();
+        assert_eq!(f.take_edits()[0].1, NumericEdit::Incomplete(String::new()));
+    }
+
+    #[test]
+    fn direction_only_and_formula_preserve_placeholder_provenance() {
+        let mut f = NumericFields::default();
+        f.begin(id(1), MM);
+        f.typed('-');
+        f.commit();
+        assert_eq!(
+            f.take_edits()[0].1,
+            NumericEdit::Direction(NumericDirection::Reverse)
+        );
+        assert!(f.view(id(1), MM).unwrap().is_placeholder);
+        f.set_formula(id(1), MM, "0mm");
+        assert!(!f.view(id(1), MM).unwrap().is_placeholder);
+        f.take_edits();
+        f.begin(id(1), MM);
+        f.commit();
+        assert!(f.take_edits().is_empty());
+        assert_eq!(f.formula(id(1)), "0mm");
     }
 }

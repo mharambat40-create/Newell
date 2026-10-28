@@ -214,7 +214,12 @@ mod color_tests {
         )
         .unwrap();
         let atlas = GlyphAtlas::build(&font, newell_ui::GridMetrics::from_k(5).unwrap()).unwrap();
-        for ink in [InkRole::Text, InkRole::Contour, InkRole::Action] {
+        for ink in [
+            InkRole::Text,
+            InkRole::Contour,
+            InkRole::Action,
+            InkRole::Placeholder,
+        ] {
             let mut c = Cell {
                 content: CellContent::Glyph('é'),
                 ink,

@@ -7,19 +7,19 @@ expression: snapshot(&s)
 ├──────────────╭─View──────────────╮─────────────────────────────────────────────┤
 │ Workbench │ D│ ◀ Orthographic  ▶ │ │ Modify │ Pattern │ Utilities              │
 ├──────────────│ ◀  Hidden Line  ▶ │─────────────────────────────────────────────┤
-│[-]Features   │ UI Scale ◀ 100% ▶ │t                                   ╭NavCube╮│
-│ ├ □ Sketch_Pr│ Theme [ ◑ Dark  ] │                                    │       ││
-│ ├[-] Hub_Feat│ ■ Color           │                                    │       ││
-│ │ ├ Extrude_B│ ■ Tree panel      │                                    ╰───────╯│
+│[-]Features   │ UI Scale ◀ 100% ▶ │t                                            │
+│ ├ □ Sketch_Pr│ Theme [ ◑ Dark  ] │                                             │
+│ ├[-] Hub_Feat│ ■ Color           │                                             │
+│ │ ├ Extrude_B│ ■ Tree panel      │                                             │
 │ │ ├ ■ Sketch_│ ■ Task bar        │              ╭─Extrude─────┬───────────────╮│
 │ │ ╰╴Extrude_C│ ■ Status bar      │              │    Solid    │    Surface    ││
-│ ├ Fillet_Inne│ ■ Navigation cube │              ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤│
-│ │ ───────────│ □ Grid Overlay    │              │  New  │   Add   ┆  Remove   ││
-│ ├ Chamfer_Edg│ [N]ormal to       │              ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│
-│ ╰╴Pattern_Cir│ Reset Cam         │              │ Profile     [Select…       ]││
-│              │ Fullscreen        │              │ Extend   ◀     Blind     ▶  ││
-├──────────────╰───────────────────╯              │ │ Depth   [+|0.0 mm       ☰]││
-│[-]Elements            │                         │ │ Along     [Select…       ]││
+│ ├ Fillet_Inne│ ■ View Navigator  │              ├───────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤│
+│ │ ───────────│ ╰╴   ◀ Gizmo  ▶   │              │  New  │   Add   ┆  Remove   ││
+│ ├ Chamfer_Edg│ □ Grid Overlay    │              ├───────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤│
+│ ╰╴Pattern_Cir│ [N]ormal to       │              │ Profile     [Select…       ]││
+│              │ Reset Cam         │              │ Extend   ◀     Blind     ▶  ││
+├──────────────│ Fullscreen        │              │ │ Depth   [+|0.0 mm       ☰]││
+│[-]Elements   ╰───────────────────╯              │ │ Along     [Select…       ]││
 │ ├[-]Solid Bodies(2)   │                         │ │ □ Starting Offset         ││
 │ │ ├ ■ Rim_Body        │                         │ ╰╴□ End Offset              ││
 │ │ ╰╴□ Hub_Body        │                         │ □ Symetric                  ││

@@ -19,6 +19,7 @@ use newell_ui::CommandInputSessionId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NumericDraftValue {
+    pub initial_placeholder: bool,
     pub quantity: Quantity,
     pub direction: Direction,
     pub formula: String,
@@ -53,6 +54,7 @@ impl CommandNumericInputs {
                 .insert(
                     d.field,
                     NumericDraftValue {
+                        initial_placeholder: true,
                         quantity,
                         direction: Direction::Forward,
                         formula: String::new(),
@@ -133,6 +135,7 @@ impl CommandNumericInputs {
                 next.quantity = quantity;
                 next.direction = model_direction(direction);
                 next.formula.clear();
+                next.initial_placeholder = false;
             }
             NumericEdit::Direction(direction) => {
                 if !descriptor.directional && direction == NumericDirection::Reverse {
@@ -145,7 +148,9 @@ impl CommandNumericInputs {
                 return Err(newell_model::ModelError::InvalidLiteral(raw).into());
             }
         }
-        let changed = &next != old;
+        let changed = next.quantity != old.quantity
+            || next.direction != old.direction
+            || next.formula != old.formula;
         if literal_replacement && let Some(id) = self.bindings.get(&descriptor.field).copied() {
             let mut parameters = self.parameter_draft.clone();
             let roots = self.active_parameters();
@@ -159,16 +164,16 @@ impl CommandNumericInputs {
                         .definition(*id)
                         .ok_or(AppError::InvalidNumericRequest)?
                         .value;
-                    self.values
+                    let dependent = self
+                        .values
                         .get_mut(field)
-                        .ok_or(AppError::InvalidNumericRequest)?
-                        .quantity = value;
+                        .ok_or(AppError::InvalidNumericRequest)?;
+                    dependent.quantity = value;
+                    dependent.initial_placeholder = false;
                 }
             }
         }
-        if changed {
-            self.values.insert(descriptor.field, next);
-        }
+        self.values.insert(descriptor.field, next);
         Ok(changed)
     }
     pub fn active_parameters(
@@ -231,6 +236,9 @@ impl CommandNumericInputs {
                 .get_mut(key)
                 .ok_or(AppError::InvalidNumericRequest)?;
             value.quantity = definition.value;
+            if !request.source.trim().is_empty() {
+                value.initial_placeholder = false;
+            }
         }
         candidate
             .values
@@ -251,6 +259,7 @@ impl CommandNumericInputs {
             .iter()
             .map(|(field, value)| {
                 Ok(NumericFieldView {
+                    initial_placeholder: value.initial_placeholder,
                     field: *field,
                     magnitude: format!(
                         "{:.1}",
@@ -300,8 +309,8 @@ pub(crate) fn build_extrude_spec(
     selections: &crate::selection::CommandSelectionInputs,
 ) -> Result<newell_model::ExtrudeSpec, AppError> {
     use newell_model::{
-        ExtrudeDirections, ExtrudeGeometry, ExtrudeResult, ExtrudeSpec, ExtrudeTermination,
-        ParameterValue,
+        ExtrudeDirections, ExtrudeGeometry, ExtrudeInputProjection, ExtrudeResult,
+        ExtrudeTermination, ParameterValue,
     };
     use newell_ui::{ExtrudeOffsetMode as Mode, ExtrudeTermination as Term};
     if numeric.document != selections.document
@@ -320,11 +329,40 @@ pub(crate) fn build_extrude_spec(
             })
             .ok_or(AppError::InvalidNumericRequest)
     };
+    let typed_profile = selections
+        .geometry_values
+        .get(&newell_ui::SelectionFieldKey {
+            operation: ActionOperation::Extrude,
+            key: 2,
+        })
+        .and_then(|values| values.first())
+        .and_then(|reference| match reference {
+            crate::selection::GeometrySelectionRef::Profile(profile) => Some(*profile),
+            _ => None,
+        });
+    #[cfg(not(test))]
+    if typed_profile.is_none() {
+        return Err(newell_model::ModelError::InvalidGeometryReference.into());
+    }
+    let bound = |key: u32| {
+        numeric
+            .bindings
+            .get(&NumericFieldKey {
+                operation: ActionOperation::Extrude,
+                key,
+            })
+            .copied()
+    };
     let parameter = |key: u32, active: bool| -> Result<Option<ParameterValue>, AppError> {
         if !active {
             return Ok(None);
         }
         let v = value(key)?;
+        if typed_profile.is_some()
+            && let Some(id) = bound(key)
+        {
+            return Ok(Some(ParameterValue::Bound(id)));
+        }
         if !v.formula.is_empty() {
             return Err(AppError::UnsupportedNumericFormula(NumericFieldKey {
                 operation: ActionOperation::Extrude,
@@ -357,8 +395,82 @@ pub(crate) fn build_extrude_spec(
             key,
         })
     };
-    Ok(ExtrudeSpec {
-        profile_geometry: None,
+    let target =
+        |key: u32, active: bool| -> Result<Option<newell_model::geometry::FaceRef>, AppError> {
+            if !active {
+                return Ok(None);
+            }
+            selections
+                .geometry_values
+                .get(&newell_ui::SelectionFieldKey {
+                    operation: ActionOperation::Extrude,
+                    key,
+                })
+                .filter(|values| values.len() == 1)
+                .and_then(|values| values.first())
+                .and_then(|reference| match reference {
+                    crate::selection::GeometrySelectionRef::Target(face) => Some(*face),
+                    _ => None,
+                })
+                .map(Some)
+                .ok_or_else(|| newell_model::ModelError::MissingTarget("Up to").into())
+        };
+    let targets = if typed_profile.is_some() {
+        newell_model::geometry::ExtrudeTargets {
+            main: target(6, ui.termination == Term::UpTo)?,
+            start: target(
+                12,
+                matches!(ui.termination, Term::Blind | Term::ThroughAll)
+                    && ui.starting_offset
+                    && ui.start_mode == Mode::UpTo,
+            )?,
+            end: target(
+                16,
+                ui.termination == Term::Blind && ui.end_offset && ui.end_mode == Mode::UpTo,
+            )?,
+            second: target(
+                21,
+                !ui.symmetric && ui.second_side && ui.second_mode == Mode::UpTo,
+            )?,
+            nested: target(
+                25,
+                !ui.symmetric
+                    && ui.second_side
+                    && ui.second_mode == Mode::UpTo
+                    && ui.nested_end
+                    && ui.nested_mode == Mode::UpTo,
+            )?,
+        }
+    } else {
+        newell_model::geometry::ExtrudeTargets::default()
+    };
+    ExtrudeInputProjection {
+        profile_geometry: typed_profile,
+        targets,
+        main_clearance: parameter(29, ui.termination == Term::UpTo && ui.offset)?,
+        along_geometry: if ui.termination == Term::Blind {
+            selections
+                .geometry_values
+                .get(&newell_ui::SelectionFieldKey {
+                    operation: ActionOperation::Extrude,
+                    key: 5,
+                })
+                .and_then(|values| values.first())
+                .and_then(|reference| match reference {
+                    crate::selection::GeometrySelectionRef::Direction {
+                        support,
+                        wire,
+                        edge,
+                    } => Some(newell_model::geometry::DirectionRef {
+                        support: *support,
+                        wire: *wire,
+                        edge: *edge,
+                    }),
+                    _ => None,
+                })
+        } else {
+            None
+        },
         profile: selection(2).and_then(|v| v.entities().first().copied()),
         geometry: match ui.geometry {
             newell_ui::ExtrudeGeometryType::Solid => ExtrudeGeometry::Solid,
@@ -374,10 +486,21 @@ pub(crate) fn build_extrude_spec(
             Term::UpTo => ExtrudeTermination::UpTo,
             Term::ThroughAll => ExtrudeTermination::ThroughAll,
         },
-        depth: if depth.formula.is_empty() {
+        depth: if typed_profile.is_some() && bound(4).is_some() {
+            ParameterValue::Bound(bound(4).ok_or(AppError::InvalidNumericRequest)?)
+        } else if depth.formula.is_empty() {
             ParameterValue::Literal(depth.quantity)
         } else {
-            ParameterValue::Expression(depth.formula.clone())
+            // Headless numeric regressions have no native profile. The executable
+            // path above requires a typed profile and retains the stable binding.
+            #[cfg(test)]
+            {
+                ParameterValue::Literal(depth.quantity)
+            }
+            #[cfg(not(test))]
+            {
+                return Err(AppError::InvalidNumericRequest);
+            }
         },
         starting_offset: parameter(11, start)?,
         end_offset: parameter(15, end)?,
@@ -399,7 +522,187 @@ pub(crate) fn build_extrude_spec(
                 .map(|v| v.entities().to_vec())
                 .ok_or(AppError::InvalidNumericRequest)?
         },
-    })
+    }
+    .into_spec()
+    .map_err(Into::into)
+}
+
+/// Reconstructs accepted command drafts from model values, never formatted UI text.
+pub(crate) fn hydrate_extrude_inputs(
+    document: DocumentInstanceId,
+    session: CommandInputSessionId,
+    source: &newell_model::Document,
+    feature: newell_model::FeatureId,
+) -> Result<
+    (
+        newell_ui::ExtrudeValues,
+        CommandNumericInputs,
+        crate::selection::CommandSelectionInputs,
+    ),
+    AppError,
+> {
+    use newell_model::{
+        ExtrudeGeometry, ExtrudeResult, ExtrudeTermination, Feature, ParameterValue,
+    };
+    use newell_ui::{ExtrudeOffsetMode as Offset, ExtrudeTermination as Term, SelectionFieldKey};
+    let Some(Feature::Extrude(extrude)) = source.feature(feature) else {
+        return Err(AppError::InvalidNumericRequest);
+    };
+    let spec = extrude.spec.inputs();
+    let ui = newell_ui::ExtrudeValues {
+        geometry: if spec.geometry == ExtrudeGeometry::Solid {
+            newell_ui::ExtrudeGeometryType::Solid
+        } else {
+            newell_ui::ExtrudeGeometryType::Surface
+        },
+        result: match spec.result {
+            ExtrudeResult::New => newell_ui::ExtrudeResultMode::New,
+            ExtrudeResult::Add => newell_ui::ExtrudeResultMode::Add,
+            ExtrudeResult::Remove => newell_ui::ExtrudeResultMode::Remove,
+        },
+        termination: match spec.termination {
+            ExtrudeTermination::Blind => Term::Blind,
+            ExtrudeTermination::UpTo => Term::UpTo,
+            ExtrudeTermination::ThroughAll => Term::ThroughAll,
+        },
+        offset: spec.main_clearance.is_some(),
+        starting_offset: spec.starting_offset.is_some() || spec.targets.start.is_some(),
+        start_mode: if spec.targets.start.is_some() {
+            Offset::UpTo
+        } else {
+            Offset::Blind
+        },
+        end_offset: spec.end_offset.is_some() || spec.targets.end.is_some(),
+        end_mode: if spec.targets.end.is_some() {
+            Offset::UpTo
+        } else {
+            Offset::Blind
+        },
+        symmetric: spec.symmetric,
+        invert: spec.invert,
+        second_side: spec.second_end.is_some() || spec.targets.second.is_some(),
+        second_mode: if spec.targets.second.is_some() {
+            Offset::UpTo
+        } else {
+            Offset::Blind
+        },
+        nested_end: spec.second_end_offset.is_some() || spec.targets.nested.is_some(),
+        nested_mode: if spec.targets.nested.is_some() {
+            Offset::UpTo
+        } else {
+            Offset::Blind
+        },
+        merge_with_all: spec.merge_with_all,
+        ..newell_ui::ExtrudeValues::default()
+    };
+    let shell = newell_ui::ShellState::new(82, 40);
+    let mut numeric = CommandNumericInputs::new(
+        document,
+        session,
+        ActionOperation::Extrude,
+        &shell.numeric_descriptors(),
+    )?;
+    numeric.parameter_draft = source.begin_parameter_draft(
+        newell_model::parameters::ParameterDraftOwner::EditExtrude(feature),
+    )?;
+    for (key, value, direction) in [
+        (
+            4,
+            (spec.termination == ExtrudeTermination::Blind).then_some(&spec.depth),
+            spec.directions.depth,
+        ),
+        (
+            11,
+            spec.starting_offset.as_ref(),
+            spec.directions.starting_offset,
+        ),
+        (15, spec.end_offset.as_ref(), spec.directions.end_offset),
+        (20, spec.second_end.as_ref(), spec.directions.second_end),
+        (24, spec.second_end_offset.as_ref(), Direction::Forward),
+        (29, spec.main_clearance.as_ref(), Direction::Forward),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        let field = NumericFieldKey {
+            operation: ActionOperation::Extrude,
+            key,
+        };
+        let (quantity, formula) = match value {
+            ParameterValue::Literal(quantity) => (*quantity, String::new()),
+            ParameterValue::Bound(id) => {
+                let definition = source
+                    .parameters()
+                    .definition(*id)
+                    .ok_or(newell_model::ModelError::InvalidGeometryReference)?;
+                numeric.bindings.insert(field, *id);
+                (definition.value, definition.source.clone())
+            }
+        };
+        numeric.values.insert(
+            field,
+            NumericDraftValue {
+                initial_placeholder: false,
+                quantity,
+                direction,
+                formula,
+            },
+        );
+    }
+    let mut selections = crate::selection::CommandSelectionInputs {
+        session,
+        document,
+        operation: ActionOperation::Extrude,
+        insertion: newell_ui::HistoryGap::Before(newell_ui::OpaqueTreeId::new(feature.get())),
+        values: shell
+            .field_descriptors()
+            .into_iter()
+            .filter(|d| d.field.operation == ActionOperation::Extrude)
+            .map(|d| (d.field, newell_model::Selection::default()))
+            .collect(),
+        geometry_values: BTreeMap::new(),
+        geometry_picker: None,
+    };
+    let field = |key| SelectionFieldKey {
+        operation: ActionOperation::Extrude,
+        key,
+    };
+    if let Some(profile) = spec.profile_geometry {
+        selections.geometry_values.insert(
+            field(2),
+            vec![crate::selection::GeometrySelectionRef::Profile(profile)],
+        );
+    }
+    if let Some(reference) = spec.along_geometry {
+        selections.geometry_values.insert(
+            field(5),
+            vec![crate::selection::GeometrySelectionRef::Direction {
+                support: reference.support,
+                wire: reference.wire,
+                edge: reference.edge,
+            }],
+        );
+    }
+    for (key, target) in [
+        (6, spec.targets.main),
+        (12, spec.targets.start),
+        (16, spec.targets.end),
+        (21, spec.targets.second),
+        (25, spec.targets.nested),
+    ] {
+        if let Some(target) = target {
+            selections.geometry_values.insert(
+                field(key),
+                vec![crate::selection::GeometrySelectionRef::Target(target)],
+            );
+        }
+    }
+    selections
+        .values
+        .entry(field(27))
+        .or_default()
+        .replace(spec.merge_scope.iter().copied());
+    Ok((ui, numeric, selections))
 }
 
 #[cfg(test)]
@@ -437,6 +740,50 @@ mod tests {
             edit,
         }
     }
+
+    #[test]
+    fn accepted_zero_changes_only_provenance_and_invalid_input_preserves_it() {
+        let mut d = draft();
+        assert!(
+            d.project()
+                .unwrap()
+                .fields
+                .iter()
+                .all(|v| v.initial_placeholder)
+        );
+        let field = NumericFieldKey {
+            operation: d.operation,
+            key: 4,
+        };
+        let desc = d.descriptors[&field];
+        let old = d.values[&field].clone();
+        let r = request(
+            &d,
+            4,
+            1,
+            NumericEdit::Literal {
+                magnitude: "0.0".into(),
+                direction: NumericDirection::Forward,
+            },
+        );
+        assert!(!d.apply(r, desc).unwrap(), "no semantic quantity change");
+        assert!(!d.values[&field].initial_placeholder);
+        assert_eq!(d.values[&field].quantity, old.quantity);
+        let before = d.values.clone();
+        let r = request(&d, 4, 2, NumericEdit::Incomplete(String::new()));
+        assert!(d.apply(r, desc).is_err());
+        assert_eq!(d.values, before);
+        assert!(
+            !d.project()
+                .unwrap()
+                .fields
+                .iter()
+                .find(|v| v.field == field)
+                .unwrap()
+                .initial_placeholder
+        );
+    }
+
     #[test]
     fn rejected_requests_are_atomic_consumed_once_and_do_not_poison_later_edits() {
         let mut d = draft();

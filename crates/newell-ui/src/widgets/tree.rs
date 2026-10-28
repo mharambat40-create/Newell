@@ -203,16 +203,22 @@ impl TreeRow<'_> {
             row.spaced,
             row.check.is_some(),
         ));
-        let inline = inline.filter(|_| canvas.width() >= dx.saturating_add(5));
+        // Reserve one trailing blank after the stroke, in addition to one label
+        // cell, the label/stroke separator, and the minimum three stroke cells.
+        let inline = inline.filter(|_| canvas.width() >= dx.saturating_add(6));
         let room = canvas
             .width()
             .saturating_sub(dx)
-            .saturating_sub(if inline.is_some() { 4 } else { 0 });
+            .saturating_sub(if inline.is_some() { 5 } else { 0 });
         let label = ellipsize(row.label, room);
         canvas.text(dx, 0, &label, style, Some(ids.name));
         if let Some(owner) = inline {
             let start = dx.saturating_add(text_len(&label)).saturating_add(1);
-            let count = canvas.width().saturating_sub(start).min(canvas.reach());
+            let count = canvas
+                .width()
+                .saturating_sub(start)
+                .saturating_sub(1)
+                .min(canvas.reach());
             canvas.text(start, 0, &"─".repeat(count as usize), normal, Some(owner));
         }
     }

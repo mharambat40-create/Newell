@@ -435,11 +435,16 @@ fn actual_cube_faces_keep_mesh_ordinals_frames_and_historical_geometry() -> Test
     }
     let mut arena = newell_kernel::NewellGeometry::new();
     let base = arena.box_shape([1.; 3], [0.; 3])?;
-    for face in arena.profile_faces(base)? {
+    let base_faces = arena.profile_faces(base)?;
+    for face in &base_faces {
+        assert_eq!(
+            face.provenance,
+            newell_kernel::NewellFaceProvenance::Base(face.face)
+        );
         let shape = arena.extrude_face(base, face.face, None, 2., 7.)?;
         close(arena.volume(shape)?, 5.);
         close(arena.volume(base)?, 1.);
-        assert_eq!(arena.profile_faces(base)?, faces);
+        assert_eq!(arena.profile_faces(base)?, base_faces);
     }
     // The same geometric X edge occurs under two distinct planar supports.
     let mut supports = Vec::new();
@@ -458,5 +463,316 @@ fn actual_cube_faces_keep_mesh_ordinals_frames_and_historical_geometry() -> Test
     assert_eq!(supports.len(), 2);
     assert!(supports.contains(&[0., 0., -1.]));
     assert!(supports.contains(&[0., -1., 0.]));
+    Ok(())
+}
+
+#[test]
+fn finite_up_to_preserves_profile_and_retracts_clearance() -> TestResult {
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let source = geometry.box_shape([2., 3., 1.], [0.; 3])?;
+    let target = geometry.box_shape([4., 5., 1.], [-1., -1., 5.])?;
+    let profile = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("top face")?
+        .face;
+    let target_face = geometry
+        .profile_faces(target)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., -1.])
+        .ok_or("bottom face")?
+        .face;
+    let result = geometry.extrude_to_face(
+        (source, profile),
+        [0., 0., 1.],
+        0.,
+        (target, target_face),
+        0.,
+    )?;
+    close(geometry.volume(result)?, 24.);
+    let result = geometry.extrude_to_face(
+        (source, profile),
+        [0., 0., 1.],
+        0.,
+        (target, target_face),
+        0.5,
+    )?;
+    close(geometry.volume(result)?, 21.);
+    close(geometry.volume(source)?, 6.);
+    let small = geometry.box_shape([1., 5., 1.], [-0.5, -1., 5.])?;
+    let small_face = geometry
+        .profile_faces(small)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., -1.])
+        .ok_or("small face")?
+        .face;
+    assert!(
+        geometry
+            .extrude_to_face((source, profile), [0., 0., 1.], 0., (small, small_face), 0.)
+            .is_err()
+    );
+    assert!(
+        geometry
+            .extrude_to_face(
+                (source, profile),
+                [0., 0., 1.],
+                0.,
+                (target, target_face),
+                4.
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn through_all_uses_actual_multiple_hits_and_ignores_a_distant_miss() -> TestResult {
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let source = geometry.box_shape([2., 3., 1.], [0.; 3])?;
+    let profile = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("top face")?
+        .face;
+    let a = geometry.box_shape([2., 3., 1.], [0., 0., 5.])?;
+    let b = geometry.box_shape([2., 3., 1.], [0., 0., 9.])?;
+    let miss = geometry.box_shape([2., 3., 1.], [100., 100., 100.])?;
+    let end =
+        geometry.through_all_station((source, profile), [0., 0., 1.], 0., &[source, a, b, miss])?;
+    assert!((end - 9.000001).abs() < 1e-9, "{end}");
+    assert!(
+        geometry
+            .through_all_station((source, profile), [0., 0., 1.], 0., &[source, miss])
+            .is_err()
+    );
+    let result = geometry.extrude_face(source, profile, Some([0., 0., 1.]), 0., end)?;
+    close(geometry.volume(result)?, 6. * 9.000001);
+    Ok(())
+}
+
+#[test]
+fn symmetric_oblique_sweep_reflects_stations_about_one_displaced_section() -> TestResult {
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let source = geometry.box_shape([2., 3., 1.], [0.; 3])?;
+    let profile = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("top face")?
+        .face;
+    let direction = [0.6, 0., 0.8];
+    let main = geometry.extrude_face(source, profile, Some(direction), 2., 7.)?;
+    let second = geometry.mirror_sweep(main, (source, profile), direction, 2.)?;
+    close(geometry.volume(main)?, 24.);
+    close(geometry.volume(second)?, 24.);
+    let result = geometry
+        .boolean(main, second, newell_kernel::NewellBooleanMode::Add)?
+        .ok_or("empty union")?;
+    close(geometry.volume(result)?, 48.);
+    let target = geometry.box_shape([20., 20., 1.], [-10., -10., 3.])?;
+    let target_face = geometry
+        .profile_faces(target)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., -1.])
+        .ok_or("starting target")?
+        .face;
+    let station = geometry.starting_station((source, profile), direction, (target, target_face))?;
+    assert!((station - 2.5).abs() < 1e-10);
+    Ok(())
+}
+
+#[test]
+fn real_face_wire_and_edge_surface_sweeps_are_uncapped_exact_sheets() -> TestResult {
+    use newell_kernel::NewellBoundary;
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let source = geometry.box_shape([2., 3., 1.], [0.; 3])?;
+    let profile = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("top face")?
+        .face;
+    for boundary in [NewellBoundary::Face, NewellBoundary::Wire(0)] {
+        let shapes = geometry.sweep_surface((source, profile), boundary, [0., 0., 1.], 0., 4.)?;
+        assert_eq!(shapes.len(), 1);
+        let shape = shapes[0];
+        assert!(geometry.is_surface(shape));
+        assert_eq!(geometry.face_count(shape)?, 4);
+        close(geometry.surface_area(shape)?, 40.);
+        let mesh = geometry.tessellate(shape, 0.05)?;
+        assert_eq!(mesh.face_count(), 4);
+        assert!(
+            mesh.normals().iter().all(|normal| normal[2].abs() < 1e-6),
+            "no cap normal"
+        );
+        assert!(!mesh.feature_edges().positions().is_empty());
+    }
+    let shape = geometry.sweep_surface(
+        (source, profile),
+        NewellBoundary::Edge { wire: 0, edge: 0 },
+        [0., 0., 1.],
+        2.,
+        6.,
+    )?[0];
+    assert_eq!(geometry.face_count(shape)?, 1);
+    let face = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.face == profile)
+        .ok_or("profile")?;
+    let edge = &face.wires[0].edges[0];
+    let length = (0..3)
+        .map(|axis| (edge.end[axis] - edge.start[axis]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    close(geometry.surface_area(shape)?, length * 4.);
+    Ok(())
+}
+
+#[test]
+fn body_results_distinguish_split_full_removal_and_unchanged_targets() -> TestResult {
+    use newell_kernel::NewellBooleanMode;
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let body = geometry.box_shape([10.; 3], [0.; 3])?;
+    let slab = geometry.box_shape([2., 10., 10.], [4., 0., 0.])?;
+    let split = geometry.combine_bodies(slab, &[body], NewellBooleanMode::Remove)?;
+    assert_eq!(split.changed_targets, [0]);
+    assert_eq!(split.outputs.len(), 2);
+    for key in split.outputs {
+        close(geometry.volume(key)?, 400.);
+    }
+    let removed = geometry.combine_bodies(body, &[body], NewellBooleanMode::Remove)?;
+    assert_eq!(removed.changed_targets, [0]);
+    assert!(removed.outputs.is_empty());
+    let miss = geometry.box_shape([10.; 3], [100.; 3])?;
+    assert!(
+        geometry
+            .combine_bodies(miss, &[body], NewellBooleanMode::Remove)
+            .is_err()
+    );
+    let tool = geometry.box_shape([10.; 3], [5., 0., 0.])?;
+    let union = geometry.combine_bodies(tool, &[miss, body], NewellBooleanMode::Add)?;
+    assert_eq!(union.changed_targets, [1]);
+    assert_eq!(union.outputs.len(), 1);
+    close(geometry.volume(union.outputs[0])?, 1500.);
+    Ok(())
+}
+
+#[test]
+fn planar_sheet_union_difference_weld_and_split_real_uncapped_faces() -> TestResult {
+    use newell_kernel::{NewellBooleanMode, NewellBoundary};
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let source = geometry.box_shape([2., 3., 1.], [0.; 3])?;
+    let face = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("support")?
+        .face;
+    let target =
+        geometry.sweep_surface((source, face), NewellBoundary::Face, [0., 0., 1.], 0., 3.)?[0];
+    let tool =
+        geometry.sweep_surface((source, face), NewellBoundary::Face, [0., 0., 1.], 1., 4.)?[0];
+    let union = geometry.combine_surfaces(&[tool], &[target], NewellBooleanMode::Add)?;
+    assert_eq!(union.changed_targets, [0]);
+    assert_eq!(union.outputs.len(), 1);
+    close(geometry.surface_area(union.outputs[0])?, 40.);
+    assert_eq!(geometry.face_count(union.outputs[0])?, 4);
+    let cut = geometry.combine_surfaces(&[tool], &[target], NewellBooleanMode::Remove)?;
+    assert_eq!(cut.outputs.len(), 1);
+    close(geometry.surface_area(cut.outputs[0])?, 10.);
+    let target =
+        geometry.sweep_surface((source, face), NewellBoundary::Face, [0., 0., 1.], 0., 4.)?[0];
+    let tool =
+        geometry.sweep_surface((source, face), NewellBoundary::Face, [0., 0., 1.], 1., 3.)?[0];
+    let split = geometry.combine_surfaces(&[tool], &[target], NewellBooleanMode::Remove)?;
+    assert_eq!(split.outputs.len(), 2);
+    for sheet in split.outputs {
+        close(geometry.surface_area(sheet)?, 10.);
+        assert!(!geometry.tessellate(sheet, 0.05)?.indices().is_empty());
+    }
+    let empty = geometry.combine_surfaces(&[target], &[target], NewellBooleanMode::Remove)?;
+    assert!(empty.outputs.is_empty());
+    Ok(())
+}
+
+fn planar_sheet(
+    geometry: &mut newell_kernel::NewellGeometry,
+    x: f64,
+    z: f64,
+    width: f64,
+    height: f64,
+) -> Result<newell_kernel::NewellShapeKey, Box<dyn std::error::Error>> {
+    let source = geometry.box_shape([width, 1., 1.], [x, 0., z - 1.])?;
+    let face = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("support")?;
+    let edge = face.wires[0]
+        .edges
+        .iter()
+        .find(|edge| edge.start[1].abs() < 1e-7 && edge.end[1].abs() < 1e-7)
+        .ok_or("edge")?
+        .edge;
+    Ok(geometry.sweep_surface(
+        (source, face.face),
+        newell_kernel::NewellBoundary::Edge { wire: 0, edge },
+        [0., 0., 1.],
+        0.,
+        height,
+    )?[0])
+}
+#[test]
+fn sheet_booleans_preserve_existing_holes_and_reject_transverse_area_removal() -> TestResult {
+    use newell_kernel::{NewellBooleanMode, NewellBoundary};
+    let mut geometry = newell_kernel::NewellGeometry::new();
+    let target = planar_sheet(&mut geometry, 0., 0., 10., 10.)?;
+    let cutter = planar_sheet(&mut geometry, 4., 4., 2., 2.)?;
+    let holed = geometry
+        .combine_surfaces(&[cutter], &[target], NewellBooleanMode::Remove)?
+        .outputs[0];
+    close(geometry.surface_area(holed)?, 96.);
+    assert_eq!(geometry.profile_faces(holed)?[0].wires.len(), 2);
+    let fill = planar_sheet(&mut geometry, 5., 4., 2., 2.)?;
+    let partial = geometry
+        .combine_surfaces(&[fill], &[holed], NewellBooleanMode::Add)?
+        .outputs[0];
+    close(geometry.surface_area(partial)?, 98.);
+    assert_eq!(geometry.profile_faces(partial)?[0].wires.len(), 2);
+    assert!(!geometry.tessellate(partial, 0.05)?.indices().is_empty());
+    let target = planar_sheet(&mut geometry, 0., 0., 1., 1.)?;
+    let source = geometry.box_shape([1.; 3], [-0.5, -0.5, -1.])?;
+    let face = geometry
+        .profile_faces(source)?
+        .into_iter()
+        .find(|face| face.frame.normal == [0., 0., 1.])
+        .ok_or("transverse support")?;
+    let edge = face.wires[0]
+        .edges
+        .iter()
+        .find(|edge| (edge.start[0] - 0.5).abs() < 1e-7 && (edge.end[0] - 0.5).abs() < 1e-7)
+        .ok_or("transverse edge")?
+        .edge;
+    let tool = geometry.sweep_surface(
+        (source, face.face),
+        NewellBoundary::Edge { wire: 0, edge },
+        [0., 0., 1.],
+        0.,
+        1.,
+    )?[0];
+    assert!(
+        geometry
+            .combine_surfaces(&[tool], &[target], NewellBooleanMode::Remove)
+            .is_err()
+    );
+    assert!(
+        geometry
+            .combine_surfaces(&[tool], &[target], NewellBooleanMode::Add)
+            .is_err()
+    );
+    close(geometry.surface_area(target)?, 1.);
     Ok(())
 }

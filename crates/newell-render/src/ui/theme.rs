@@ -80,12 +80,12 @@ impl UiPalette {
     pub const fn with_theme(self, theme: Theme) -> Self {
         Self { theme, ..self }
     }
-    /// Source sRGB ink in `0.0..=1.0`; every role shares the same ink when Color is off.
+    /// Source sRGB ink in `0.0..=1.0`; ordinary roles share the same ink when Color is off.
     /// Target-format conversion and glyph-coverage blending belong to the renderer.
     #[must_use]
     pub fn foreground(self, ink: newell_ui::InkRole) -> [f32; 3] {
-        use newell_ui::InkRole::{Action, Contour, Text};
-        if !self.color_enabled {
+        use newell_ui::InkRole::{Action, Contour, Placeholder, Text};
+        if ink != Placeholder && !self.color_enabled {
             return self.theme.foreground();
         }
         let rgb = match (self.theme, ink) {
@@ -95,6 +95,13 @@ impl UiPalette {
             (Theme::Light, Text) => [17, 24, 39],
             (Theme::Light, Contour) => [9, 105, 160],
             (Theme::Light, Action) => [154, 77, 0],
+            (_, Placeholder) => {
+                let text = self.foreground(Text);
+                let background = self.background();
+                return std::array::from_fn(|i| {
+                    ((4.0 * text[i] + background[i]) * 255.0 / 5.0).round() / 255.0
+                });
+            }
         };
         rgb.map(|v| v as f32 / 255.0)
     }
@@ -190,5 +197,33 @@ mod color_tests {
             [7.0 / 255.0, 21.0 / 255.0, 33.0 / 255.0]
         );
         assert_eq!(UiPalette::new(Theme::Light, true).background(), [1.0; 3]);
+    }
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::*;
+    use newell_ui::InkRole;
+    #[test]
+    fn placeholder_inks_are_exact_readable_and_independent_of_ordinary_roles() {
+        assert_eq!(InkRole::Placeholder.index(), 3);
+        for (theme, color, expected) in [
+            (Theme::Dark, false, [204, 204, 204]),
+            (Theme::Light, false, [51, 51, 51]),
+            (Theme::Dark, true, [205, 208, 211]),
+            (Theme::Light, true, [65, 70, 82]),
+        ] {
+            let palette = UiPalette::new(theme, color);
+            let ink = palette.foreground(InkRole::Placeholder);
+            assert_eq!(ink, expected.map(|c| c as f32 / 255.0));
+            let luminance = |rgb| {
+                let c = target_rgb(rgb, true);
+                c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
+            };
+            let a = luminance(ink);
+            let b = luminance(palette.background());
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 7.0);
+            assert_ne!(ink, palette.foreground(InkRole::Text));
+        }
     }
 }

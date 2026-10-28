@@ -23,6 +23,7 @@ pub(super) const ACT_VIEW_SCALE: u32 = 202;
 pub(super) const ACT_VIEW_CHECK: u32 = 210;
 pub(super) const ACT_VIEW_THEME: u32 = 223;
 pub(super) const ACT_VIEW_COLOR: u32 = 224;
+pub(super) const ACT_VIEW_NAVIGATOR_KIND: u32 = 225;
 pub(super) const ACT_VIEW_FULLSCREEN: u32 = 222;
 pub(super) const ACT_EXTRUDE: u32 = 300;
 pub(super) const ACT_REVOLVE: u32 = 301;
@@ -242,7 +243,7 @@ const VIEW_CHECK_LABELS: [&str; VIEW_CHECKS] = [
     "Tree panel",
     "Task bar",
     "Status bar",
-    "Navigation cube",
+    "View Navigator",
     "Grid Overlay",
 ];
 
@@ -257,6 +258,7 @@ pub(super) struct ViewMock {
     pub theme: ThemeChoice,
     pub color_enabled: bool,
     pub checks: [bool; VIEW_CHECKS],
+    pub navigator_kind: crate::navigation_widgets::NavigatorKind,
 }
 
 impl ViewMock {
@@ -277,14 +279,16 @@ impl Default for ViewMock {
             theme: ThemeChoice::Dark,
             color_enabled: false,
             checks: [true, true, true, true, false],
+            navigator_kind: crate::navigation_widgets::NavigatorKind::Gizmo,
         }
     }
 }
 
-fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 13] {
+fn view_entries(v: &ViewMock) -> Vec<MenuEntry<'static>> {
     let cycle =
         |action: u32, label: &'static str, values: &'static [&'static str], current: usize| {
             MenuEntry::Cyclic(MenuCycle {
+                control_width: None,
                 action: MenuAction::new(action),
                 label,
                 values,
@@ -302,7 +306,7 @@ fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 13] {
             enabled: true,
         })
     };
-    [
+    let mut entries = vec![
         cycle(ACT_VIEW_PROJECTION, "", &PROJECTION, v.projection),
         cycle(ACT_VIEW_SHADING, "", &SHADING, v.shading),
         cycle(ACT_VIEW_SCALE, "UI Scale", &SCALE_LABELS, v.scale),
@@ -328,7 +332,24 @@ fn view_entries(v: &ViewMock) -> [MenuEntry<'static>; 13] {
         item(220, "[N]ormal to", "N"),
         item(221, "Reset Cam", ""),
         item(ACT_VIEW_FULLSCREEN, "Fullscreen", ""),
-    ]
+    ];
+    if v.checks[3] {
+        entries.insert(
+            9,
+            MenuEntry::Cyclic(MenuCycle {
+                control_width: Some(10),
+                action: MenuAction::new(ACT_VIEW_NAVIGATOR_KIND),
+                label: "╰╴  ",
+                values: &["Gizmo ", " Cube "],
+                current: usize::from(
+                    v.navigator_kind == crate::navigation_widgets::NavigatorKind::Cube,
+                ),
+                bounded: false,
+                enabled: true,
+            }),
+        );
+    }
+    entries
 }
 
 /// Calls `f` with the MenuBar menus (File, Edit, View, Help) for the current View rows.
@@ -361,7 +382,10 @@ pub(super) struct Node {
     pub check: Option<bool>,
     pub target: super::TreeTarget,
 }
-pub(super) fn projection_nodes(projection: &super::ModelTreeProjection) -> [Vec<Node>; 2] {
+pub(super) fn projection_nodes(
+    projection: &super::ModelTreeProjection,
+    include_origin: bool,
+) -> [Vec<Node>; 2] {
     use super::{ElementGroup, FeatureNodeId, TreeTargetKind as K};
     let node = |label: String, depth, kind, check, target| Node {
         label,
@@ -378,6 +402,24 @@ pub(super) fn projection_nodes(projection: &super::ModelTreeProjection) -> [Vec<
         None,
         K::FeaturesRoot,
     )];
+    if include_origin {
+        features.push(node(
+            "Origin".into(),
+            1,
+            NodeKind::Named,
+            None,
+            K::OriginFolder,
+        ));
+        features.extend(super::OriginReference::ALL.map(|reference| {
+            node(
+                reference.label().into(),
+                2,
+                NodeKind::Named,
+                None,
+                K::OriginReference(reference),
+            )
+        }));
+    }
     features.extend(projection.features.iter().map(|item| {
         node(
             item.name.clone(),
@@ -467,6 +509,7 @@ pub(super) fn reference_trees() -> (super::ModelTreeProjection, super::TreeIniti
     .map(|(id, source, group, name, visible)| ElementTreeItem {
         id: OpaqueTreeId::new(id),
         source_feature: OpaqueTreeId::new(source),
+        seeded: false,
         output_ordinal: 0,
         group,
         name: name.into(),

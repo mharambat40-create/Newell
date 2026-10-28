@@ -12,6 +12,8 @@ pub use scene::SceneDisplayMode;
 
 mod error;
 pub mod glyph_atlas;
+mod navigation_labels;
+pub mod navigation_widgets;
 mod renderer;
 mod scene;
 pub mod surface;
@@ -19,5 +21,5 @@ pub mod ui;
 
 pub use error::RenderError;
 pub use glyph_atlas::{CellLayout, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs, load_font};
-pub use renderer::{FrameOutcome, Renderer};
+pub use renderer::{FrameOutcome, PreparedScene, Renderer, SceneMeshItem};
 pub use ui::{Theme, UiPalette};

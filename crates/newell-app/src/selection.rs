@@ -42,6 +42,8 @@ pub(crate) struct CommandSelectionInputs {
     pub(crate) operation: newell_ui::ActionOperation,
     pub(crate) insertion: HistoryGap,
     pub(crate) values: BTreeMap<SelectionFieldKey, Selection>,
+    pub(crate) geometry_values: BTreeMap<SelectionFieldKey, Vec<GeometrySelectionRef>>,
+    pub(crate) geometry_picker: Option<GeometryPicker>,
 }
 
 pub(crate) fn candidate_rows(
@@ -52,11 +54,26 @@ pub(crate) fn candidate_rows(
     use SelectionFieldRole::*;
     use newell_model::{ConstructionKind as C, EntityKind as E};
     let mut rows = Vec::new();
+    let before = match insertion {
+        Some(HistoryGap::Before(id)) => {
+            let Some(feature) = session.feature_id(id) else {
+                return rows;
+            };
+            Some(feature)
+        }
+        _ => None,
+    };
+    let Ok(active) = session.document().active_entities_at(before) else {
+        return rows;
+    };
     for (feature, value) in session.document().features() {
         if insertion == Some(HistoryGap::Before(OpaqueTreeId::new(feature.get()))) {
             break;
         }
         for id in value.outputs() {
+            if !active.contains(id) {
+                continue;
+            }
             let Some(entity) = session.document().entity(*id) else {
                 continue;
             };
@@ -100,12 +117,12 @@ impl WindowSelection {
         self.value.entities()
     }
     pub(crate) fn apply(&mut self, request: SelectionRequest, session: &DocumentSession) -> bool {
+        let Ok(active) = session.document().active_entities_at(None) else {
+            return false;
+        };
         if request.document != session.identity()
             || self.document != session.identity()
-            || request
-                .entities
-                .iter()
-                .any(|id| session.document().entity(*id).is_none())
+            || request.entities.iter().any(|id| !active.contains(id))
         {
             return false;
         }
@@ -130,12 +147,9 @@ impl WindowSelection {
         if self.document != session.identity() {
             self.document = session.identity();
             self.value.clear();
-        } else {
-            self.value.replace(
-                old.iter()
-                    .copied()
-                    .filter(|id| session.document().entity(*id).is_some()),
-            );
+        } else if let Ok(active) = session.document().active_entities_at(None) {
+            self.value
+                .replace(old.iter().copied().filter(|id| active.contains(id)));
         }
         old != self.entities()
     }
@@ -147,15 +161,22 @@ pub(crate) fn resolve_tree_selection(
     if target.document != session.identity().tree() {
         return None;
     }
+    let active = session.document().active_entities_at(None).ok()?;
     match target.kind {
         TreeTargetKind::Entity(id) => {
             let id = EntityId::from_raw(id.get());
-            session.document().entity(id).map(|_| vec![id])
+            active.contains(&id).then_some(vec![id])
         }
         TreeTargetKind::Operation(id) => session
             .feature_id(id)
             .and_then(|id| session.document().feature(id))
-            .map(|f| f.outputs().to_vec()),
+            .map(|f| {
+                f.outputs()
+                    .iter()
+                    .copied()
+                    .filter(|id| active.contains(id))
+                    .collect()
+            }),
         _ => None,
     }
 }
@@ -232,4 +253,130 @@ mod tests {
         assert!(value.entities().is_empty());
         assert!(resolve_tree_selection(&session, target).is_none());
     }
+}
+
+/// App-owned typed geometry reference behind a model-free picker row key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GeometrySelectionRef {
+    Profile(newell_model::geometry::ProfileRef),
+    Direction {
+        support: newell_model::geometry::FaceRef,
+        wire: u32,
+        edge: u32,
+    },
+    Target(newell_model::geometry::FaceRef),
+}
+#[derive(Debug, Clone)]
+pub(crate) struct GeometryCandidate {
+    pub row: SelectionRow,
+    pub reference: GeometrySelectionRef,
+}
+#[derive(Debug)]
+pub(crate) struct GeometryPicker {
+    pub version: crate::DocumentVersion,
+    pub session: newell_ui::SelectionSessionId,
+    pub field: SelectionFieldKey,
+    pub candidates: Vec<GeometryCandidate>,
+}
+pub(crate) fn geometry_field(field: SelectionFieldKey) -> bool {
+    field.geometry_qualified()
+}
+
+pub(crate) fn geometry_candidates(
+    session: &DocumentSession,
+    field: SelectionFieldKey,
+    insertion: HistoryGap,
+    surface: bool,
+) -> Result<Vec<GeometryCandidate>, crate::AppError> {
+    use newell_model::geometry::{FaceRef, ProfileRef};
+    let mut candidates = Vec::new();
+    let mut append =
+        |label: String, reference: GeometrySelectionRef| -> Result<(), crate::AppError> {
+            let raw = u64::try_from(candidates.len())
+                .ok()
+                .and_then(|count| count.checked_add(1))
+                .ok_or(crate::AppError::DocumentCounterExhausted)?;
+            candidates.push(GeometryCandidate {
+                row: SelectionRow {
+                    entity: OpaqueTreeId::new(raw),
+                    label,
+                },
+                reference,
+            });
+            Ok(())
+        };
+    for (feature, value) in session.document().features() {
+        if insertion == HistoryGap::Before(OpaqueTreeId::new(feature.get())) {
+            break;
+        }
+        for entity in value.outputs() {
+            let Some(description) = session.document().entity_geometry(*entity) else {
+                continue;
+            };
+            let name = session
+                .document()
+                .entity(*entity)
+                .map_or("Entity", |entity| entity.name());
+            for face in &description.faces {
+                let support = FaceRef {
+                    entity: *entity,
+                    generation: description.generation,
+                    face: face.face,
+                };
+                let face_label = format!("{name} / Face {}", u64::from(face.face) + 1);
+                if field.key == 2 {
+                    if description
+                        .resolve_profile(ProfileRef::Face(support), !surface)
+                        .is_ok()
+                    {
+                        append(
+                            face_label.clone(),
+                            GeometrySelectionRef::Profile(ProfileRef::Face(support)),
+                        )?;
+                    }
+                } else if matches!(field.key, 6 | 12 | 16 | 21 | 25) {
+                    append(face_label.clone(), GeometrySelectionRef::Target(support))?;
+                }
+                if (field.key == 2 && surface) || field.key == 5 {
+                    for wire in &face.wires {
+                        let wire_label =
+                            format!("{face_label} / Wire {}", u64::from(wire.wire) + 1);
+                        if field.key == 2 {
+                            append(
+                                wire_label.clone(),
+                                GeometrySelectionRef::Profile(ProfileRef::Wire {
+                                    support,
+                                    wire: wire.wire,
+                                }),
+                            )?;
+                        }
+                        for edge in &wire.edges {
+                            let edge_label =
+                                format!("{wire_label} / Edge {}", u64::from(edge.edge) + 1);
+                            if field.key == 2 {
+                                append(
+                                    edge_label,
+                                    GeometrySelectionRef::Profile(ProfileRef::Edge {
+                                        support,
+                                        wire: wire.wire,
+                                        edge: edge.edge,
+                                    }),
+                                )?;
+                            } else if edge.straight {
+                                append(
+                                    edge_label,
+                                    GeometrySelectionRef::Direction {
+                                        support,
+                                        wire: wire.wire,
+                                        edge: edge.edge,
+                                    },
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(candidates)
 }

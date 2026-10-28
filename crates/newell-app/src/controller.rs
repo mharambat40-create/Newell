@@ -100,6 +100,18 @@ struct RenameSession {
     source_name: String,
 }
 
+/// One menu-close publication certifies this exact focused-operation request.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CertifiedPropertiesOpen {
+    pub request: newell_ui::PropertiesOpenRequest,
+    pub validated_generation: ProjectionGeneration,
+    pub closing_generation: ProjectionGeneration,
+}
+#[derive(Debug, Clone)]
+struct PendingPropertiesClose {
+    request: newell_ui::PropertiesOpenRequest,
+    candidate: ShellState,
+}
 /// What the caller must do after an input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Update {
@@ -158,6 +170,8 @@ pub struct ShellController {
     rename_session: Option<RenameSession>,
     intent: Option<TreeIntent>,
     selection_request: Option<newell_ui::SelectionUiRequest>,
+    properties_open: Option<CertifiedPropertiesOpen>,
+    properties_close: Option<PendingPropertiesClose>,
     selection_session: Option<(newell_ui::SelectionOpen, ProjectionGeneration)>,
     cursor: Option<UiPoint>,
     /// The separator being dragged (pointer capture): temporary interaction state.
@@ -181,6 +195,10 @@ pub struct ShellController {
     pub(crate) fail_numeric_confirm: u8,
     #[cfg(test)]
     pub(crate) fail_numeric_formula: u8,
+    #[cfg(test)]
+    pub(crate) fail_properties_close: u8,
+    #[cfg(test)]
+    pub(crate) fail_properties_editor: u8,
 }
 
 impl ShellController {
@@ -203,6 +221,8 @@ impl ShellController {
             rename_session: None,
             intent: None,
             selection_request: None,
+            properties_open: None,
+            properties_close: None,
             selection_session: None,
             grid,
             metrics,
@@ -217,6 +237,10 @@ impl ShellController {
             fail_numeric_confirm: 0,
             #[cfg(test)]
             fail_numeric_formula: 0,
+            #[cfg(test)]
+            fail_properties_close: 0,
+            #[cfg(test)]
+            fail_properties_editor: 0,
         })
     }
 
@@ -310,6 +334,16 @@ impl ShellController {
             })
     }
 
+    /// Read-only navigator admission; never activates a shell control or commits an edit.
+    pub fn navigation_admission(&self, surface: (u32, u32), resizable: bool) -> bool {
+        self.scene_input_enabled()
+            && self.cursor.is_some_and(|point| {
+                point.x < surface.0
+                    && point.y < surface.1
+                    && (!resizable || resize_zone(point, surface, self.metrics).is_none())
+            })
+    }
+
     /// Classifies the OS cursor from the same O(1) hit and precedence used by `press`.
     #[must_use]
     pub fn cursor_hint(&self, surface: (u32, u32), resizable: bool) -> CursorHint {
@@ -364,6 +398,10 @@ impl ShellController {
         self.shell.set_selection_modifiers(shift, toggle);
     }
     fn capture_numeric_origin(&mut self) {
+        // Input provenance is nonvisual state. Keep the rollback mirror in step
+        // even when a separator press captures input without publishing a frame.
+        self.shell.set_action_origin(self.generation);
+        self.published_shell.set_action_origin(self.generation);
         if self.shell.numeric_session().is_some() {
             self.shell.set_numeric_origin(self.generation);
         }
@@ -417,6 +455,16 @@ impl ShellController {
         let request = self.shell.take_numeric_formula_open();
         self.published_shell.take_numeric_formula_open();
         request
+    }
+    /// Publishes ordinary contextual status without changing any command or document.
+    pub fn set_contextual_status(&mut self, message: Option<String>) -> Result<Update, UiError> {
+        let mut candidate = self.shell.clone();
+        if !candidate.set_contextual_status(message) {
+            return Ok(Update::default());
+        }
+        let grid = candidate.compose()?;
+        self.publish(candidate, grid, FrameCause::External)?;
+        Ok(Update { grid: true })
     }
     /// Drains an explicit Formula OK from both publication mirrors exactly once.
     pub fn take_formula_apply(&mut self) -> Option<newell_ui::FormulaApplyRequest> {
@@ -544,6 +592,75 @@ impl ShellController {
         let acted = self.shell.numeric_focus_lost();
         self.refresh(acted)
     }
+    pub(crate) fn take_properties_open(&mut self) -> Option<CertifiedPropertiesOpen> {
+        self.shell.take_properties_open();
+        self.published_shell.take_properties_open();
+        self.properties_open
+            .take()
+            .filter(|request| request.closing_generation == self.generation)
+    }
+    pub(crate) fn pending_properties_close(&self) -> Option<newell_ui::PropertiesOpenRequest> {
+        self.properties_close
+            .as_ref()
+            .map(|pending| pending.request)
+    }
+    pub(crate) fn discard_properties_close(&mut self) {
+        self.properties_close = None;
+        self.properties_open = None;
+    }
+    fn defer_properties_close(
+        &mut self,
+        request: newell_ui::PropertiesOpenRequest,
+        candidate: ShellState,
+    ) {
+        self.published_shell.retain_properties_counter(request.id);
+        self.properties_close = Some(PendingPropertiesClose { request, candidate });
+    }
+    pub(crate) fn retry_properties_close(&mut self) -> Result<Update, UiError> {
+        let Some(pending) = self.properties_close.take() else {
+            return Ok(Update::default());
+        };
+        if pending.request.origin != self.generation
+            || self.published_shell.focused_features_operation() != Some(pending.request.target)
+        {
+            return Ok(Update::default());
+        }
+        let result = (|| {
+            let grid = pending.candidate.compose()?;
+            self.publish(pending.candidate.clone(), grid, FrameCause::External)
+        })();
+        if let Err(error) = result {
+            self.properties_close = Some(pending);
+            return Err(error);
+        }
+        self.shell.take_properties_open();
+        self.published_shell.take_properties_open();
+        self.properties_open = Some(CertifiedPropertiesOpen {
+            request: pending.request,
+            validated_generation: pending.request.origin,
+            closing_generation: self.generation,
+        });
+        Ok(Update { grid: true })
+    }
+    pub(crate) fn open_extrude_properties(
+        &mut self,
+        values: newell_ui::ExtrudeValues,
+        numeric: newell_ui::NumericProjection,
+        fields: &[newell_ui::SelectionFieldCount],
+    ) -> Result<Update, UiError> {
+        #[cfg(test)]
+        if self.fail_properties_editor > 0 {
+            self.fail_properties_editor -= 1;
+            return Err(UiError::InvalidNumericProjection);
+        }
+        let mut candidate = self.shell.clone();
+        candidate.open_extrude_edit(values);
+        candidate.set_numeric_projection(numeric)?;
+        candidate.set_selection_fields(fields)?;
+        let grid = candidate.compose()?;
+        self.publish(candidate, grid, FrameCause::External)?;
+        Ok(Update { grid: true })
+    }
     pub fn take_command_start(&mut self) -> Option<newell_ui::ActionOperation> {
         let start = self.shell.take_command_start();
         self.published_shell.take_command_start();
@@ -663,6 +780,10 @@ impl ShellController {
         self.rename_session = None;
         self.selection_session = None;
         self.selection_request = None;
+        self.properties_open = None;
+        self.properties_close = None;
+        self.shell.take_properties_open();
+        self.published_shell.take_properties_open();
         if playhead_captured {
             self.resume_hover_from_published_target()
         } else {
@@ -1078,6 +1199,10 @@ impl ShellController {
         if !acted {
             return Update::default();
         }
+        let properties = self.shell.properties_open().filter(|request| {
+            request.origin == self.generation
+                && self.published_shell.focused_features_operation() == Some(request.target)
+        });
         let validated = self
             .rename_session
             .clone()
@@ -1093,6 +1218,9 @@ impl ShellController {
         let tree_hover = requested_hover
             .is_some_and(|id| semantic_tree_target(&self.published_shell, id).is_some());
         let Ok((mut grid, mut lit)) = self.shell.compose_hovered(requested_hover) else {
+            if let Some(request) = properties {
+                self.defer_properties_close(request, self.shell.clone());
+            }
             self.shell = self.published_shell.clone();
             return Update::default();
         };
@@ -1106,11 +1234,21 @@ impl ShellController {
         let previous_hover = self.hovered;
         // Keep the old tree target's certificate until publish resolves the current slot.
         self.hovered = requested_hover.filter(|_| tree_hover || lit);
+        let properties_candidate = properties.map(|_| candidate.clone());
         if self.publish(candidate, grid, cause).is_err() {
+            if let (Some(request), Some(candidate)) = (properties, properties_candidate) {
+                self.defer_properties_close(request, candidate);
+            }
             self.shell = self.published_shell.clone();
             self.hovered = previous_hover;
             return Update::default();
         }
+        self.shell.take_properties_open();
+        self.properties_open = properties.map(|request| CertifiedPropertiesOpen {
+            request,
+            validated_generation: request.origin,
+            closing_generation: self.generation,
+        });
         // Publication owns semantic hover validation and capture-end reacquisition.
         // Never restore a reusable slot id after that decision.
         self.selection_request =
@@ -1158,8 +1296,26 @@ impl ShellController {
         mut grid: CellGrid,
         cause: FrameCause,
     ) -> Result<(), UiError> {
+        #[cfg(test)]
+        if candidate.properties_open().is_some() && self.fail_properties_close > 0 {
+            self.fail_properties_close -= 1;
+            return Err(UiError::InvalidNumericProjection);
+        }
+        self.properties_open = None;
+        self.properties_close = None;
         let playhead_captured = self.playhead_capture_active();
         let mut hovered = self.hovered;
+        // View Navigator inserts/removes a row. Re-resolve the physical pointer
+        // in the new map instead of reusing a menu slot's former action.
+        if candidate.view_panel_visible(3) != self.published_shell.view_panel_visible(3) {
+            let under = self
+                .cursor
+                .and_then(|point| hit_test(point, self.metrics, &grid))
+                .and_then(|hit| candidate.hover_target(hit, &grid));
+            let (composed, lit) = candidate.compose_hovered(under)?;
+            grid = composed;
+            hovered = under.filter(|_| lit);
+        }
         if playhead_captured
             && hovered.is_some_and(|id| semantic_tree_target(&self.shell, id).is_some())
         {
@@ -1719,6 +1875,7 @@ mod treeview_addendum_tests {
             .map(|id| ElementTreeItem {
                 id: OpaqueTreeId::new(100 + id),
                 source_feature: OpaqueTreeId::new(id),
+                seeded: false,
                 output_ordinal: 0,
                 group: ElementGroup::Bodies,
                 name: format!("entity_{id}"),
@@ -1915,7 +2072,8 @@ mod treeview_addendum_tests {
         c.pointer_pressed();
         c.pointer_released();
         assert_eq!(c.shell.playhead(), gap);
-        let right = c.shell.nav_width() - 2;
+        // README_UI section 26.2 reserves the final interior cell as a blank.
+        let right = c.shell.nav_width() - 3;
         assert_eq!(
             c.grid.get(right, host).unwrap().content,
             CellContent::Glyph('─')

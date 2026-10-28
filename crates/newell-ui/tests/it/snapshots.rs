@@ -473,14 +473,16 @@ mod treeview_contract {
             .unwrap();
         let line: Vec<_> = row_text(&g, row);
         let right = s.nav_width() - 1;
-        assert_eq!(line[(right - 1) as usize], '─');
+        let stroke_end = right - 2;
+        assert_eq!(line[stroke_end as usize], '─');
+        assert_eq!(line[(right - 1) as usize], ' ');
         assert_eq!(line[right as usize], '║');
-        let stroke_id = g.get(right - 1, row).unwrap().widget_id.unwrap();
+        let stroke_id = g.get(stroke_end, row).unwrap().widget_id.unwrap();
         assert!(!s.is_rename_target(stroke_id));
         assert_eq!(g.get(right - 1, row).unwrap().ink, InkRole::Text);
         let at = hit_test(
             UiPoint {
-                x: (right - 1) * 6 + 3,
+                x: stroke_end * 6 + 3,
                 y: row * 10 + 5,
             },
             GridMetrics::new(6, 10).unwrap(),
@@ -488,7 +490,7 @@ mod treeview_contract {
         )
         .unwrap();
         assert_eq!(s.drag_at(&at), Some(newell_ui::Separator::Playhead));
-        assert!(!s.drag_separator(newell_ui::Separator::Playhead, right - 1, row));
+        assert!(!s.drag_separator(newell_ui::Separator::Playhead, stroke_end, row));
         assert_eq!(s.playhead(), original);
         let mut p = s.tree_projection().clone();
         p.features[4].name = "Renamed".into();
@@ -497,12 +499,19 @@ mod treeview_contract {
             !text(&s).iter().any(|r| r.contains("Last")),
             "refresh must not reveal cursor ancestors"
         );
-        activate(&mut s, "[-] Outer_folder");
+        activate(&mut s, "[-] Outer");
         assert_eq!(s.playhead(), original);
         let lines = text(&s);
-        assert!(lines.iter().any(|r| r.contains("Outer_folder ─")));
+        let inline = lines
+            .iter()
+            .find(|r| r.contains(" ─── "))
+            .expect("collapsed ancestor keeps a three-cell inline stroke");
+        assert!(
+            inline.ends_with(" ║"),
+            "the inline stroke leaves a blank before the border: {inline:?}"
+        );
         assert!(!lines.iter().any(|r| r.contains("Inner_folder")));
-        activate(&mut s, "[+] Outer_folder");
+        activate(&mut s, "[+] Outer");
         activate(&mut s, "[+] Inner");
         assert_eq!(s.playhead(), original);
         assert!(text(&s).iter().any(|r| r.contains("Last")));
@@ -515,12 +524,13 @@ mod treeview_contract {
         place(&mut s, GapDisplayLocation::AfterSubtree(op(4)));
         let original = s.playhead();
         activate(&mut s, "[-] Inner");
-        // Inner depth 2 prefix = 8, so O=15 gives W=P+5, one label cell.
-        s.set_nav_width(15);
+        // Inner depth 2 prefix = 8, so O=16 gives W=P+6: one label,
+        // separator, three stroke cells and the required trailing blank.
+        s.set_nav_width(16);
         assert!(
             text(&s)
                 .iter()
-                .any(|r| r.starts_with("║ │ ╰[+] … ───║") || r.contains("… ───║"))
+                .any(|r| r.starts_with("║ │ ╰[+] … ─── ║") || r.contains("… ─── ║"))
         );
         s.set_nav_width(14);
         let g = s.compose().unwrap();
@@ -593,10 +603,11 @@ mod treeview_contract {
             })
             .unwrap();
         let line = row_text(&g, r);
-        let end = s.nav_width() - 2;
+        let end = s.nav_width() - 3;
         assert_eq!(&line[1..8], &[' ', '│', ' ', ' ', ' ', '│', ' ']);
         assert_eq!(line[8], '─');
         assert_eq!(line[end as usize], '─');
+        assert_eq!(line[(end + 1) as usize], ' ');
         assert!(g.get(2, r).unwrap().widget_id.is_none());
         let owner = g.get(end, r).unwrap().widget_id.unwrap();
         let elem = (0..g.rows())

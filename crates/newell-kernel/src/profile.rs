@@ -18,6 +18,15 @@ use brepkit_topology::{
     wire::{OrientedEdge, Wire},
 };
 
+/// Unique construction role, independent of native arena indices and dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NewellFaceProvenance {
+    Unknown,
+    Base(u32),
+    StartCap,
+    EndCap,
+    Wall { wire: u32, edge: u32 },
+}
 /// A bounded planar profile owning its exact B-Rep and supporting plane.
 #[derive(Debug)]
 pub struct NewellProfile {
@@ -499,6 +508,7 @@ pub struct NewellProfileWire {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewellProfileFace {
     pub face: u32,
+    pub provenance: NewellFaceProvenance,
     pub frame: NewellProfileFrame,
     pub wires: Vec<NewellProfileWire>,
 }
@@ -559,57 +569,11 @@ impl NewellSolid {
     /// # Errors
     /// Propagates invalid topology and identity capacity errors.
     pub fn profile_faces(&self) -> Result<Vec<NewellProfileFace>, NewellKernelError> {
-        let mut result = Vec::new();
-        for (ordinal, id) in brepkit_topology::explorer::solid_faces(&self.topology, self.solid)
-            .map_err(operation_error)?
-            .into_iter()
-            .enumerate()
-        {
-            let face = self.topology.face(id).map_err(operation_error)?;
-            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
-                continue;
-            }
-            let frame = supporting_frame(&self.topology, id)?;
-            let mut wires = Vec::new();
-            for (wire_index, wire_id) in std::iter::once(face.outer_wire())
-                .chain(face.inner_wires().iter().copied())
-                .enumerate()
-            {
-                let wire = self.topology.wire(wire_id).map_err(operation_error)?;
-                let mut edges = Vec::new();
-                for (edge_index, oe) in wire.edges().iter().enumerate() {
-                    let edge = self.topology.edge(oe.edge()).map_err(operation_error)?;
-                    let a = self
-                        .topology
-                        .vertex(edge.start())
-                        .map_err(operation_error)?
-                        .point();
-                    let b = self
-                        .topology
-                        .vertex(edge.end())
-                        .map_err(operation_error)?
-                        .point();
-                    let (a, b) = if oe.is_forward() { (a, b) } else { (b, a) };
-                    edges.push(NewellProfileEdge {
-                        edge: u32::try_from(edge_index).map_err(operation_error)?,
-                        start: point_xyz(a),
-                        end: point_xyz(b),
-                        straight: matches!(edge.curve(), EdgeCurve::Line),
-                    });
-                }
-                wires.push(NewellProfileWire {
-                    wire: u32::try_from(wire_index).map_err(operation_error)?,
-                    closed: wire.is_closed(),
-                    edges,
-                });
-            }
-            result.push(NewellProfileFace {
-                face: u32::try_from(ordinal).map_err(operation_error)?,
-                frame,
-                wires,
-            });
-        }
-        Ok(result)
+        describe_faces(
+            &self.topology,
+            brepkit_topology::explorer::solid_faces(&self.topology, self.solid)
+                .map_err(operation_error)?,
+        )
     }
     /// Resolves a planar face of this exact B-Rep as an owned closed profile.
     ///
@@ -638,4 +602,266 @@ impl NewellProfile {
     pub fn frame(&self) -> Result<NewellProfileFrame, NewellKernelError> {
         supporting_frame(&self.topology, self.face)
     }
+}
+
+pub(crate) fn describe_faces(
+    topology: &Topology,
+    faces: Vec<FaceId>,
+) -> Result<Vec<NewellProfileFace>, NewellKernelError> {
+    let mut result = Vec::new();
+    for (ordinal, id) in faces.into_iter().enumerate() {
+        let face = topology.face(id).map_err(operation_error)?;
+        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+            continue;
+        }
+        let frame = supporting_frame(topology, id)?;
+        let mut wires = Vec::new();
+        for (wire_index, wire_id) in std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .enumerate()
+        {
+            let wire = topology.wire(wire_id).map_err(operation_error)?;
+            let mut edges = Vec::new();
+            let mut occurrences: Vec<_> = wire.edges().iter().enumerate().collect();
+            if face.is_reversed() {
+                occurrences.reverse();
+            }
+            for (edge_index, oe) in occurrences {
+                let edge = topology.edge(oe.edge()).map_err(operation_error)?;
+                let a = topology
+                    .vertex(edge.start())
+                    .map_err(operation_error)?
+                    .point();
+                let b = topology
+                    .vertex(edge.end())
+                    .map_err(operation_error)?
+                    .point();
+                let (a, b) = if oe.is_forward() ^ face.is_reversed() {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                edges.push(NewellProfileEdge {
+                    edge: u32::try_from(edge_index).map_err(operation_error)?,
+                    start: point_xyz(a),
+                    end: point_xyz(b),
+                    straight: matches!(edge.curve(), EdgeCurve::Line),
+                });
+            }
+            wires.push(NewellProfileWire {
+                wire: u32::try_from(wire_index).map_err(operation_error)?,
+                closed: wire.is_closed(),
+                edges,
+            });
+        }
+        result.push(NewellProfileFace {
+            face: u32::try_from(ordinal).map_err(operation_error)?,
+            provenance: NewellFaceProvenance::Unknown,
+            frame,
+            wires,
+        });
+    }
+    Ok(result)
+}
+
+/// Exact B-Rep flux for planar caps and sides ruled parallel to one common direction.
+/// Trimmed sides have zero flux in that direction; only their actual cap wires are
+/// integrated. This avoids upstream mesh-based planar spline-cap measurements.
+pub(crate) fn parallel_sweep_volume(
+    topology: &Topology,
+    solid: brepkit_topology::SolidId,
+) -> Result<Option<f64>, NewellKernelError> {
+    let faces =
+        brepkit_topology::explorer::solid_faces(topology, solid).map_err(operation_error)?;
+    let reference = faces
+        .first()
+        .and_then(|face| topology.face(*face).ok())
+        .and_then(|face| topology.wire(face.outer_wire()).ok())
+        .and_then(|wire| wire.edges().first())
+        .and_then(|occurrence| topology.edge(occurrence.edge()).ok())
+        .and_then(|edge| topology.vertex(edge.start()).ok())
+        .map(|vertex| vertex.point())
+        .ok_or_else(|| operation_error("missing volume reference vertex"))?;
+    let mut direction = None;
+    for id in &faces {
+        let face = topology.face(*id).map_err(operation_error)?;
+        let candidate = match face.surface() {
+            FaceSurface::Plane { .. } => continue,
+            FaceSurface::Cylinder(c) => c.axis(),
+            FaceSurface::Nurbs(surface) => {
+                let points = surface.control_points();
+                let weights = surface.weights();
+                if points.len() != weights.len()
+                    || points.iter().zip(weights).any(|(p, w)| p.len() != w.len())
+                {
+                    return Ok(None);
+                }
+                let pairs: Vec<_> =
+                    if surface.degree_v() == 1 && points.iter().all(|row| row.len() == 2) {
+                        points
+                            .iter()
+                            .zip(weights)
+                            .filter(|(p, w)| p.len() == 2 && w.len() == 2)
+                            .map(|(p, w)| ([p[0], p[1]], [w[0], w[1]]))
+                            .collect()
+                    } else if surface.degree_u() == 1 && points.len() == 2 && weights.len() == 2 {
+                        points[0]
+                            .iter()
+                            .zip(&points[1])
+                            .zip(weights[0].iter().zip(&weights[1]))
+                            .map(|((a, b), (wa, wb))| ([*a, *b], [*wa, *wb]))
+                            .collect()
+                    } else {
+                        return Ok(None);
+                    };
+                let Some((points, _)) = pairs.first() else {
+                    return Ok(None);
+                };
+                let candidate = (points[1] - points[0])
+                    .normalize()
+                    .map_err(operation_error)?;
+                let mut ratio = None;
+                for (points, weights) in pairs {
+                    if weights.iter().any(|w| !w.is_finite() || *w <= 0.) {
+                        return Ok(None);
+                    }
+                    let step = points[1] - points[0];
+                    if step.cross(candidate).length() > 1e-10 * step.length().max(1.) {
+                        return Ok(None);
+                    }
+                    let value = weights[1] / weights[0];
+                    let first = *ratio.get_or_insert(value);
+                    if (value - first).abs() > 1e-12 * first.abs().max(1.) {
+                        return Ok(None);
+                    }
+                }
+                candidate
+            }
+            _ => return Ok(None),
+        };
+        let candidate = candidate.normalize().map_err(operation_error)?;
+        let d = *direction.get_or_insert(candidate);
+        if d.cross(candidate).length() > 1e-10 {
+            return Ok(None);
+        }
+    }
+    let direction = direction.unwrap_or(Vec3::new(0., 0., 1.));
+    let mut volume = 0.;
+    for id in faces {
+        let face = topology.face(id).map_err(operation_error)?;
+        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+            continue;
+        }
+        let frame = supporting_frame(topology, id)?;
+        let vector = |a: [f64; 3]| Vec3::new(a[0], a[1], a[2]);
+        let n = vector(frame.normal);
+        let factor = n.dot(direction);
+        if factor.abs() <= 1e-14 {
+            continue;
+        }
+        let u = vector(frame.u);
+        let v = vector(frame.v);
+        // Integrate in a frame near the actual face. World-plane origins can
+        // put a tiny profile millions of units from its integration origin,
+        // losing its area and first moments through cancellation.
+        let occurrence = topology
+            .wire(face.outer_wire())
+            .map_err(operation_error)?
+            .edges()
+            .first()
+            .ok_or_else(|| operation_error("empty cap boundary"))?;
+        let anchor = topology
+            .vertex(
+                topology
+                    .edge(occurrence.edge())
+                    .map_err(operation_error)?
+                    .start(),
+            )
+            .map_err(operation_error)?
+            .point();
+        let origin = Vec3::new(anchor.x(), anchor.y(), anchor.z());
+        let project = |p: Point3| {
+            let p = Vec3::new(p.x(), p.y(), p.z()) - origin;
+            (p.dot(u), p.dot(v))
+        };
+        let mut moments = [0.; 3];
+        for (index, wire) in std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .enumerate()
+        {
+            let mut loop_moments = [0.; 3];
+            for occurrence in topology.wire(wire).map_err(operation_error)?.edges() {
+                let edge = topology.edge(occurrence.edge()).map_err(operation_error)?;
+                let a = topology
+                    .vertex(edge.start())
+                    .map_err(operation_error)?
+                    .point();
+                let b = topology
+                    .vertex(edge.end())
+                    .map_err(operation_error)?
+                    .point();
+                let (mut lo, mut hi) = edge.curve().domain_with_endpoints(a, b);
+                if !occurrence.is_forward() {
+                    std::mem::swap(&mut lo, &mut hi);
+                }
+                let mut breaks = vec![lo, hi];
+                if let EdgeCurve::NurbsCurve(curve) = edge.curve() {
+                    breaks.extend(
+                        curve
+                            .knots()
+                            .iter()
+                            .copied()
+                            .filter(|k| *k > lo.min(hi) && *k < lo.max(hi)),
+                    );
+                }
+                breaks.sort_by(f64::total_cmp);
+                breaks.dedup();
+                if hi < lo {
+                    breaks.reverse();
+                }
+                for span in breaks.windows(2) {
+                    for part in 0..32 {
+                        let lo = span[0] + (span[1] - span[0]) * f64::from(part) / 32.;
+                        let hi = span[0] + (span[1] - span[0]) * f64::from(part + 1) / 32.;
+                        for q in gauss_legendre_points(8) {
+                            let t = (lo + hi) * 0.5 + (hi - lo) * 0.5 * q.x;
+                            let p = project(edge.curve().evaluate_with_endpoints(t, a, b));
+                            let derivative = match edge.curve() {
+                                EdgeCurve::Line => b - a,
+                                EdgeCurve::NurbsCurve(c) => *c
+                                    .derivatives(t, 1)
+                                    .get(1)
+                                    .ok_or_else(|| operation_error("missing curve derivative"))?,
+                                EdgeCurve::Circle(c) => {
+                                    c.u_axis() * (-c.radius() * t.sin())
+                                        + c.v_axis() * (c.radius() * t.cos())
+                                }
+                                EdgeCurve::Ellipse(c) => {
+                                    c.u_axis() * (-c.semi_major() * t.sin())
+                                        + c.v_axis() * (c.semi_minor() * t.cos())
+                                }
+                            };
+                            let (dx, dy) = (derivative.dot(u), derivative.dot(v));
+                            let weight = q.w * (hi - lo) * 0.25;
+                            loop_moments[0] += weight * (p.0 * dy - p.1 * dx);
+                            loop_moments[1] += weight * p.0 * p.0 * dy;
+                            loop_moments[2] -= weight * p.1 * p.1 * dx;
+                        }
+                    }
+                }
+            }
+            let sign = if index == 0 { 1. } else { -1. } * loop_moments[0].signum();
+            for axis in 0..3 {
+                moments[axis] += sign * loop_moments[axis];
+            }
+        }
+        volume += factor
+            * (direction.dot(anchor - reference) * moments[0]
+                + direction.dot(u) * moments[1]
+                + direction.dot(v) * moments[2]);
+    }
+    if !volume.is_finite() {
+        return Err(operation_error("nonfinite B-Rep volume"));
+    }
+    Ok(Some(volume.abs()))
 }

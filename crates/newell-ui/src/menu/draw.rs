@@ -206,7 +206,10 @@ pub fn draw_menu_popup(
                 let ctl = GridRect::new(
                     row.col().saturating_add(1).saturating_add(used),
                     row.row(),
-                    row.width().saturating_sub(2).saturating_sub(used),
+                    row.width()
+                        .saturating_sub(2)
+                        .saturating_sub(used)
+                        .min(cy.control_width.unwrap_or(u32::MAX)),
                     1,
                 );
                 let sel = Cyclic {

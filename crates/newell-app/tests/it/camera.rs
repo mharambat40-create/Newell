@@ -382,3 +382,63 @@ fn returning_from_zoomed_orthographic_view_preserves_focal_plane_framing() {
     close(target, c.target());
     pixel(pixel_before, c.project(reference).unwrap());
 }
+
+#[test]
+fn navigator_table_preserves_target_and_projection_for_all_26_views() {
+    use newell_ui::navigation_widgets::ViewDirection;
+    let rows = [
+        ([0, 0, 1], [0., 1., 0.]),
+        ([0, 0, -1], [0., -1., 0.]),
+        ([0, -1, 0], [0., 0., 1.]),
+        ([0, 1, 0], [0., 0., 1.]),
+        ([-1, 0, 0], [0., 0., 1.]),
+        ([1, 0, 0], [0., 0., 1.]),
+        ([0, -1, 1], [0., 1., 1.]),
+        ([0, 1, 1], [0., -1., 1.]),
+        ([-1, 0, 1], [1., 0., 1.]),
+        ([1, 0, 1], [-1., 0., 1.]),
+        ([0, -1, -1], [0., -1., 1.]),
+        ([0, 1, -1], [0., 1., 1.]),
+        ([-1, 0, -1], [-1., 0., 1.]),
+        ([1, 0, -1], [1., 0., 1.]),
+        ([-1, -1, 0], [0., 0., 1.]),
+        ([1, -1, 0], [0., 0., 1.]),
+        ([-1, 1, 0], [0., 0., 1.]),
+        ([1, 1, 0], [0., 0., 1.]),
+        ([-1, -1, 1], [1., 1., 2.]),
+        ([1, -1, 1], [-1., 1., 2.]),
+        ([-1, 1, 1], [1., -1., 2.]),
+        ([1, 1, 1], [-1., -1., 2.]),
+        ([-1, -1, -1], [-1., -1., 2.]),
+        ([1, -1, -1], [1., -1., 2.]),
+        ([-1, 1, -1], [-1., 1., 2.]),
+        ([1, 1, -1], [1., 1., 2.]),
+    ];
+    for perspective in [false, true] {
+        for (n, up) in rows {
+            let mut c = camera();
+            c.set_perspective(perspective);
+            c.lens_shift = [0.3, -0.2];
+            let before = c;
+            let target = c.target();
+            let d = ViewDirection::new(n).unwrap();
+            c.align_view(d);
+            let expected = n.map(|x| -f64::from(x));
+            close(c.basis().2, scale(expected, 1. / norm(expected)));
+            close(c.basis().1, scale(up, 1. / norm(up)));
+            close(c.target(), target);
+            assert_eq!(c.focal_distance, before.focal_distance);
+            assert_eq!(c.orthographic_height, before.orthographic_height);
+            assert_eq!(c.vertical_fov, before.vertical_fov);
+            assert_eq!(c.perspective, before.perspective);
+            assert_eq!(c.lens_shift, before.lens_shift);
+            assert!(!c.align_view(d));
+            if n[0] == 0 && n[1] == 0 {
+                assert_eq!(c.last_heading, [0., 1., 0.]);
+                for movement in [(2., 0.), (-2., 0.), (0., 2.), (0., -2.)] {
+                    level(c.orbit(target, movement, 1.));
+                }
+            }
+        }
+    }
+}

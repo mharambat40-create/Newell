@@ -7,14 +7,14 @@ expression: snapshot(&s)
 ╠════════════════════════════════════════════════════════════════════════════════╣
 ║ Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities              ║
 ╠═══════════════════════╦════════════════════════════════════════════════════════╣
-║[-]Features            ║ 3D Viewport                                   ╭NavCube╮║
-║ ├ □ Sketch_Profile_Ma…║                                               │       │║
-║ ├[-] Hub_Features     ║                                               │       │║
-║ │ ├ Extrude_Base      ║                                               ╰───────╯║
+║[-]Features            ║ 3D Viewport                                            ║
+║ ├ □ Sketch_Profile_Ma…║                                                        ║
+║ ├[-] Hub_Features     ║                                                        ║
+║ │ ├ Extrude_Base      ║                                                        ║
 ║ │ ├ ■ Sketch_Hole     ║                         ╭─Extrude─────┬───────────────╮║
 ║ │ ╰╴Extrude_Cut_Center║                         │    Solid    │    Surface    │║
 ║ ├ Fillet_Inner        ║  ╭─Rename──────────────────╮────┬─────┘╴╴╴┐╴╴╴╴╴╴╴╴╴╴╴┤║
-║ │ ────────────────────║  │[Hub_Body▏              ]│ew  │   Add   ┆  Remove   │║
+║ │ ─────────────────── ║  │[Hub_Body▏              ]│ew  │   Add   ┆  Remove   │║
 ║ ├ Chamfer_Edges       ║  │─────────────────────────│────┘╴╴╴╴╴╴╴╴╴┘╴╴╴╴╴╴╴╴╴╴╴┤║
 ║ ╰╴Pattern_Circular    ║  │     OK     │   Cancel   │ofile     [Select…       ]│║
 ║                       ║  ╰─────────────────────────╯tend   ◀     Blind     ▶  │║

@@ -1070,6 +1070,10 @@ No other hover visual effects are authorized.
 
 ### 3.6 UI Palette, Color and Themes
 
+The narrowly scoped input-placeholder exception in §3.6.1 applies to this
+section and the state-visual restrictions of §3.5. All ordinary ink, hover,
+selection and frame rules below remain unchanged.
+
 Approved by the human on 2026-10-26 through [ADR 0006](docs/adr/0006-view-color-semantic-palette.md).
 
 The ASCII UI has two independent per-window choices: Light/Dark Theme and View > Color (initially unchecked). Every new window starts Dark with Color unchecked. An unchecked window is strictly monochrome: Dark uses background `#000000` and ink `#FFFFFF`; Light uses background `#FFFFFF` and ink `#000000`. Every composed glyph cell carries one of three semantic ink roles, which affect output only when Color is checked: `Text` for ordinary text, values, labels, caret, progress, menu popup/dialog/selection-panel title letters and treeview hierarchy strokes; `Contour` for box/panel/menu/dialog/selection-panel/field frames and shared structural joins; `Action` for explicit actionable affordances such as checkbox glyphs, tree `[-]`/`[+]` handles, selector arrows, selection-field controls, direction toggle and formula control. A logo/icon cell uses `Text` unless its component explicitly designates it as an `Action` affordance (§§3.2–3.3). Dark + Color uses background `#071521`, Text `#FFFFFF`, Contour `#41B4E5`, Action `#FFA24A`. Light + Color uses background `#FFFFFF`, Text `#111827`, Contour `#0969A0`, Action `#9A4D00`. Roles are assigned by the component's semantics, never inferred from a Unicode glyph or a WidgetId. For menu popup, dialog and selection-panel title rows, the title letters are Text while adjacent top-edge strokes, corners, frame junctions and structural separators are Contour. The View Theme row keeps exactly `Theme [ ◑ Dark  ]` or `Theme [ ◐ Light ]`: `Theme` and `Dark`/`Light` are Text, its `[`/`]` and `◑`/`◐` are Action, its spaces have no visible ink, and the popup's outer `│` borders are Contour. This role allocation does not change the Theme row's cell positions, ownership or activation. A shared cell takes the role of its visible structural stroke; frame intersections and segment dividers are Contour even when routing is split, while adjacent tree guides stay Text. Overlay composition overwrites glyph and role together.
@@ -1086,6 +1090,119 @@ With Color checked, only Contour cells use the same-cell glyph map `═→─`, 
 At a cell where a tree hierarchy guide actually joins a frame, the frame/junction owns that one cell as `Contour`; the guide's next nonshared cell stays `Text`. A divider between controls remains one `Contour` cell even when `SharedBorder` routes its halves to different controls. Interaction ownership never determines ink. Scrollbar arrows and draggable thumbs, plus explicit selection-list control glyphs, are Action; inert annotations remain Text. Tree playhead strokes remain Text despite their draggable owner. For the Action Box two-cell hover replacement `╰╴→╘ `, `╘` inherits the former `╰` role and the blank retains the former `╴` metadata.
 
 Theme activation by pointer or Enter/Space retains its existing open-popup and focused-row behavior. Color uses the established View checkbox behavior: toggle, keep the popup open and keep its row focused. Both choices are independent of OS appearance and other windows.
+
+### 3.6.1 Scoped input-placeholder exception (2026-10-27)
+
+The human explicitly authorized this Architect-stage amendment on 2026-10-27.
+For initial numeric magnitude placeholders and the `none` placeholder of the
+Validation Operation Box (Enter Name), this section supersedes the blanket
+brightness, state-visual, three-role and exact-black/white-only restrictions in
+§§3.5–3.6 and the corresponding restrictions in accepted ADR 0003 D7/D8 and
+ADR 0006. Those ADRs remain historical records; all their other rules apply.
+
+Add one semantic ink role, `Placeholder`, reserved exclusively for those
+placeholder characters. Its source sRGB components are
+`P = floor((4*T + B)/5 + 0.5)`, independently per 8-bit channel, where T is the
+current Text ink and B the current background. Exact full-coverage inks are:
+
+| Theme / Color | Placeholder |
+|---|---|
+| Dark / off | `#CCCCCC` |
+| Light / off | `#333333` |
+| Dark / on | `#CDD0D3` |
+| Light / on | `#414652` |
+
+This fixed 80% Text / 20% background mixture is computed in source sRGB, before
+existing target-format conversion and glyph coverage blending. It changes ink,
+never glyph alpha. Color off permits these neutral greys for placeholders only;
+ordinary roles retain exact black/white. Color on retains the existing three
+ordinary inks. The caret always uses normal Text ink. No hover, selection,
+frame, unit, direction, Formula control, title, button, diagnostic, ordinary
+label or accepted value receives Placeholder ink. The Formula `Fx = ` prefix
+and selection-field prompts are outside this exception.
+
+Placeholder identity is explicit Controller-owned metadata, never inferred from
+zero, rounded text, an empty formula, a label or a glyph. It is not document
+content. Clearing on entry to editing only creates an empty local raw editor;
+it cannot mutate a quantity, discard a binding/expression, publish a command or
+mark the document dirty. The complete lifecycle is canonical in
+`docs/ui_design/README_UI.md` §5.13 and §23. App-owned accepted numeric drafts,
+precision, input certificates, deferred Formula opening and commit-before-close
+remain binding. Component composition supplies the new ink through the existing
+per-cell role word and per-window palette in the same single ASCII draw call.
+No new atlas, animation, pass, hit target or general disabled/focus dimming is
+authorized. Overlay replacement copies glyph and role together.
+
+### 3.7 Scoped 3D navigation-widget exception (2026-10-27)
+
+The human's 2026-10-27 Architect request authorizes this architectural/UI
+specification amendment for exactly the axis gizmo and navigation cube.
+Implementation still requires an explicit implementation request for the plan.
+Within these two viewport widgets only, this section takes precedence over
+blanket ASCII-only, monochrome, gradient, font-sampling, subpixel-position,
+no-extra-pass and no-bounding-box-iteration language in §§3.1–3.6 and §1.
+Accepted ADRs 0002 D6, 0003 D5/D7/D11 and 0006 continue to govern the ASCII
+interface; their earlier exclusion of additional widget rendering is superseded
+only for this scope. The decision is recorded in new ADR 0007; prior ADRs are
+preserved as historical records.
+
+- These are window-local navigation graphics, never document entities,
+  construction planes, model selection targets or BrepKIT geometry.
+- The origin marker, positive-only dashed reference axes and positive-quadrant
+  XY/XZ/YZ reference planes are renderer-owned graphics anchored at world origin
+  `(0, 0, 0)`. `newell-render::Scene` derives a uniform world scale from the main
+  camera projection and origin depth for fixed apparent size, retaining orbit
+  foreshortening, ordinary pan, scene depth, viewport clipping and UI occlusion.
+  Reference fragments keep their existing opacity where unobstructed and use
+  20% of it where sampled scene depth shows model-surface occlusion, including
+  in Points, Wireframe, Line and HiddenLine display modes. This depth-aware
+  blend uses an isolated model-surface depth target, does not modify scene
+  depth, and does not change model transparency.
+  Invalid/behind-camera/out-of-depth-range origins are omitted, never clamped.
+  Their explicit pixel dimensions, plane insets and neutral plane material, as
+  well as axis colors, are specified in README_UI.md §41.2. They are excluded
+  from document geometry, picking, history
+  and model-fitting bounds. The live Features presentation adds a built-in
+  Origin folder with seven immutable semantic reference rows; these are separate
+  from operation IDs and Elements, and have no insertion, modeling, selection,
+  visibility or rename actions. Existing folder expansion infrastructure is used. The corner Gizmo remains screen-space and retains only its
+  directional stems, caps, rings and labels; it does not duplicate the origin
+  marker or reference planes.
+- `newell-app` retains sole mutable scene-camera and input authority.
+  `newell-ui` may provide pure fixed geometry/projection/hit mathematics and
+  layout values; `newell-render` consumes immutable derived data only.
+- The exact visual/interaction contract is `docs/ui_design/README_UI.md` §41.
+  It permits fixed corner-axis colors, matte and translucent shading,
+  restrained spatial line fading, beveled cube surfaces, face-local cube labels,
+  antialiasing and a separate filtered label coverage atlas using the existing
+  font. The focused Executor request of 2026-10-27 additionally authorizes only
+  the corner marker hover states in README_UI.md §41: negative ring opacity
+  0.55→1.0 and saturation 0.8→1.0; positive disc transparent interior with
+  axis-colored outline and letter. The 2026-10-28 quick fix increases corner
+  marker diameters 15%, retaining outline widths and world-reference geometry.
+  Hover is immediate Controller-owned semantic state, cleared under captures
+  and input blocking, never renderer picking. No other hover, pressed or
+  selection material changes, animation, extra gestures, refraction or blur
+  are authorized. These corner-marker hover states do not apply to world-origin
+  references; ASCII hover is unchanged.
+- Fixed bounded tests of the cube's 26 convex components and six axis caps are
+  permitted after ordinary O(1) ASCII routing. No retained widget hierarchy,
+  variable-size widget scan or GPU picking/readback is introduced.
+- Dedicated navigation rendering may use a separate local color/depth target
+  and composite pass. It never uses scene depth, display-mode pipelines,
+  selected-entity brightness or ASCII palette inks. The existing ASCII overlay
+  remains exactly one batched draw call. Separate widget draw work must be
+  counted and reported explicitly.
+- Menus, modals, Action Boxes and active resize/capture keep their precedence.
+  Widget render targets clear to transparent and composite only their graphics;
+  their rectangular allocation never masks scene rendering, bounds or ASCII
+  cells. Only actual semantic targets own input: complete circles for all axis
+  markers (including hollow centers), and the existing 26 cube components.
+  Empty tile space passes input to the scene. A widget press cannot select
+  geometry or start an orbit. Existing scene captures retain ownership. View > View Navigator controls
+  visibility; when checked it reveals a child Gizmo/Cube selector and displays
+  exactly the selected widget. Each window starts checked with Gizmo selected;
+  hiding retains that choice. Appearance remains independent of View > Color.
 
 ## 4. Multi-Window & State Management Architecture
 To support unlimited, synchronized windows, the application architecture must strictly enforce the MVC pattern and the separation of crates.

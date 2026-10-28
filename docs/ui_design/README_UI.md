@@ -307,7 +307,8 @@ is not part of the numerical magnitude.
 0.0
 ```
 
-is the magnitude entered by the user.
+is either the untouched initial magnitude placeholder or a real magnitude.
+Its explicit provenance, never its spelling, determines placeholder behavior (§5.13).
 
 ```text
 mm
@@ -618,10 +619,11 @@ add a generic foreground/background inversion, a marker such as `>` or `<`, an
 underline, or any third colour or intensity to represent focus, selection or
 pressed state. Focus markers are not invented: a focused control without a
 documented structure has no visual (the keyboard focus target is observable
-only through its effect). No interaction state introduces a colour, intensity or inversion. `View > Color`
+only through its effect). Except for the narrowly scoped placeholder ink of §5.13, no interaction state introduces a colour, intensity or inversion. `View > Color`
 selects a fixed semantic palette independent of interaction state; Light/Dark
 selects the corresponding background and role colours (`ARCHITECTURE.md` §3.6).
-When Color is unchecked, the exact black/white themes apply.
+When Color is unchecked, the exact black/white themes apply except for the
+neutral placeholder ink of §5.13.
 
 ---
 
@@ -813,6 +815,95 @@ progress animation remains the only animation (`ARCHITECTURE.md` §3.5).
 The 2026-10-26 tree amendment updates the endpoint and adds the explicit §26
 reference states. A snapshot without a pointer (hover `None`) shows the normal glyphs;
 hovered snapshots are separate states.
+
+---
+
+## 5.13 Initial input placeholders (2026-10-27)
+
+Authorized by the human together with `ARCHITECTURE.md` §3.6.1. This exception
+applies only to the initial numeric magnitude and the initial `none` instruction
+in §23's Enter Name Validation Operation Box. A real zero, an accepted or
+Formula-derived value, an existing operation/name (even literally `none`), and
+user-entered drafts are ordinary Text. Selection fields, labels, diagnostics,
+buttons, titles and the Formula `Fx = ` prefix are excluded.
+
+**Ink.** Use the semantic Placeholder role only for placeholder characters:
+Dark/off `#CCCCCC`, Light/off `#333333`, Dark/on `#CDD0D3`, Light/on `#414652`.
+These are the deterministic 80% Text / 20% background source-sRGB mixture,
+rounded per channel as specified in architecture §3.6.1. Normal caret ink,
+coverage alpha, hover substitutions, ordinary roles, frames and selection rules
+are unchanged. Theme/Color changes resolve the current placeholder through the
+new palette immediately, without changing its identity or the raw editor.
+
+**Ownership.** Untouched/default is explicit per-field Controller metadata,
+distinct from an accepted value and from an active raw draft. A numeric default
+may retain a valid app-owned zero quantity underneath the placeholder. Accepted
+literal zero is never reclassified as initial. Successful nonempty Formula
+acceptance and all values loaded from existing data are accepted, including
+values that round to `0.0`. Reprojection, branch hiding/revealing, direction
+changes and Formula opening/Cancel must not invent or erase that provenance.
+
+**Entry.** Pointer activation of the editable value area focuses and starts
+editing in the same event. An initial placeholder becomes an empty raw editor
+with the normal `▏` caret at index zero; the placeholder is never inserted into
+the draft. Repeated clicks retain an existing raw draft. Real values retain the
+existing editing behavior and caret placement. Numeric keyboard Tab/BackTab
+arrival at an editable value starts the same edit, as does existing Enter/Space
+activation when merely focused. Do not activate the next Formula, direction,
+button or selection target while moving focus. Modal text focus, including its
+automatic opening focus and Tab/BackTab/Up/Down arrival, has the same empty-editor
+behavior. Therefore an auto-focused empty Enter Name opens showing a caret;
+its `none` placeholder is visible when its empty text area is inactive.
+Passive focus restoration after Enter, Formula close or OS focus gain does not
+reenter numeric editing; a new activation/navigation into the field does.
+
+**Numeric exit.** Enter accepts only the field candidate, never the command.
+Tab/BackTab, pointer blur, menu entry, field hiding and OS focus loss use the
+existing field-resolution path. Leaving a placeholder-origin empty editor with
+no successful text mutation emits no numeric edit; the initial placeholder
+returns when editing ends. Navigation, rejected keystrokes, focus and clearing
+alone are not text mutations. Direction-only changes still emit Direction and
+retain magnitude, expression and placeholder identity. Escape discards only the
+active raw edit and restores the last accepted field presentation, or the
+placeholder if there was no accepted input. User-entered empty/`.` attempts
+(including typing then deleting everything) retain the existing Incomplete
+rejection path: no accepted quantity or expression is overwritten; the accepted
+projection restores the field, including its provenance. Invalid characters
+rejected by the compact grammar leave the draft as before. A real accepted
+value that is deleted to empty is rejected/restored, never converted to a new
+placeholder. Command Cancel and OK retain their existing transactional meaning.
+
+**Validation Operation Box exit.** Moving focus away does not accept a name.
+Retain nonempty raw text verbatim and show it normally; restore `none` only when
+the Enter Name raw draft is exactly empty and inactive. Whitespace is a draft,
+not a placeholder. Enter/OK with a trimmed-empty name remains rejected, leaves
+the modal open and preserves the previous applied name. If the text area has
+focus it remains empty with a caret; if OK has focus it remains inactive, with
+`none` only for an exactly empty Enter Name. Rename never uses a placeholder to
+mask deletion of an existing name. Cancel/Escape restores the applied value and
+closes; a later empty Enter Name opening repeats this lifecycle, while reopening
+Rename loads the full existing name. Accepted names, including `none`, are never
+cleared on focus. Surrounding frame, controls, validation and focus-return rules
+are unchanged.
+
+**Formula isolation.** The existing formula target (`☰` and its existing owned
+closing-bracket cell) opens Formula; it never begins a numeric raw editor.
+Resolve any active numeric edit first and preserve M4.4's deferred opening from
+the resulting accepted source, including after rejection. Opening and Cancel
+leave accepted source/value/provenance intact. Successful nonempty Formula OK
+marks its resulting value accepted, even zero; rejected OK leaves the modal and
+source draft intact. Empty Formula OK keeps its existing explicit removal of an
+expression and retained-literal behavior; preserve the prior placeholder
+provenance (do not manufacture an accepted input merely from opening/empty OK).
+Formula focus returns to its originating control without starting an empty
+numeric edit. Preserve exact terminal acknowledgements, retries, Formula
+application before modal close and command commit before command close.
+
+Brackets, direction prefix, unit suffix, Formula control, field dimensions,
+alignment and routing are unchanged. The only glyph removal is the placeholder
+inside the existing editable span. Placeholder clearing itself is presentation:
+no model mutation, dirty flag, command publication, binding removal or loss of
+accepted precision/source is permitted.
 
 ---
 
@@ -2087,7 +2178,21 @@ The dimensions of the fields remain fixed.
 
 # 19. Generic Selection box
 
-Exact reference:
+**Reference alignment, 2026-10-27.** Empty Selection has exactly one blank
+content row. The reference is:
+
+```text
+╭─Selection───────────────────╮
+│┌───────────────────────────┐│
+││                           ││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+```
+
+Merge-scope membership uses eligible candidates, including unchecked candidates
+when the selected set is empty. The reference is:
 
 ```text
 ╭─Selection───────────────────╮
@@ -2101,37 +2206,114 @@ Exact reference:
 ╰─────────────────────────────╯
 ```
 
-This example has three content rows and no scrollbar (§21).
+`□` means excluded from the draft; `■` means included. These are membership
+controls, distinct from persistent tree visibility. Candidate filtering follows
+the originating semantic field, including the current geometry kind; artwork
+names are illustrative, never runtime fallback rows.
 
-Inside this modal:
+## 19.1 Exact shared Selection geometry
 
-```text
-□
-```
+Coordinates below are zero-based relative to the logical outer frame; ranges
+are half-open. Let `N` be the number of rows in the active presentation and
+`V = max(1,min(N,5))`. Width is 31 cells and height is `V+6` cells.
 
-means the element is not included in the current selection.
+| Part | Exact cells |
+|---|---|
+| Outer top | y=0; `╭` x=0, `─` x=1, title from x=2, `─` through x=29, `╮` x=30 |
+| Outer sides | x=0 and x=30, y in [1,V+5) |
+| Inner top | y=1; `┌` x=1, 27 `─` x in [2,29), `┐` x=29 |
+| Content | x in [2,29), y in [2,V+2); empty is 27 spaces on y=2 |
+| Inner bottom | y=V+2; `└` x=1, 27 `─`, `┘` x=29 |
+| Separator | y=V+3; outer `│`, 29 `─` x in [1,30), outer `│` |
+| Footer | y=V+4; exact `│      OK      │    Cancel    │` |
+| Outer bottom | y=V+5; `╰` x=0, 29 `─`, `╯` x=30 |
 
-```text
-■
-```
+Title letters use Text, all frame/separator/divider strokes use Contour. Footer
+labels and padding retain their existing Text role and button ownership.
+Checkboxes, reorder/remove glyphs and scrollbar arrows/thumb use Action; labels
+and ordinary padding use Text. Hover is only the existing footer boundary
+substitution (§5.12); list controls acquire no new hover visual or state colour.
 
-means the element is included.
+The surface owns inert chrome and blank content. Each candidate row owns its
+checkbox/name/padding span; no blank empty-list row is an item. For membership
+rows, x=2 is padding, x=3 is `□`/`■`, x=4 is separation, and the label starts at
+x=5. With a bar, x=28 is the gutter and label capacity is 23; otherwise label
+capacity is 24. Clip names in whole cells without changing the stored name.
+OK owns footer x in [1,15), Cancel x in [16,30); x=15 is a vertical SharedBorder
+with OK on its low half and Cancel on its high half. Outer footer boundaries
+remain surface-owned and are substituted only by the established hover writer.
+Column 14 is OK padding, not a shared cell. OK hover substitutes the boundaries
+at x=0 and x=15; Cancel hover substitutes x=15 and x=30. Glyph substitutions
+retain the same ownership, shared-border routing and Contour ink.
 
-This use is contextual and distinct from visibility checkboxes in the document
-tree.
+**Proposed placement policy for approval with the alignment plan:** keep the
+existing distinction: candidate/membership modals are centered in shell overlay
+bounds; ordered-item management replaces the originating Action Box at its
+usual top/right anchor, using this compact height. Formula stays centered.
+Never derive placement from the incorrect screenshot. For a centered modal,
+use the existing `center_modal` position/available allocation; draw the logical
+art at that origin and crop, without moving internal coordinates to the cropped
+right/bottom edge. Action Box placement uses the existing action-panel layout.
+Intersect every write/target with that allocation, grid and actual surface.
+A clipped frame is not a new smaller artwork. Recompose the whole shell after
+size/count changes so old glyphs, roles, WidgetIds and shared borders disappear.
+
+## 19.2 Presentation and candidate admission
+
+Choose by field purpose, never label text. MergeScope always opens candidate
+membership. Other current single-reference and unordered membership inputs keep
+their existing candidate chooser, cardinality and filters. In that chooser
+checkboxes describe candidate admission; they do not redefine every profile as
+a merge scope or an ordered selected-item row.
+
+For an input with selected-item management (Loft Profile, Sweep Profile and
+Sweep Path), the field body opens its candidate chooser; its populated `☰`
+opens the ordered-item manager (§20). Empty fields still open the chooser.
+Both existing field parts retain keyboard activation; no shortcut or glyph is
+added. This explicit distinction preserves a way to add/replace eligible items
+without mixing unchecked candidates into an ordered selected list.
+
+These presentation rules do not raise existing cardinality limits or implement
+new topology/commands. In particular, current Sweep Profile/Path and Loft
+Profile limits remain as supplied by their descriptors; a one-item manager has
+a remove control and an inert reorder handle. Truly multi-item ordered requests
+use their supplied order. Unsupported inputs show zero actual candidates,
+never illustrative profiles. The field's eligible candidate universe and its
+selected ordered vector are separate data even when one is empty.
+
+Edits remain a window-local modal draft. Only OK emits the ordered identity
+vector for the exact document/modal/command-field lifetime. Cancel/Escape
+produce no destination replacement. Selection OK never commits a CAD feature.
+
+On close, restore the originating control when it still exists in the same
+live command-field lifetime. If accepted removal of the last selected item
+removes its populated `☰`, restore focus to that field's visible body instead.
+Apply this repair when the accepted zero count is published, including delayed
+publication; never leave focus on an absent management control. Enter/Space
+then opens candidate selection through the body. Cancel retains the applied
+membership and restores the surviving original control. If the originating
+field or command lifetime no longer exists, clear its stale focus rather than
+transferring it to another field or session.
+
+An empty field cannot issue or accept a new ManageSelected request. The shell
+rejects activation of an absent `☰`, and the application rechecks nonempty
+accepted membership before opening management. Reject a stale request without
+allocating/opening a modal or changing the destination. This does not prevent
+an already open manager from becoming empty through draft removal and then
+confirming that empty vector.
 
 ---
 
 # 20. Profile Selection box
 
-Exact reference:
+Exact ordered-item reference (spaces are significant):
 
 ```text
 ╭─Profils─────────────────────╮
 │┌───────────────────────────┐│
 ││ ☰ Spline_1             × ▲││
-││ ☰ Profil_3             × ┃││
-││ ☰ Profil_4             ×  ││
+││ ☰ Profil_3             × ╻││
+││ ☰ Profil_4             × ╹││
 ││ ☰ Profil_4             ×  ││
 ││ ☰ Compound_line_1      × ▼││
 │└───────────────────────────┘│
@@ -2140,31 +2322,33 @@ Exact reference:
 ╰─────────────────────────────╯
 ```
 
-Each line represents an already selected profile. This example shows the first
-five of nine profiles at offset zero; the track is `"┃  "` (§21).
+Rows represent already selected identities in draft order, never all eligible
+candidates. Equal names in this reference belong to distinct identities. The
+track `"╻╹ "` is the N=9, offset=1 state of §21; the five names are illustrative
+visible rows in that state. A list of exactly five items has no scrollbar.
+The same reference appears in the new Selection section of Interface_Elements.
 
-Example:
+Use §19.1's 31-cell frame and variable compact height. Title is `Profils` for
+profile management; non-profile ordered management uses `Selection`. In every
+ordered row x=2 is padding, x=3 is `☰`, x=4 is separation, label begins at x=5.
+With a gutter: label x in [5,26) (21 cells), `×` x=26, separation x=27,
+gutter x=28. Without a gutter reclaim one cell: label x in [5,27) (22 cells),
+`×` x=27, separation x=28. These positions preserve
+the artwork's exact control columns. Names are clipped before controls.
 
-```text
-││ ☰ Profil_3             × ╻││
-```
-
-means:
-
-- first `│`: outer modal border;
-- second `│`: inner list border;
-- space: fixed padding;
-- `☰`: reorder handle;
-- space: fixed separation;
-- `Profil_3`: selected profile name;
-- spaces: fixed flexible display area;
-- `×`: remove profile from the list;
-- space: separation before scrollbar;
-- `╻`: current scrollbar state;
-- `│`: inner list border;
-- `│`: outer modal border.
-
-Profile order is part of the data required by operations such as Loft.
+`☰` and `×` have separate stable targets tied to the selected identity, not a
+visible row or label. Names/padding may focus the row but never toggle membership.
+A primary drag beginning on a handle moves that identity within this draft;
+release over a visible item inserts it before that item when moving upward and
+after it when moving downward. Use whole-cell pointer rows; movement into a
+different content row begins the reorder gesture, with no change on the initial
+press. Same-row release is a no-op; release outside content or cancellation
+discards the provisional move. No auto-scroll, page jump,
+new shortcut or preview marker is introduced. Scroll first to reach a different
+five-row window. The final reorder changes the draft once on valid release.
+Remove deletes only that identity immediately from the draft, retaining survivor
+order; its eventual release cannot activate another row. Focus on a removed
+control falls back to OK. Cancel discards both operations.
 
 ---
 
@@ -2181,11 +2365,11 @@ scrollbars retain their existing behavior.
   `[s, s + 5)`. Reserve the rightmost interior column as a one-cell-wide gutter:
   `▲`, three track cells, `▼`, alongside those same five content rows. The bar
   adds no content row and has no separator column of its own.
-- An empty list retains its blank list area and existing surrounding chrome,
-  with no item, placeholder text, new glyph or scrollbar. Offset is zero.
-- Keep existing outer footprints, title, list borders, footer, row padding and
-  profile controls. Any surplus interior area is inert blank space, not extra
-  content rows. Without a gutter, content reclaims that column; with a gutter,
+- An empty list uses exactly one blank content row and the compact surrounding
+  chrome of §19.1, with no item, placeholder text or scrollbar. Offset is zero.
+- Use the compact outer footprint, title, list borders, footer and row padding
+  of §§19–20. Any clipped allocation does not add logical content rows. Without
+  a gutter, content reclaims that column; with a gutter,
   labels are clipped to their reduced width before controls or borders. Profile
   `×` and its existing trailing separation stay inside the content region.
 - Compute logical geometry before clipping to the available list rect and grid.
@@ -2259,15 +2443,15 @@ to `max(0,N−5)`; growth does not jump to the bottom. At `N<=5`, store zero and
 remove the entire gutter and all arrow/thumb routing metadata. Clear obsolete
 pressed/capture/cursor state; unavailable focused arrows follow the existing
 fallback to OK. Retain surviving item identity and selection; removing an item
-removes only that item's state. Existing mock lists need no new model binding
-or public list-editing API for this work.
+removes only that item's state. Runtime lists use the application-supplied rows and draft identities of §§19–20;
+reference fixtures are explicit test-only data.
 
 Retain existing arrow activation (one content row), wheel/trackpad direction and
 step translation, keyboard focus ring and minimal ensure-visible scrolling.
 Disabled endpoint arrows remain drawn but cannot activate. Keep the established
 whole-cell thumb hit target on every cell containing an occupied half; blank
-track cells are inert. Track clicks, page jumps, auto-repeat, new reorder/remove
-gestures and new keyboard commands are not introduced by this change.
+track cells are inert. Track clicks, page jumps, auto-repeat and new keyboard commands are not
+introduced. Ordered-item reorder/removal is defined separately in §20.
 
 Existing thumb dragging keeps its whole-row pointer sampling and capture
 lifecycle. On press retain pointer row `r0`, exact content offset `s0`, thumb
@@ -2313,10 +2497,70 @@ Exact reference:
 
 The Formula editor is opened by `☰` from formula-capable fields.
 
-The text area contains the expression.
+## 22.1 Fixed prefix and text viewport
 
-`Fx =` communicates that the entered content is a formula rather than only a
-literal number.
+The empty reference is:
+
+```text
+╭─Formula─────────────────────────╮
+│┌───────────────────────────────┐│
+││Fx =                           ││
+││                               ││
+│└───────────────────────────────┘│
+│─────────────────────────────────│
+│       OK       │     Cancel     │
+╰─────────────────────────────────╯
+```
+
+The exact five-character `Fx = ` (including its trailing space) is fixed Text
+presentation on the first inner row. It remains visible when empty, scrolled,
+unfocused or rejected. It is not part of the expression, edit selection,
+clipboard/source payload, source-origin map, parser, evaluator or validation.
+Do not strip a user-entered matching string: only the separately composed prefix
+is excluded. Opening/reopening retains expression characters and whitespace
+verbatim; visual wrapping never inserts stored newlines.
+
+The logical outer frame remains 35×8. Title is `Formula` at x in [2,9), y=0;
+outer corners x=0,34 at y=0,7; inner frame x=1,33 with top y=1 and bottom y=4.
+Its two 31-cell text rows are x in [2,33), y=2,3. Prefix occupies x in [2,7),
+y=2. Expression slots are x in [7,33), y=2 (26 cells), then x in [2,33), y=3
+(31 cells): total capacity 57. Separator is y=5, x in [1,34); footer y=6 has
+OK x in [1,17), SharedBorder x=17, Cancel x in [18,34). Frame/title/text/footer
+ownership follows Selection's corresponding structural rules; the inner frame,
+prefix and expression slots share the existing text-area target. Clicking the
+prefix only focuses text; it never places the caret in the prefix.
+
+For expression characters E of length T, caret index c in [0,T], compose
+D = E[0:c] + `▏` + E[c:T] while editing, otherwise D=E. Capacity C=57 and
+start s=max(0,c+1-C) while editing, otherwise s=0. For each i in [0,57), draw
+D[s+i] (or a blank): if i<26, position (7+i,2); else (2+i-26,3).
+Prefix stays at (2,2) independently of s. Thus inactive capacity is 57 source
+characters and editing capacity is 56 source characters plus one caret. Scrolling
+is the existing linear whole-cell caret window over these asymmetric rows;
+there is no extra scrollbar or indicator. Apply allocation/grid/surface clipping
+after mapping logical cells; clipped cells never move the caret onto a frame.
+Very small surfaces may physically crop the caret; logical capacity is unchanged.
+
+Home/End and their existing selection variants address expression start/end,
+not visual lines. SelectAll selects E only. Backspace at c=0 and Delete at c=T
+are harmless; selection replacement/deletion never touches the prefix. Preserve
+Left/Right, Tab/BackTab, Up/Down focus ring, Enter/OK confirmation and
+Escape/Cancel with their existing meanings; Enter is not a newline. No new
+shortcuts or clipboard integration are introduced. Focus restoration returns to
+the originating field control after accepted OK or Cancel; rejected OK stays
+open with exact draft, caret, selection and diagnostic.
+
+The existing typed-input limit remains 256 expression characters (prefix/caret
+consume none). Opening must not silently truncate supplied accepted source.
+If longer source is supplied, preserve it; permit navigation, deletion and edits
+that do not grow it, while rejecting growth until it is within the existing cap.
+This is source preservation, not expression-language expansion.
+
+Preserve M4.4 deferred opening after same-event numeric acceptance/rejection,
+accepted-source initialization, one-shot delivery/retry, rejected-source recovery,
+Formula application before close, and command commit before command close.
+Empty OK submits an empty expression and retains the accepted literal; Cancel
+submits no formula change. The prefix never affects any of those transactions.
 
 The UI reference permits:
 
@@ -2355,9 +2599,12 @@ and:
 ╰─────────────────────────╯
 ```
 
-Both use the same modal interaction.
+These are the **Validation Operation Box** references in `Interface_Elements.txt`.
+Both use the same modal interaction and the placeholder contract in §5.13.
 
-The first starts from an empty/default value.
+The first starts from an empty applied value; `none` is presentation only, never
+the initial name. Automatic text focus shows the empty editor and caret. The
+reference above illustrates its inactive placeholder state.
 
 The second starts with the existing name (the full stored name, never the
 `…`-truncated text of a tree row, §26).
@@ -2607,7 +2854,7 @@ The exact historical reference fixture is the NavigationPanel of `Interface_Exem
 ║ │ ├ ■ Sketch_Hole     ║
 ║ │ ╰╴Extrude_Cut_Center║
 ║ ├ Fillet_Inner        ║
-║ │ ────────────────────║
+║ │ ─────────────────── ║
 ║ ├ Chamfer_Edges       ║
 ║ ╰╴Pattern_Circular    ║
 ║                       ║
@@ -2649,8 +2896,26 @@ top-level entry is `╰[+]` followed directly by the marker, exactly as in the
 reference. `Interface_Exemple.txt` is the more recent reference; the earlier
 `└`-based tree examples in this section were stale and are removed.
 
-The row `│ ────────────────────` (row 13 of the reference) is the *playhead
+The row `│ ─────────────────── ` (row 13 of the reference) is the *playhead
 separator* between two features. It is not a feature and is not selectable.
+
+**Built-in Origin folder (focused Executor amendment).** In every live document,
+`Origin` is the first child of Features, before all operation-history rows. Its
+children, in exact order, are `O`, `X`, `Y`, `Z`, `XY`, `XZ`, `YZ`. Use existing
+named-folder/leaf row grammar, with no checkboxes. Origin starts collapsed;
+expansion is per-window presentation state. Stable tagged `OriginFolder` and
+`OriginReference` identities are separate from operation/folder/entity IDs and
+remain stable across history publication. The fixed historical artwork fixture
+above remains unchanged; it is not live startup content.
+
+Origin and its children are immutable reference rows: no geometric selection,
+visibility, rename, delete, reorder, insertion boundary or playhead host. They
+never enter `ModelTreeProjection.features` history or Elements/counts. Existing
+operation order and selection remain unchanged. Presentation maps history rows
+by semantic identity, never by an offset from the Features header. A playhead
+drag over any Origin row leaves the cursor unchanged. The first operation gap
+is displayed after the entire visible Origin subtree; an empty history's End
+is likewise after that subtree. Collapse/expand retains the same history gap.
 
 **Live insertion cursor (M4.2).** The playhead identifies where a new operation
 will enter history. In a live document it may be placed before the first
@@ -2658,7 +2923,7 @@ operation, between operations, or at End after all operations, including End of
 an empty history. Live initialization and document replacement default to End.
 The existing separator glyph is used at each boundary; it remains a drag handle,
 never a selectable operation. When Features is expanded, End of an empty history
-is shown after its header. Later operations remain displayed. Moving the cursor
+is shown after the built-in Origin subtree. Later operations remain displayed. Moving the cursor
 does not roll back, recompute or hide geometry.
 
 An insertion boundary and its display location are distinct. Folder headers do
@@ -2710,7 +2975,19 @@ visible/on.
 
 The Features tree and Elements tree are different views of model information.
 
-Features represents the parametric/history structure.
+Features represents modeling operations in history order, with the built-in
+Origin reference folder first. Startup seeded geometry is listed only in
+Elements; its stable producer identity remains available for dependencies.
+
+In a live document, each Elements square targets its row's stable entity ID. A
+Base operation row in Features also has a visibility square when it has real
+outputs; its state is checked only when all those output entities are visible,
+and toggling it updates those entities by ID. The corresponding Elements rows
+therefore stay synchronized, including when names or row order change. A
+visibility change keeps the operation, outputs and geometry intact, while
+removing hidden entities from viewport drawing, viewport picking and visible
+model fitting. Other history rows and reference/navigation graphics remain
+independent.
 
 Live Elements groups resulting entities as:
 
@@ -2731,14 +3008,15 @@ A playhead is not a node, selection target, focus target or history operation.
 Use zero-based grid coordinates. A pane frame has left column `L`, outer width
 `O`, right border `R=L+O-1`, interior start `I=L+1` and interior width
 `W=max(O-2,0)`. Interior offsets are `0..W-1`; borders are never overwritten.
-The stroke ends at column `R-1=I+W-1`, with no trailing blank.
+The stroke ends at column `R-2=I+W-2`, leaving the final interior cell blank
+before the panel-owned right border.
 
 **Proposed left endpoint, resolved here as the implementation policy:** the
 original requirement did not finish its left-endpoint sentence. The following
 depth-based choice preserves the illustrated separation and existing two-cell
 indentation; it must not be attributed to that incomplete supplied sentence.
 For a gap at structural depth `d>=1`, set `S=2*d+1` (interior offset). Draw
-`─` at offsets `[S,W)`. The count is `max(W-S,0)`. Ancestor guide levels
+`─` at offsets `[S,W-1)`. The count is `max(W-1-S,0)`. Ancestor guide levels
 `j=1..d` occupy offsets `2*j-1`, with a blank immediately after each at `2*j`.
 For `j<d`, draw `│` iff the ancestor at depth `j` has a later sibling
 under its own parent. For `j=d`, draw `│` for BeforeNode (the referenced child
@@ -2753,17 +3031,17 @@ BeforeNode and AfterSubtree retain their structural node depth; their ancestors
 are found by identity/preorder. Clip to interior cells with bounded arithmetic;
 if `S>=W`, draw only fitting guides, with no stroke hit span.
 
-At `O=25`, `W=23`: depth 1 starts at global `L+4` (offset 3), with 20
-stroke cells; depth 2 starts at `L+6` (offset 5), with 18 stroke cells.
+At `O=25`, `W=23`: depth 1 starts at global `L+4` (offset 3), with 19
+stroke cells; depth 2 starts at `L+6` (offset 5), with 17 stroke cells.
 These equal-width reference rows have continuing hierarchy guides:
 
 ```text
 ║ ├ Fillet_Inner        ║
-║ │ ────────────────────║
+║ │ ─────────────────── ║
 ║ ├ Chamfer_Edges       ║
 
 ║ │ ├ ■ Sketch_Hole     ║
-║ │ │ ──────────────────║
+║ │ │ ───────────────── ║
 ║ │ ╰╴Extrude_Cut_Center║
 ```
 
@@ -2792,15 +3070,16 @@ survival/deletion rules, but must not auto-expand ancestors just to show a
 retained cursor. Explicit cursor placement may retain its existing reveal rule.
 
 Let `P` be the natural fixed prefix length before this folder's label, and `N`
-its full name length. If `W>=P+5`, allocate `A=W-P-4` cells to the label,
-`D=min(N,A)` displayed cells, then one blank, then `W-P-D-1` stroke cells.
+its full name length. If `W>=P+6`, allocate `A=W-P-5` cells to the label,
+`D=min(N,A)` displayed cells, then one blank, then `W-P-D-2` stroke cells and
+one trailing blank. The stroke ends at `R-2`, leaving `R-1` blank.
 Ellipsize with `…` if `N>A`: retain the first `A-1` scalars then `…`.
-There are always at least three visible `─` cells, right-aligned to `R-1`.
+There are always at least three visible `─` cells, right-aligned to `R-2`.
 Short names produce a longer stroke, never additional blanks. Preserve the
 underlying full name and semantic target; the inline indicator is not its name.
 
-If `W<P+5`, fitting the fixed controls, one label cell, separator and three
-stroke cells is impossible. Suppress the inline indicator and its hit span,
+If `W<P+6`, fitting the fixed controls, one label cell, separator, three
+stroke cells and trailing blank is impossible. Suppress the inline indicator and its hit span,
 render the ordinary clipped folder row and retain the anchor. Do not shorten
 controls, overwrite guides/borders, or draw a misleading one/two-cell stroke.
 This is the explicit narrow/deep fallback, not permission to relax the minimum
@@ -2820,9 +3099,9 @@ Examples below include their full interior prefix; widths are derived, not
 copied from the old padded sketches:
 
 ```text
-║ ├[+] Hub_Features ────║
-║ ├[+] Hub_Featu… ───║
-║ ├[+] Hub_Features ───────║
+║ ├[+] Hub_Features ─── ║
+║ ├[+] Hub_Feat… ─── ║
+║ ├[+] Hub_Features ────── ║
 ```
 
 Their outer widths are respectively 25, 22 and 28 cells.
@@ -2853,7 +3132,8 @@ outer border or viewport annotation contributes to `C`.
 Let `M=max(C)` across those rows, `content_interior_max=M+2` (two trailing
 padding cells), and `content_outer_max=M+4` (two separate border cells).
 The padding is only a cap allowance; labels may use all available interior
-cells at smaller widths. The stroke fills through that allowance to `R-1`.
+cells at smaller widths. A playhead stroke ends at `R-2`, preserving the final
+interior blank before the right border.
 For the explicit reference fixture, M=24 from ` ├ □ Sketch_Profile_Main`:
 its content cap is 26 interior / 28 outer cells, not 24 or 26 outer cells.
 
@@ -3209,7 +3489,8 @@ Current menu:
 │ ■ Tree panel      │
 │ ■ Task bar        │
 │ ■ Status bar      │
-│ ■ Navigation cube │
+│ ■ View Navigator  │
+│ ╰╴   ◀ Gizmo  ▶   │
 │ □ Grid Overlay    │
 │ [N]ormal to       │
 │ Reset Cam         │
@@ -3312,7 +3593,7 @@ checkboxes retain their established toggle/open-popup/focused-row behavior, and
 other View actions retain their existing menu closing behavior. With Color unchecked, Light is black on white
 and Dark is white on black (`ARCHITECTURE.md` §3.6).
 
-Color states are `□ Color` (initial state) and `■ Color`, on the row immediately after Theme. Color is a per-window checkbox and uses the established View checkbox activation: pointer or Enter/Space toggles it and keeps the popup open with that row selected. Theme and Color are independent; new windows start Dark + unchecked, and a Theme change preserves Color while updating the visible Light/Dark menu row. Unchecked preserves the exact existing Light/Dark glyphs and monochrome colours. Checked uses the four-state palette and semantic cell ownership in `ARCHITECTURE.md` §3.6. Text and values inside a control use `Text`; only its explicit affordance uses `Action`. In both `Theme [ ◑ Dark  ]` and `Theme [ ◐ Light ]`, the word `Theme` and the displayed value are `Text`, `[`/`]` and `◑`/`◐` are `Action`, spaces have no visible ink, and the popup's outer `│` delimiters are `Contour`. Theme remains one item with its current pointer, Enter/Space, focus and open-popup behavior. Menu popup, dialog and selection-panel title letters use `Text` inside a `Contour` top edge: corners, horizontal strokes, frame junctions and structural separators stay `Contour`. Treeview guides and connectors use `Text` even beside a Contour frame. At one shared or intersecting frame cell the visible frame owns the cell as `Contour`; routing metadata does not determine ink. Color checked maps double-stroke frame glyphs to same-cell single-stroke glyphs exactly as in §3.6. Hover keeps the §5.12 Unicode substitutions and the role of each substituted cell; it adds no colour, brightness, animation or shader effect. The viewport clears to the chosen UI background without changing model display styles.
+Color states are `□ Color` (initial state) and `■ Color`, on the row immediately after Theme. Color is a per-window checkbox and uses the established View checkbox activation: pointer or Enter/Space toggles it and keeps the popup open with that row selected. Theme and Color are independent; new windows start Dark + unchecked, and a Theme change preserves Color while updating the visible Light/Dark menu row. Unchecked preserves the exact existing Light/Dark glyphs and monochrome colours, with only the scoped neutral placeholder ink exception in §5.13. Checked uses the four-state palette and semantic cell ownership in `ARCHITECTURE.md` §3.6. Text and values inside a control use `Text`, except initial placeholder characters explicitly covered by §5.13; only its explicit affordance uses `Action`. In both `Theme [ ◑ Dark  ]` and `Theme [ ◐ Light ]`, the word `Theme` and the displayed value are `Text`, `[`/`]` and `◑`/`◐` are `Action`, spaces have no visible ink, and the popup's outer `│` delimiters are `Contour`. Theme remains one item with its current pointer, Enter/Space, focus and open-popup behavior. Menu popup, dialog and selection-panel title letters use `Text` inside a `Contour` top edge: corners, horizontal strokes, frame junctions and structural separators stay `Contour`. Treeview guides and connectors use `Text` even beside a Contour frame. At one shared or intersecting frame cell the visible frame owns the cell as `Contour`; routing metadata does not determine ink. Color checked maps double-stroke frame glyphs to same-cell single-stroke glyphs exactly as in §3.6. Hover keeps the §5.12 Unicode substitutions and the role of each substituted cell; it adds no colour, brightness, animation or shader effect. The viewport clears to the chosen UI background without changing model display styles.
 
 | Theme / Color | Background | Text, values, labels, tree guides | Contour | Action |
 |---|---|---|---|---|
@@ -3336,8 +3617,9 @@ Shaded retains its lit surfaces. Default combines Shaded surfaces with Line's
 visible solid geometry edges. Face tessellation diagonals never appear in Line,
 Hidden Line or Default.
 
-The five Tree panel, Task bar, Status bar, Navigation cube and Grid Overlay
-checkboxes retain their existing visibility effects. Color selects semantic
+The five Tree panel, Task bar, Status bar, View Navigator and Grid Overlay
+checkboxes control their corresponding visibility. View Navigator replaces the
+former Navigation cube label; its conditional Gizmo/Cube child follows §41. Color selects semantic
 ink and contour glyphs independently; it changes none of those visibility flags.
 
 `[N]ormal to` contains an explicit keyboard mnemonic.
@@ -3720,7 +4002,8 @@ ExtrudeState {
 may determine which exact rows are composed.
 
 The final rendered representation remains a flat grid of cells. Each cell carries
-content, a semantic ink role (`Text`, `Contour` or `Action`), logical style and
+content, a semantic ink role (`Text`, `Contour`, `Action` or the scoped
+`Placeholder` of §5.13), logical style and
 existing ownership/routing metadata. A full-cell write/copy includes the role;
 overlay replacement cannot retain underlying ink. Palette lookup belongs to
 `newell-render`, while component semantics assign roles in `newell-ui`. Neither
@@ -3849,3 +4132,286 @@ This README answers:
 > **What does each of those cells and controls mean?**
 
 Both are required to fully specify the Newell interface.
+
+
+---
+
+# 41. 3D viewport navigation widgets
+
+**Authorized specification amendment, 2026-10-27.** Applies only to the axis
+widget and navigation cube under `ARCHITECTURE.md` §3.7. Other UI and all ASCII
+references keep their existing cell, palette and interaction rules. This
+section replaces the inert NavCube placeholder; historical placeholder frame
+and title artwork is not the visual specification for these 3D widgets.
+For this removed placeholder only, the legacy §25 fixed-row/reference-snapshot
+comparison excludes its old frame/title cells, which become empty ASCII cells;
+all other row and cell comparisons are unchanged. The existing four-row Action
+Box reservation remains as specified below.
+
+## 41.1 Placement, scale and occlusion
+
+Use one right-aligned tile at the upper-right of the scene interior, inset
+8q physical pixels from its top and right, where `q = effective_k / 2` from the
+published grid metrics. No extra OS DPI multiplier applies. Gizmo and Cube use
+the same 96q square tile, placement and margins. The cube geometry is scaled to
+occupy the same nominal screen-space bounds as the existing Gizmo; Gizmo
+centers remain unchanged. The 2026-10-28 quick fix enlarges only Gizmo marker
+diameters by 15%; cube size retains its previous baseline. They are mutually
+exclusive. Round
+tile origin to the nearest physical pixel, ties upward; retain subpixel internal
+geometry. Tiles have no frames, opaque panels or captions. There are no rotation
+arrows or Home icon. Widget orientation follows the scene camera's rotational
+basis only; scene projection, pan, zoom and lens shift do not distort shapes.
+
+Clear offscreen color to transparent black, output premultiplied alpha, and
+composite with premultiplied-alpha blending over the already rendered scene.
+The tile is only a render allocation: never add it to scene occlusion scissors,
+fit/contextual bounds exclusions, ASCII painting/clearing or input blockers.
+Uncovered pixels and hollow marker interiors show existing scene pixels.
+Only actual semantic targets own new input; menus/modals/Action Boxes and
+active scene captures retain their existing precedence and composite masks.
+
+Clip placement against actual surface intersected with the scene interior.
+Both widgets require at least 112q square available (tile plus both margins).
+If the selected widget does not fit, temporarily hide it.
+Do not switch representation or shrink labels. Restore it on growth; retain
+visibility preference and kind while suppressed. The Action Box rule below
+can also suppress the selected tile without changing either preference.
+The scene-origin marker, reference axes and reference planes described below
+are world-space scene graphics; they are not positioned in this corner tile.
+
+**Human clarification, 2026-10-27:** `View > View Navigator` replaces the former
+Navigation cube checkbox. The exact reference states are:
+
+```text
+│ □ View Navigator  │
+
+│ ■ View Navigator  │
+│ ╰╴   ◀ Gizmo  ▶   │
+```
+
+Child alternatives are `◀ Gizmo  ▶` and `◀  Cube  ▶`, with identical indentation
+and spacing. The child row exists only when checked: no blank/disabled retained
+row when unchecked. A fresh window starts checked with Gizmo selected; state
+is window-local, not inherited or stored in the CAD document. Unchecking hides
+the navigator and removes the child row; rechecking restores the previous kind.
+Arrows wrap between the two kinds in either direction and keep the popup open
+and the child row focused. Keyboard Left/Right performs previous/next; existing
+cyclic-row semantics consume Enter/Space without cycling. Parent pointer or
+Enter/Space toggles visibility, keeps the popup open and focus on the parent.
+Rebuild menu height and later-row hit targets immediately when the child is
+inserted/removed; if child focus must be remapped on removal, focus the parent.
+MenuBar and other item actions remain stable by action identity, not row index.
+The branch glyphs are Text (hierarchy guides), arrows Action, word Text and
+popup frame Contour; keep existing ASCII hover border substitutions.
+Changing visibility or kind cancels pending widget presses/scene gestures,
+updates the single reservation, and redraws without moving/fitting the camera,
+changing projection, selecting CAD geometry or committing a numeric edit.
+
+Keep the Action Box's existing four-cell top reservation and upward fallback;
+removing the placeholder does not reposition CAD controls. After layout, if
+an Action Box intersects a tile rectangle, suppress that whole tile for that
+layout. Do not move the Action Box. A menu/modal clips widget pixels under its
+footprint; all widgets are input-ineligible while any menu/modal is open.
+Outside dismissal never also activates a widget. Empty tile pixels pass scene
+input and never occlude scene rendering. Target hit ownership disappears when
+hidden/suppressed. Home fitting and contextual bounds use only actual UI
+occlusions, never the widget tile. The scene viewport rectangle is unchanged.
+
+## 41.2 Axis materials and geometry
+
+**World-origin scene references (focused Executor amendment).** These graphics
+remain anchored at `(0,0,0)` and use the main viewport camera, independently of
+the corner navigator. Freeze their camera-relative axis length at **96 physical
+pixels** (the reference baseline, not a UI-scale multiplier). The neutral matte
+#C9CDD2 origin sphere has diameter **3.84 pixels**, half its former 7.68-pixel
+baseline; diffuse shading remains 0.80…1.00, with no specular or cast shadow.
+
+Only positive X/Y/Z axes are drawn, from local 0 to +1, using the same shared
+red #F52235, green #00B52A and blue #3067F5 constants as the corner Gizmo.
+Retain a one-physical-pixel line width. Use screen-space **6-pixel dashes and
+4-pixel gaps**, beginning at the projected origin; alpha 0.85. Orbit naturally
+foreshortens directions; do not normalize individual projected axis lengths.
+
+The three planes occupy only positive quadrants. For each non-normal coordinate
+use the interval **[0.05,0.70]** times the reference axis length: the 5% inset
+applies to both bordering axes, including outlines. All three planes and their
+outlines use the same neutral gray #C9CDD2; they are not colored by their
+normal axes. Fills have alpha 0.10 and borders alpha 0.20; no internal
+grid, texture, animation or document-plane meaning. Omit the collapsed outline
+of an exactly edge-on plane so it cannot fill an axis's dash gaps. They need not share centers
+with the sphere: the assembly's anchor is world origin, not each plane's center.
+
+Derive world units per pixel as `2 * origin_clip_w / (abs(projection_yy) *
+viewport_height)`, valid in both supported camera projections; multiply by 96
+for the uniform reference scale. Scale only local geometry around world origin,
+never the main camera or origin translation. Perspective depth and orthographic
+zoom therefore preserve camera-relative scale; pan follows projected world
+origin. Reject nonfinite/degenerate transforms and origins with nonpositive
+clip W or clip Z outside [0,W]; do not clamp onto screen edges or camera center.
+Individual primitives retain main-camera clipping and exposed-UI scissors.
+Scene depth determines each fragment's opacity: unobstructed portions keep the
+existing opacity, while portions behind model surfaces use 20% of that opacity.
+This applies to the origin sphere, dashed axes, plane outlines and translucent
+fills in every display mode, including Points, Wireframe, Line and HiddenLine;
+surface depth remains available when a mode does not fill model faces.
+References sample a separate depth target generated from actual model surfaces,
+but never write or modify model depth and do not change model transparency.
+Reference uniforms are separate from mesh uniforms. These graphics
+never enter document entities/history, picking, Elements or model-fitting
+bounds; the existing camera clipping envelope may still encompass the origin.
+
+**Corner Gizmo.** Project its world directions orthographically with the
+current camera basis (screen right R, up U, forward F):
+`p(v) = center + 31q * (dot(R,v), -dot(U,v))`. Tile center is (48q,48q).
+Depth is `dot(F,v)`; smaller values are nearer the viewer. The widget has no
+origin sphere or reference planes. Its positive unit X/Y/Z stems and caps use
+red #F52235, green #00B52A and blue #3067F5, respectively. Stem width remains
+0.8q (minimum 0.8 physical pixel), with spatial alpha `0.35 + 0.50*t`.
+Positive discs have radius 8.05q (7q × 1.15) and resting alpha 1, with centered
+**white** X/Y/Z letters at unchanged cap height 8q. On hover, exactly that disc
+has a fully transparent interior, an axis-colored inside outline of width 1q,
+and the same axis-colored letter. Reveal the actual scene through its interior,
+not a background-color substitute, stem or rear widget graphics.
+Its diameter, center and label placement never change. The outline uses the
+existing thin marker stroke width; at rest it blends into the same-color fill.
+
+Negative markers are hollow, unlabeled rings with outer radius 6.44q (80% of
+the positive disc radius), inner radius 5.44q and unchanged 1q stroke. Resting
+HSV saturation is 80% of the shared axis color, with hue and value unchanged;
+resting alpha remains exactly 0.55 regardless of front/rear position. Hover
+restores the full shared axis color and alpha 1.0. Ring interiors stay transparent; no negative shafts, size change,
+glow or animation. These changes are explicitly authorized by the focused
+Executor request of 2026-10-27, and apply only to the corner Gizmo.
+
+World-origin planes, axes and sphere follow the independent contract above,
+including main-camera scene-depth rendering. They are not CAD mesh buffers.
+Corner caps are composited in center-depth order, ties by signed axis ID;
+opaque positive discs mask rear rings. With the smaller negative rings an axial
+rear ring can be completely obscured by its front positive disc; do not shift
+or enlarge it to compensate. CPU semantic hits use complete outer circles for both discs
+and hollow rings; transparent interiors retain marker input ownership. No negative shaft is evaluated, generated or drawn.
+
+## 41.3 Cube shape, materials and labels
+
+Use a convex beveled cube centered at local origin. It is the intersection of
+26 half spaces: signed axis components <=0.5 (six), each signed pair sum <=0.90
+(twelve), and each signed triple sum <=1.26 (eight). Signs independently range
++/-; pair inequalities use distinct axes. Each supporting polygon is one
+clickable face/edge/vertex component. This yields true bevel geometry rather
+than painted hit bands. Center the cube in its tile at (48q,48q); set its local
+projection scale from the current camera basis so its outer projected bound
+matches the preceding Gizmo baseline (7q/5.6q marker radii); the 15%
+Gizmo marker enlargement does not resize the cube. Rotation and screen
+projection use the same R/U/F convention as the axis. No perspective
+distortion inside this widget.
+
+Main faces: opaque #D9DDE2. Edge bevels: #C8CDD4. Vertex bevels: #BEC5CE.
+Use fixed screen-space diffuse light direction normalize(-0.4,+0.6,+1) in
+(right,up,toward-viewer) coordinates, multiplier 0.88…1.00. Normals may blend
+within 0.02 local units of patch seams for a soft bevel appearance; this affects
+lighting only, not silhouettes or hit geometry. No outline, gloss or shadow.
+Apply one physical pixel of silhouette antialiasing via the dedicated target.
+Cube materials are identical under both themes and all model display modes.
+Faces remain visible at rest. Edge and vertex patches have zero opacity at
+rest; only the patch currently under the pointer restores its existing
+material and opacity. Pointer exit restores transparency immediately. Their
+full geometric regions remain clickable under the same frontmost-patch and
+overlap rules as visible cube geometry; a hidden rear patch cannot take input
+through a visible front face. Transparency does not change face labels or hit
+geometry.
+
+Primary face labels are exactly Top, Bottom, Front, Back, Left, Right in dark
+#252A31, alpha 1, using existing Fira Code Regular (monospaced sans-serif).
+Use cap height 7.65q normally (minimum 5.1q only if needed to fit the
+face-local ink bounds), a 15% reduction from the previous 9q/6q sizes. Each
+word is centered on its own face plane at `0.5 * normal`.
+Its stable local up vector is +Z for Front/Back/Left/Right, +Y for Top and -Y
+for Bottom; local right is `up × outward_normal`. Map the atlas through this
+local rectangle, using **the identical widget projection as cube geometry**.
+The cube's current projection remains orthographic: text rotates and naturally
+foreshortens with the face; it is never a screen-facing billboard and has no
+independent perspective. Keep a 2q-equivalent inset measured in the face plane
+(2/64 cube-local units) from the beveled primary-face polygon. Clip ink to that
+face's projected polygon. Reject back-facing and edge-on faces before preparing
+labels; do not render text through the cube. Face-local orientation never
+changes in response to camera heading. Dark #252A31 labels and existing subdued
+face/bevel shading remain unchanged.
+Use a deterministic separate coverage atlas, built at k changes, for the six
+words and X/Y/Z; filtered sampling is permitted only in this widget path.
+ASCII glyph atlas/font size/sampling are unchanged. Font licensing remains OFL.
+
+## 41.4 Commands and input
+
+World is right-handed Z-up. Define named views for the first time as Top +Z,
+Bottom -Z, Front -Y, Back +Y, Left -X, Right +X, where the vector points from
+camera target toward eye. A face click uses that vector; edge/vertex clicks
+use the normalized sum of adjacent face normals. Forward points from eye to
+target and is the negative of that vector. Up is world +Z projected normal to
+forward, except Top uses +Y and Bottom uses -Y. Both poles retain heading +Y
+for subsequent orbit departure. The complete 26-direction table is in the
+implementation plan; these definitions determine every entry.
+
+Positive/negative axis caps invoke the matching signed principal view (e.g.
++Y is Back, -Y is Front). Origin, shafts and planes have no camera action.
+On activation, capture the existing contextual pivot (the scene point picked
+at viewport center, otherwise the visible model-bounds center, otherwise the
+current camera target) and its projected screen position. Apply the selected
+orientation around that pivot while keeping its projected position fixed.
+Preserve focal distance, projection mode, FOV, orthographic height and lens
+shift, so orientation changes do not fit, recenter or move the model's screen
+anchor. If no model is visible, use the existing camera-target fallback.
+Commands are instant, with no animation, pole clamp on named views or added
+drag control. Existing orbit pole-clamp and Normal to semantics remain
+unchanged.
+
+Only an independent primary press/release on the same visible component
+activates it. Use existing 4 logical-pixel click/drag slop (multiply by the
+window's OS scale only for this existing slop conversion). Crossing it cancels
+activation without starting orbit. No secondary/middle/scroll/pinch action begins in
+actual widget targets; empty tile pixels remain ordinary scene input. Only the scoped corner-marker hover colors of §41.2 are
+authorized; there is no pressed material or animation. Use a hand cursor over
+an activatable component, default elsewhere. Existing scene captures keep
+ownership when crossing widgets; a widget cannot steal them.
+
+Cube picking uses an orthographic local ray and the same 26 half spaces as
+the rendered mesh. The entry support plane identifies the front component;
+back components are excluded. At coincident entry planes, use vertex before
+edge before face, then lexicographic signed-normal ID (axis order X,Y,Z;
+-1 before 0 before +1). Ties within 1e-9 local units use this priority, with
+only a 1e-6 physical-pixel numerical tolerance in projection, no hit inflation.
+Label pixels belong to their face. Antialiased fringes outside the mathematical
+silhouette pass scene input, as does all other empty tile space.
+
+Axis-cap hits use complete circular areas: positive radius 8.05q, negative
+radius 6.44q, including every hollow center. Resolve overlaps by the existing
+back-to-front cap order in reverse, even for a transparent front marker.
+Cap labels share circle ownership; hover never changes ownership or size.
+No cap hit through another opaque primitive. Invisible/suppressed widgets have
+no hit regions. A fixed six-cap test and bounded 26-component cube test are
+permitted by §3.7; ordinary ASCII routing remains direct grid lookup.
+
+On press, freeze component, point, layout generation and camera revision.
+Release must have same component and generation/revision, stay within slop and
+retain primary ownership. Cancel on Escape, focus loss, pointer exit, resize,
+DPI/k transition, occlusion/layout/visibility change, projection/camera command,
+or mesh replacement. A cancelled release is consumed. Another button never
+activates or releases a widget press. Menus, modals, managed/native resizing,
+ASCII controls and existing captured gestures precede widget admission. A
+widget press never enters CAD picking, shell command activation or deferred
+primary orbit. Numeric editing/focus is preserved; widgets only invoke camera
+commands. Per-window visibility, pose and pending press stay isolated.
+
+
+### 41.5 Corner-marker hover ownership
+
+The per-window Controller derives `Option<AxisCap>` from the existing semantic
+navigation hit test. It supplies immutable hover state to the renderer; shaders
+only rasterize the requested material and never pick. Only the front visible
+marker under the pointer can be hovered. Clear hover immediately on pointer
+exit/unknown position, hidden or suppressed navigator, Cube mode, open menu or
+modal, UI occlusion, window/ASCII/navigation capture (including pending presses),
+focus loss and resize. Re-evaluate against current geometry under a stationary
+pointer whenever the camera, layout, visibility, occlusion or capture changes.
+Request an event-driven redraw on a changed hover value; add no animation loop.
+Hover never changes hit regions, click destinations, camera pose or ASCII hover.

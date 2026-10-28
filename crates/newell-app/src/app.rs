@@ -15,14 +15,19 @@ use crate::selection::{
     CommandSelectionInputs, SelectionOp, SelectionRequest, WindowSelection, candidate_rows,
     resolve_tree_selection,
 };
-use newell_kernel::{NewellMesh, NewellSolid};
-use newell_model::{CommandController, CommandState, EntityId, Selection};
+use newell_kernel::NewellMesh;
+#[cfg(test)]
+use newell_kernel::NewellSolid;
+#[cfg(test)]
+use newell_model::CommandState;
+use newell_model::{CommandController, EntityId, Selection};
 use newell_render::{FrameOutcome, Renderer, SceneDisplayMode, SceneViewport, Theme};
+#[cfg(test)]
+use newell_ui::ExtrudeStatus;
 use newell_ui::{
-    ActionOperation, DEFAULT_SCALE_FACTOR_PERCENT, ExtrudeStatus, FeatureNodeId,
-    GapDisplayLocation, GridMetrics, HistoryGap, OpaqueTreeId, ResizeSnapshot, ResizeZone,
-    ScaleMode, ThemeChoice, TreeDocumentId, WindowAction, composed_grid_size, effective_scale,
-    fit_window, k_fit, min_window_size,
+    ActionOperation, DEFAULT_SCALE_FACTOR_PERCENT, FeatureNodeId, GapDisplayLocation, GridMetrics,
+    HistoryGap, OpaqueTreeId, ResizeSnapshot, ResizeZone, ScaleMode, ThemeChoice, TreeDocumentId,
+    WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
 };
 use newell_ui::{
     CommandInputSessionId, EntitySelectionView, LocalSelectionView, SelectionDestination,
@@ -43,10 +48,38 @@ use crate::controller::{CursorHint, Press, ShellController, Update};
 use crate::document::{DocumentNotification, DocumentSession, ProjectionSync, ProjectionTrigger};
 use crate::input::{pinch_steps, translate_key, ui_point, zoom_steps};
 use crate::navigation::{DragKind, Navigation, ZoomSource};
+use crate::navigation_widgets::{NavInteraction, axis_hover, cube_hover};
 use crate::scale::{MonitorInfo, Rescale, ScaleManager, plan_rescale, rect_in_window_space};
 use crate::window::{CancelReason, ControlArm, ResizeManager, check_fit, screen_pointer};
+use newell_render::navigation_widgets::NavSnapshot;
+use newell_ui::navigation_widgets::{NavBasis, NavGeometry, PixelRect, layout_navigation};
 use std::sync::mpsc::Receiver;
 
+#[derive(Debug)]
+pub(crate) enum AppEvent {
+    GeometryReady,
+}
+#[derive(Debug, Clone, Copy)]
+struct PublishedSceneBinding {
+    range: newell_kernel::NewellMeshRange,
+    binding: crate::geometry_worker::SceneItemBinding,
+}
+#[derive(Debug)]
+struct ScenePublication {
+    snapshot: crate::geometry_worker::SceneSnapshot,
+    mesh: NewellMesh,
+    bindings: Vec<PublishedSceneBinding>,
+    gpu: Option<newell_render::PreparedScene>,
+}
+#[derive(Debug)]
+struct PendingScenePublication {
+    snapshot: crate::geometry_worker::SceneSnapshot,
+    version: crate::DocumentVersion,
+    staged: Option<ScenePublication>,
+    preview: Option<Box<crate::geometry_worker::PreparedGeometry>>,
+    attempts: u8,
+    retry_at: Option<Instant>,
+}
 const TITLE: &str = "Newell";
 
 #[derive(Debug, Clone, Copy)]
@@ -178,6 +211,7 @@ struct PresentGate {
     deadline: Instant,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct ExtrudeCommitLatch {
     armed: bool,
@@ -203,6 +237,19 @@ enum NumericDeliveryKind {
         newell_ui::NumericProjection,
     ),
 }
+#[derive(Debug, Clone, Copy)]
+struct ExtrudeEditTarget {
+    version: crate::DocumentVersion,
+    feature: newell_model::FeatureId,
+}
+#[derive(Debug)]
+struct PendingPropertiesEditor {
+    certificate: crate::controller::CertifiedPropertiesOpen,
+    target: ExtrudeEditTarget,
+    values: newell_ui::ExtrudeValues,
+    numeric: crate::parameters::CommandNumericInputs,
+    selections: CommandSelectionInputs,
+}
 #[derive(Debug, Clone)]
 struct NumericDelivery {
     kind: NumericDeliveryKind,
@@ -227,6 +274,7 @@ pub(crate) struct App {
     document: DocumentSession,
     document_events: Receiver<DocumentNotification>,
     projection_sync: ProjectionSync,
+    #[cfg(test)]
     extrude_latch: ExtrudeCommitLatch,
     committed_cursor: Option<(TreeDocumentId, OpaqueTreeId)>,
     layout_retry_rearm_pending: bool,
@@ -239,6 +287,12 @@ pub(crate) struct App {
         std::collections::BTreeMap<ActionOperation, crate::parameters::CommandNumericInputs>,
     numeric_delivery: Option<NumericDelivery>,
     numeric_last_attempt: u64,
+    extrude_edit_target: Option<ExtrudeEditTarget>,
+    properties_editor: Option<PendingPropertiesEditor>,
+    properties_close_source: Option<crate::DocumentVersion>,
+    properties_retry_at: Option<Instant>,
+    properties_attempts: u8,
+    last_properties_id: u64,
     numeric_committed: bool,
     numeric_preview_suspended: bool,
     active_selection: Option<SelectionOpen>,
@@ -253,10 +307,24 @@ pub(crate) struct App {
     commands: CommandController,
     /// Entity represented by the initial viewport solid.
     scene_entity: Option<SceneEntityBinding>,
+    geometry: Option<crate::extrude_session::GeometryRuntime>,
+    geometry_wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    pending_scene: Option<PendingScenePublication>,
+    #[cfg(test)]
+    fail_scene_publish: u8,
+    scene_bindings: Vec<PublishedSceneBinding>,
+    scene_available: bool,
+    scene_initialized: bool,
     pending_scene_click: Option<PendingSceneClick>,
     scene_selected: bool,
     modifiers: ModifiersState,
     navigation: Navigation,
+    nav_geometry: Option<NavGeometry>,
+    nav_hover: Option<newell_ui::navigation_widgets::AxisCap>,
+    nav_cube_hover: Option<newell_ui::navigation_widgets::ViewDirection>,
+    nav_interaction: NavInteraction,
+    nav_generation: u64,
+    nav_ui_masks: Vec<PixelRect>,
     scene_pointer: Option<PhysicalPosition<f64>>,
     error: Option<AppError>,
     resize: ResizeManager,
@@ -292,6 +360,979 @@ pub(crate) struct App {
 }
 
 impl App {
+    pub(crate) fn enable_geometry_worker(
+        &mut self,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<(), AppError> {
+        let epoch = self
+            .geometry
+            .as_ref()
+            .map_or(Some(1), |runtime| runtime.epoch.checked_add(1))
+            .ok_or(AppError::DocumentCounterExhausted)?;
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let completion = Arc::clone(&wake);
+        let worker = crate::geometry_worker::GeometryWorker::start(epoch, move || completion())?;
+        self.geometry_wake = Some(wake);
+        self.document.bind_geometry_worker(epoch)?;
+        self.geometry = Some(crate::extrude_session::GeometryRuntime::new(worker, epoch));
+        Ok(())
+    }
+    fn geometry_status(&mut self, message: Option<String>) -> Update {
+        match self
+            .shell
+            .as_mut()
+            .map(|shell| shell.set_contextual_status(message))
+        {
+            Some(Ok(update)) => update,
+            Some(Err(error)) => {
+                log(&error.to_string());
+                Update::default()
+            }
+            None => Update::default(),
+        }
+    }
+    fn scene_unavailable(&mut self) {
+        self.scene_available = false;
+        self.pending_scene_click = None;
+        self.navigation.cancel();
+        self.nav_interaction.cancel();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene_available(false);
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+    fn release_geometry(&self, token: crate::geometry_worker::NewellGeometryToken) {
+        if self.document.geometry_token() == Some(token) {
+            return;
+        }
+        if let Some(runtime) = &self.geometry
+            && let Err(error) = runtime.worker.release(token)
+        {
+            log(&error.to_string());
+        }
+    }
+    fn drop_pending_preview_scene(&mut self) {
+        if self
+            .pending_scene
+            .as_ref()
+            .is_some_and(|pending| pending.preview.is_some())
+            && let Some(pending) = self.pending_scene.take()
+            && let Some(ready) = pending.preview
+        {
+            self.release_geometry(ready.token);
+        }
+    }
+    fn begin_geometry_command(&mut self) {
+        self.drop_pending_preview_scene();
+        let (Some(runtime), Some(numeric), Some(selection)) = (
+            &mut self.geometry,
+            &self.numeric_inputs,
+            &self.command_inputs,
+        ) else {
+            return;
+        };
+        if let Some(mut old) = runtime.coordinator.take()
+            && let Some(token) = old.cancel()
+        {
+            let _ = runtime.worker.release(token);
+        }
+        let insertion = match selection.insertion {
+            HistoryGap::End => None,
+            HistoryGap::Before(id) => self.document.feature_id(id),
+        };
+        runtime.coordinator = Some(crate::extrude_session::ExtrudeGeometrySession::new(
+            self.document.version(),
+            numeric.session,
+            runtime.epoch,
+            self.document.document().geometry_generation(),
+            insertion,
+            numeric.parameter_draft.registry().epoch(),
+        ));
+        runtime.latest_edit = None;
+    }
+    fn queue_geometry_bootstrap(&mut self) -> Result<(), AppError> {
+        use crate::geometry_worker::{GeometryJobId, PrepareGeometry};
+        let Some(runtime) = &mut self.geometry else {
+            return Err(AppError::GeometryTransport(
+                "geometry worker unavailable".into(),
+            ));
+        };
+        if runtime.bootstrap.is_some() {
+            return Ok(());
+        }
+        let parameters = self
+            .document
+            .document()
+            .begin_parameter_draft(newell_model::parameters::ParameterDraftOwner::Document)?;
+        let serial = runtime
+            .bootstrap_serial
+            .checked_add(1)
+            .ok_or(AppError::DocumentCounterExhausted)?;
+        let id = GeometryJobId {
+            worker_epoch: runtime.epoch,
+            document: self.document.identity(),
+            session: CommandInputSessionId(0),
+            base_revision: self.document.revision(),
+            draft_revision: 0,
+            serial,
+            parameter_epoch: parameters.registry().epoch(),
+            source_generation: self.document.document().geometry_generation(),
+        };
+        runtime.worker.submit(PrepareGeometry {
+            id,
+            base: self.document.document().clone(),
+            edit: newell_model::geometry::DocumentEdit::ParameterDefinitions,
+            insertion: None,
+            parameters,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })?;
+        runtime.bootstrap = Some(id);
+        runtime.bootstrap_serial = serial;
+        Ok(())
+    }
+    fn prepare_scene_publication(
+        &self,
+        snapshot: &crate::geometry_worker::SceneSnapshot,
+    ) -> Result<ScenePublication, AppError> {
+        use crate::geometry_worker::SceneItemBinding;
+        if snapshot.document != self.document.identity() {
+            return Err(AppError::InvalidDocumentProjection);
+        }
+        let visible: Vec<_> = snapshot
+            .items
+            .iter()
+            .filter(|item| {
+                self.document
+                    .document()
+                    .entity(item.entity)
+                    .map_or(item.visible, |entity| entity.visible())
+            })
+            .collect();
+        let references: Vec<_> = visible.iter().map(|item| &item.mesh).collect();
+        let (mesh, ranges) = NewellMesh::compose(&references)?;
+        let bindings = visible
+            .iter()
+            .zip(ranges)
+            .map(|(item, range)| PublishedSceneBinding {
+                range,
+                binding: item.binding,
+            })
+            .collect();
+        let gpu = if let Some(renderer) = &self.renderer {
+            let items=visible.iter().map(|item|newell_render::SceneMeshItem{mesh:item.mesh.clone(),selected:matches!(item.binding,SceneItemBinding::Committed{entity,..} if self.selection.entities().contains(&entity))}).collect();
+            Some(
+                renderer.prepare_scene_items_for_camera(
+                    items,
+                    self.navigation
+                        .snapshot_for_mesh(&mesh, !self.scene_initialized)
+                        .ok_or(AppError::InvalidDocumentProjection)?,
+                )?,
+            )
+        } else {
+            None
+        };
+        Ok(ScenePublication {
+            snapshot: snapshot.clone(),
+            mesh,
+            bindings,
+            gpu,
+        })
+    }
+    fn queue_scene_publication(
+        &mut self,
+        snapshot: crate::geometry_worker::SceneSnapshot,
+        preview: Option<Box<crate::geometry_worker::PreparedGeometry>>,
+    ) {
+        if let Some(old) = self.pending_scene.take()
+            && let Some(ready) = old.preview
+        {
+            self.release_geometry(ready.token);
+        }
+        self.scene_unavailable();
+        self.pending_scene = Some(PendingScenePublication {
+            snapshot,
+            version: self.document.version(),
+            staged: None,
+            preview,
+            attempts: 0,
+            retry_at: None,
+        });
+    }
+    fn restore_committed_scene(&mut self) {
+        let scene = self
+            .geometry
+            .as_ref()
+            .and_then(|runtime| runtime.committed_scene.clone());
+        if let Some(scene) = scene {
+            self.queue_scene_publication(scene, None);
+        }
+    }
+    fn republish_scene_visibility(&mut self) {
+        let scene = self.geometry.as_ref().and_then(|runtime| {
+            runtime
+                .displayed_scene
+                .clone()
+                .or_else(|| runtime.committed_scene.clone())
+        });
+        if let Some(scene) = scene {
+            self.queue_scene_publication(scene, None);
+        }
+    }
+    fn stage_pending_scene(&mut self, now: Instant, rearm: bool) -> bool {
+        let Some(mut pending) = self.pending_scene.take() else {
+            return true;
+        };
+        if pending.snapshot.document != self.document.identity() {
+            if let Some(ready) = pending.preview {
+                self.release_geometry(ready.token);
+            }
+            return true;
+        }
+        if pending.version != self.document.version() {
+            if let Some(ready) = pending.preview.take() {
+                self.release_geometry(ready.token);
+                self.restore_committed_scene();
+                return false;
+            }
+            if pending.snapshot.generation != self.document.document().geometry_generation() {
+                self.restore_committed_scene();
+                return false;
+            }
+            pending.version = self.document.version();
+            pending.staged = None;
+        }
+        if pending.staged.is_none() {
+            if pending.attempts > 0 {
+                if pending.retry_at.is_some_and(|at| now < at)
+                    || (pending.retry_at.is_none() && !rearm)
+                {
+                    self.pending_scene = Some(pending);
+                    return false;
+                }
+                if rearm && pending.retry_at.is_none() {
+                    pending.attempts = 0;
+                }
+            }
+            match self.prepare_scene_publication(&pending.snapshot) {
+                Ok(publication) => pending.staged = Some(publication),
+                Err(error) => {
+                    log(&error.to_string());
+                    pending.attempts = pending.attempts.saturating_add(1);
+                    pending.retry_at = if pending.attempts == 1 {
+                        Some(now + Duration::from_millis(100))
+                    } else {
+                        None
+                    };
+                    self.pending_scene = Some(pending);
+                    return false;
+                }
+            }
+        }
+        self.pending_scene = Some(pending);
+        true
+    }
+    fn publish_scene_gpu(&mut self, publication: &mut ScenePublication) -> Result<(), AppError> {
+        #[cfg(test)]
+        if self.fail_scene_publish > 0 {
+            self.fail_scene_publish -= 1;
+            return Err(AppError::InvalidDocumentProjection);
+        }
+        if let Some(renderer) = &mut self.renderer
+            && let Some(gpu) = publication.gpu.take()
+        {
+            if !renderer.owns_prepared_scene(&gpu) {
+                return Err(AppError::InvalidDocumentProjection);
+            }
+            renderer.publish_prepared_scene(gpu)?;
+        }
+        Ok(())
+    }
+    fn publish_pending_scene(&mut self, now: Instant) -> Update {
+        if self.projection_sync.acknowledged_version() != Some(self.document.version()) {
+            return Update::default();
+        }
+        let Some(mut pending) = self.pending_scene.take() else {
+            return Update::default();
+        };
+        let Some(mut publication) = pending.staged.take() else {
+            self.pending_scene = Some(pending);
+            return Update::default();
+        };
+        let clear_diagnostic = pending.preview.is_some() || self.numeric_committed;
+        if pending.version != self.document.version() {
+            pending.staged = None;
+            self.pending_scene = Some(pending);
+            return Update::default();
+        }
+        if let Err(error) = self.publish_scene_gpu(&mut publication) {
+            log(&error.to_string());
+            pending.staged = None;
+            pending.attempts = pending.attempts.saturating_add(1);
+            pending.retry_at = (pending.attempts == 1).then_some(now + Duration::from_millis(100));
+            self.pending_scene = Some(pending);
+            return Update::default();
+        }
+        self.pending_scene_click = None;
+        self.navigation.set_mesh(&publication.mesh);
+        self.nav_interaction.cancel();
+        if !self.scene_initialized {
+            self.navigation.center_scene();
+            self.scene_initialized = true;
+        }
+        self.scene_bindings = publication.bindings;
+        self.scene_entity = None;
+        self.scene_available = true;
+        if let Some(runtime) = &mut self.geometry {
+            runtime.displayed_scene = Some(publication.snapshot);
+        }
+        if let Some(ready) = pending.preview {
+            let current = self.document.version();
+            let result = self
+                .geometry
+                .as_mut()
+                .and_then(|runtime| runtime.coordinator.as_mut())
+                .map(|coordinator| coordinator.retain_preview(ready, current));
+            match result {
+                Some(Ok(Some(old))) => self.release_geometry(old),
+                Some(Err(error)) => log(&error.to_string()),
+                _ => {}
+            }
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene_available(true);
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
+        }
+        self.update_scene_selection();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        if clear_diagnostic { self.geometry_status(None) } else { Update { grid: false } }
+    }
+    fn observe_geometry_lifetime(&mut self) {
+        if self.geometry.is_none() || self.numeric_committed {
+            return;
+        }
+        let changed = self.numeric_inputs.as_ref().is_some_and(|inputs| {
+            self.shell.as_ref().is_none_or(|shell| {
+                !shell.shell().command_open() || shell.shell().operation() != inputs.operation
+            })
+        });
+        if !changed {
+            return;
+        }
+        self.drop_pending_preview_scene();
+        if let Some(runtime) = &mut self.geometry {
+            if let Some(mut coordinator) = runtime.coordinator.take()
+                && let Some(token) = coordinator.cancel()
+            {
+                let _ = runtime.worker.release(token);
+            }
+            runtime.latest_edit = None;
+        }
+        let preview = self
+            .geometry
+            .as_ref()
+            .and_then(|runtime| runtime.displayed_scene.as_ref())
+            .is_some_and(|scene| {
+                scene.generation != self.document.document().geometry_generation()
+            });
+        if preview {
+            self.restore_committed_scene();
+        }
+        self.commands.cancel();
+        if self
+            .shell
+            .as_ref()
+            .is_none_or(|shell| !shell.shell().command_open())
+        {
+            if let Some(inputs) = self.numeric_inputs.take() {
+                self.numeric_cache.remove(&inputs.operation);
+            }
+            self.command_inputs = None;
+            self.active_selection = None;
+            self.numeric_delivery = None;
+            self.extrude_edit_target = None;
+        }
+    }
+    fn geometry_edit(&self) -> Result<newell_model::geometry::DocumentEdit, AppError> {
+        let numeric = self
+            .numeric_inputs
+            .as_ref()
+            .ok_or(AppError::InvalidNumericRequest)?;
+        let selections = self
+            .command_inputs
+            .as_ref()
+            .ok_or(AppError::InvalidNumericRequest)?;
+        if numeric.operation != ActionOperation::Extrude {
+            return Ok(newell_model::geometry::DocumentEdit::ParameterDefinitions);
+        }
+        let values = &self
+            .shell
+            .as_ref()
+            .ok_or(AppError::InvalidNumericRequest)?
+            .shell()
+            .extrude()
+            .values;
+        let spec = crate::parameters::build_extrude_spec(values, numeric, selections)?;
+        if spec.profile.is_none() {
+            return Err(newell_model::ModelError::InvalidGeometryReference.into());
+        }
+        let retained = selections
+            .values
+            .get(&newell_ui::SelectionFieldKey {
+                operation: ActionOperation::Extrude,
+                key: 27,
+            })
+            .map_or_else(Vec::new, |value| value.entities().to_vec());
+        let validation = newell_model::geometry::ExtrudeValidationRefs {
+            retained_merge_scope: retained,
+        };
+        if let Some(target) = self.extrude_edit_target {
+            if target.version != self.document.version() {
+                return Err(AppError::InvalidNumericRequest);
+            }
+            Ok(newell_model::geometry::DocumentEdit::ExtrudeReplace {
+                feature: target.feature,
+                spec,
+                validation,
+            })
+        } else {
+            Ok(newell_model::geometry::DocumentEdit::ExtrudeInsert { spec, validation })
+        }
+    }
+    fn invalidate_geometry_preview(&mut self) {
+        let token = self
+            .geometry
+            .as_mut()
+            .and_then(|runtime| runtime.coordinator.as_mut())
+            .and_then(|coordinator| {
+                if coordinator.confirm_pending() {
+                    None
+                } else {
+                    coordinator.invalidate_preview()
+                }
+            });
+        if let Some(token) = token {
+            self.release_geometry(token);
+        }
+        self.drop_pending_preview_scene();
+        if self
+            .geometry
+            .as_ref()
+            .and_then(|runtime| runtime.displayed_scene.as_ref())
+            .is_some_and(|scene| scene.generation != self.document.document().geometry_generation())
+        {
+            self.restore_committed_scene();
+        }
+    }
+    fn sync_extrude_command(&mut self) {
+        if self.geometry.is_some() {
+            self.sync_geometry_preview();
+        } else {
+            #[cfg(test)]
+            self.sync_legacy_extrude_command();
+        }
+    }
+    fn sync_geometry_preview(&mut self) {
+        if self.numeric_committed {
+            return;
+        }
+        let Some(shell) = &self.shell else {
+            return;
+        };
+        if shell.shell().operation() != ActionOperation::Extrude || !shell.shell().command_open() {
+            return;
+        }
+        if self.command_inputs.is_none() {
+            let update = self.start_command_inputs(ActionOperation::Extrude);
+            self.apply(update);
+        }
+        let Some(shell) = &self.shell else {
+            return;
+        };
+        if self.numeric_preview_suspended
+            || shell.shell().numeric_editing()
+            || shell.shell().formula().is_open()
+        {
+            let token = self
+                .geometry
+                .as_mut()
+                .and_then(|runtime| runtime.coordinator.as_mut())
+                .and_then(|coordinator| {
+                    if coordinator.confirm_pending() {
+                        None
+                    } else {
+                        coordinator.invalidate_preview()
+                    }
+                });
+            if let Some(token) = token {
+                self.release_geometry(token);
+            }
+            self.drop_pending_preview_scene();
+            if self
+                .geometry
+                .as_ref()
+                .and_then(|runtime| runtime.displayed_scene.as_ref())
+                .is_some_and(|scene| {
+                    scene.generation != self.document.document().geometry_generation()
+                })
+            {
+                self.restore_committed_scene();
+            }
+            return;
+        }
+        if self
+            .geometry
+            .as_ref()
+            .and_then(|runtime| runtime.coordinator.as_ref())
+            .is_some_and(|coordinator| coordinator.confirm_pending())
+        {
+            return;
+        }
+        let edit = match self.geometry_edit() {
+            Ok(edit) => edit,
+            Err(error) => {
+                self.invalidate_geometry_preview();
+                let update = self.geometry_status(Some(error.to_string()));
+                self.apply(update);
+                return;
+            }
+        };
+        let Some(numeric) = &self.numeric_inputs else {
+            return;
+        };
+        let epoch = numeric.parameter_draft.registry().epoch();
+        let changed = self
+            .geometry
+            .as_ref()
+            .is_some_and(|runtime| runtime.latest_edit.as_ref() != Some(&(edit.clone(), epoch)));
+        if !changed
+            && (self
+                .geometry
+                .as_ref()
+                .and_then(|runtime| runtime.coordinator.as_ref())
+                .is_some_and(|coordinator| coordinator.has_work())
+                || self
+                    .pending_scene
+                    .as_ref()
+                    .is_some_and(|pending| pending.preview.is_some()))
+        {
+            return;
+        }
+        if changed {
+            self.drop_pending_preview_scene();
+            if let Some(runtime) = &mut self.geometry {
+                if runtime.latest_edit.is_some()
+                    && let Some(coordinator) = &mut runtime.coordinator
+                {
+                    match coordinator.advance_draft(epoch) {
+                        Ok(Some(token)) => {
+                            let _ = runtime.worker.release(token);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            log(&error.to_string());
+                            return;
+                        }
+                    }
+                } else if let Some(coordinator) = &mut runtime.coordinator {
+                    let _ = coordinator.advance_draft(epoch);
+                }
+                runtime.latest_edit = Some((edit.clone(), epoch));
+            }
+            if self
+                .geometry
+                .as_ref()
+                .and_then(|runtime| runtime.displayed_scene.as_ref())
+                .is_some_and(|scene| {
+                    scene.generation != self.document.document().geometry_generation()
+                })
+            {
+                self.restore_committed_scene();
+            }
+        }
+        let result = (|| -> Result<(), AppError> {
+            let numeric = self
+                .numeric_inputs
+                .as_ref()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            let runtime = self
+                .geometry
+                .as_mut()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            let coordinator = runtime
+                .coordinator
+                .as_mut()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            let job = coordinator.freeze(
+                self.document.version(),
+                self.document.document(),
+                edit,
+                &numeric.parameter_draft,
+                crate::extrude_session::PreparationPurpose::Preview,
+            )?;
+            runtime.worker.submit(job)
+        })();
+        if let Err(error) = result {
+            let update = self.geometry_status(Some(error.to_string()));
+            self.apply(update);
+        }
+    }
+    fn complete_numeric_confirm(
+        &mut self,
+        request: newell_ui::NumericConfirmRequest,
+        rejected: bool,
+    ) -> Update {
+        #[cfg(test)]
+        if self.geometry.is_none() {
+            return self.complete_legacy_numeric_confirm(request, rejected);
+        }
+        if self.geometry.is_none() {
+            return Update::default();
+        }
+        if self.shell.as_ref().is_none_or(|shell| {
+            !shell.shell().numeric_confirm_pending(request)
+                || shell.shell().numeric_session()
+                    != Some((request.document, request.session, request.operation))
+        }) {
+            return Update::default();
+        }
+        if !self.numeric_committed && self.geometry.as_ref().is_some_and(|runtime| !runtime.worker.is_alive()) {
+            let result = (|| -> Result<(),AppError> {
+                let wake = self.geometry_wake.clone().ok_or(AppError::InvalidNumericRequest)?;
+                let committed = self.geometry.as_ref().and_then(|runtime| runtime.committed_scene.clone());
+                let displayed = self.geometry.as_ref().and_then(|runtime| runtime.displayed_scene.clone());
+                self.drop_pending_preview_scene();
+                self.enable_geometry_worker(move || wake())?;
+                if let Some(runtime) = &mut self.geometry { runtime.committed_scene = committed; runtime.displayed_scene = displayed; }
+                self.begin_geometry_command();
+                Ok(())
+            })();
+            if let Err(error) = result { return self.geometry_status(Some(error.to_string())); }
+        }
+        let Some(inputs) = self.numeric_inputs.as_ref().filter(|inputs| {
+            inputs.document == self.document.identity()
+                && inputs.session == request.session
+                && inputs.operation == request.operation
+                && request.attempt.0 > self.numeric_last_attempt
+        }) else {
+            return Update::default();
+        };
+        self.numeric_last_attempt = request.attempt.0;
+        let projection = match inputs.project() {
+            Ok(projection) => projection,
+            Err(error) => {
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        if rejected || inputs.consumed_sequence < request.through_sequence {
+            return self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+                request, false, None, projection,
+            ));
+        }
+        if request.operation != ActionOperation::Extrude {
+            match inputs
+                .parameter_draft
+                .prepared_registry(&std::collections::BTreeSet::new())
+            {
+                Ok(registry) if &registry == self.document.document().parameters() => {
+                    return self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+                        request, true, None, projection,
+                    ));
+                }
+                Err(error) => {
+                    let update = self.geometry_status(Some(error.to_string()));
+                    return update.merge(self.queue_numeric_delivery(
+                        NumericDeliveryKind::Confirm(request, false, None, projection),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let edit = match self.geometry_edit() {
+            Ok(edit) => edit,
+            Err(error) => {
+                let update = self.geometry_status(Some(error.to_string()));
+                return update.merge(self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+                    request, false, None, projection,
+                )));
+            }
+        };
+        let epoch = self
+            .numeric_inputs
+            .as_ref()
+            .map_or(0, |inputs| inputs.parameter_draft.registry().epoch());
+        let same = self
+            .geometry
+            .as_ref()
+            .is_some_and(|runtime| runtime.latest_edit.as_ref() == Some(&(edit.clone(), epoch)));
+        if same
+            && let Some(ready) = self
+                .geometry
+                .as_mut()
+                .and_then(|runtime| runtime.coordinator.as_mut())
+                .and_then(|coordinator| coordinator.take_ready(self.document.version()))
+        {
+            return self.accept_geometry_confirmation(request, ready);
+        }
+        self.drop_pending_preview_scene();
+        let result = (|| -> Result<(), AppError> {
+            let runtime = self
+                .geometry
+                .as_mut()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            let coordinator = runtime
+                .coordinator
+                .as_mut()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            if !same {
+                if let Some(token) = coordinator.advance_draft(epoch)? {
+                    let _ = runtime.worker.release(token);
+                }
+                runtime.latest_edit = Some((edit.clone(), epoch));
+            }
+            let inputs = self
+                .numeric_inputs
+                .as_ref()
+                .ok_or(AppError::InvalidNumericRequest)?;
+            let job = coordinator.freeze(
+                self.document.version(),
+                self.document.document(),
+                edit,
+                &inputs.parameter_draft,
+                crate::extrude_session::PreparationPurpose::Confirm(request),
+            )?;
+            runtime.worker.submit(job)
+        })();
+        if let Err(error) = result {
+            if let Some(coordinator) = self
+                .geometry
+                .as_mut()
+                .and_then(|runtime| runtime.coordinator.as_mut())
+            {
+                coordinator.invalidate_preview();
+            }
+            let update = self.geometry_status(Some(error.to_string()));
+            return update.merge(self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+                request, false, None, projection,
+            )));
+        }
+        Update::default()
+    }
+    fn accept_geometry_confirmation(
+        &mut self,
+        request: newell_ui::NumericConfirmRequest,
+        ready: Box<crate::geometry_worker::PreparedGeometry>,
+    ) -> Update {
+        use crate::geometry_worker::{PreparedGeometry, SceneItemBinding};
+        let PreparedGeometry {
+            id,
+            prepared,
+            token,
+            mut scene,
+        } = *ready;
+        let expected = crate::DocumentVersion {
+            instance: id.document,
+            revision: id.base_revision,
+        };
+        let Some(inputs) = self.numeric_inputs.as_ref().filter(|inputs| {
+            inputs.session == request.session
+                && inputs.document == self.document.identity()
+                && inputs.operation == request.operation
+        }) else {
+            self.release_geometry(token);
+            return Update::default();
+        };
+        let projection = match inputs.project() {
+            Ok(projection) => projection,
+            Err(error) => {
+                self.release_geometry(token);
+                log(&error.to_string());
+                return Update::default();
+            }
+        };
+        let old_token = self.document.geometry_token();
+        let receipt = match self.document.accept_prepared(expected, prepared, token) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.release_geometry(token);
+                let update = self.geometry_status(Some(error.to_string()));
+                return update.merge(self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
+                    request, false, None, projection,
+                )));
+            }
+        };
+        self.numeric_committed = true;
+        self.commands.cancel();
+        #[cfg(test)]
+        {
+            self.extrude_latch = ExtrudeCommitLatch::default();
+        }
+        self.scene_unavailable();
+        if let Some(feature) = receipt.feature {
+            self.committed_cursor = Some((request.document, OpaqueTreeId::new(feature.get())));
+        }
+        self.selection.reconcile(&self.document);
+        if !receipt.outputs.is_empty() {
+            self.selection.apply(
+                SelectionRequest {
+                    document: self.document.identity(),
+                    op: SelectionOp::Add,
+                    entities: receipt.outputs.clone(),
+                },
+                &self.document,
+            );
+        }
+        for item in &mut scene.items {
+            item.binding = SceneItemBinding::Committed {
+                entity: item.entity,
+                generation: item.generation,
+            };
+        }
+        if let Some(runtime) = &mut self.geometry {
+            runtime.committed_scene = Some(scene.clone());
+            if let Err(error) = runtime.worker.retain_committed(token) {
+                log(&error.to_string());
+            }
+            if let Some(old) = old_token
+                && old != token
+                && let Err(error) = runtime.worker.release(old)
+            {
+                log(&error.to_string());
+            }
+        }
+        self.queue_scene_publication(scene, None);
+        self.numeric_delivery = Some(NumericDelivery {
+            kind: NumericDeliveryKind::Confirm(request, true, receipt.feature, projection),
+            retry_at: None,
+            attempts: 0,
+        });
+        self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification)
+    }
+    fn drain_worker_reply(&mut self) -> Update {
+        use crate::extrude_session::PreparationEvent;
+        use crate::geometry_worker::{SceneItemBinding, WorkerReply};
+        let reply = match self.geometry.as_ref().map(|runtime| runtime.worker.drain()) {
+            Some(Ok(Some(reply))) => reply,
+            Some(Err(error)) => {
+                let request = self.geometry.as_mut().and_then(|runtime| runtime.coordinator.as_mut()).and_then(|coordinator| coordinator.transport_failed());
+                self.drop_pending_preview_scene(); self.restore_committed_scene();
+                let update = self.geometry_status(Some(error.to_string()));
+                if let Some(request) = request && let Some(inputs) = &self.numeric_inputs && let Ok(projection) = inputs.project() {
+                    return update.merge(self.queue_numeric_delivery(NumericDeliveryKind::Confirm(request,false,None,projection)));
+                }
+                return update;
+            },
+            _ => return Update::default(),
+        };
+        let id = match &reply {
+            WorkerReply::Ready(ready) => ready.id,
+            WorkerReply::Failed { id, .. } => *id,
+        };
+        let bootstrap = self
+            .geometry
+            .as_ref()
+            .is_some_and(|runtime| runtime.bootstrap == Some(id));
+        if bootstrap {
+            if let Some(runtime) = &mut self.geometry {
+                runtime.bootstrap = None;
+            }
+            if id.document != self.document.identity()
+                || id.base_revision != self.document.revision()
+            {
+                if let WorkerReply::Ready(ready) = reply {
+                    self.release_geometry(ready.token);
+                }
+                if let Err(error) = self.queue_geometry_bootstrap() {
+                    log(&error.to_string());
+                }
+                return Update::default();
+            }
+            match reply {
+                WorkerReply::Failed { error, .. } => {
+                    return self.geometry_status(Some(error.to_string()));
+                }
+                WorkerReply::Ready(ready) => {
+                    let crate::geometry_worker::PreparedGeometry {
+                        id,
+                        prepared,
+                        token,
+                        mut scene,
+                    } = *ready;
+                    let expected = crate::DocumentVersion {
+                        instance: id.document,
+                        revision: id.base_revision,
+                    };
+                    if let Err(error) = self.document.accept_prepared(expected, prepared, token) {
+                        self.release_geometry(token);
+                        return self.geometry_status(Some(error.to_string()));
+                    }
+                    for item in &mut scene.items {
+                        item.binding = SceneItemBinding::Committed {
+                            entity: item.entity,
+                            generation: item.generation,
+                        };
+                    }
+                    if let Some(runtime) = &mut self.geometry {
+                        runtime.committed_scene = Some(scene.clone());
+                        if let Err(error) = runtime.worker.retain_committed(token) {
+                            log(&error.to_string());
+                        }
+                    }
+                    self.queue_scene_publication(scene, None);
+                    return self
+                        .poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+                }
+            }
+        }
+        let current = self.document.version();
+        let event = if let Some(coordinator) = self
+            .geometry
+            .as_mut()
+            .and_then(|runtime| runtime.coordinator.as_mut())
+        {
+            coordinator.receive(reply, current)
+        } else {
+            match reply {
+                WorkerReply::Ready(ready) => PreparationEvent::Release(ready.token),
+                _ => PreparationEvent::Ignored,
+            }
+        };
+        match event {
+            PreparationEvent::Preview(ready) => {
+                self.queue_scene_publication(ready.scene.clone(), Some(ready));
+                self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification)
+            }
+            PreparationEvent::Confirm { request, ready } => {
+                self.accept_geometry_confirmation(request, ready)
+            }
+            PreparationEvent::Rejected {
+                request,
+                diagnostic,
+            } => {
+                let update = self.geometry_status(Some(diagnostic));
+                if let Some(request) = request
+                    && let Some(inputs) = &self.numeric_inputs
+                    && let Ok(projection) = inputs.project()
+                {
+                    return update.merge(self.queue_numeric_delivery(
+                        NumericDeliveryKind::Confirm(request, false, None, projection),
+                    ));
+                }
+                update
+            }
+            PreparationEvent::Release(token) => {
+                self.release_geometry(token);
+                Update::default()
+            }
+            PreparationEvent::Ignored => Update::default(),
+        }
+    }
     fn selection_view(&self) -> LocalSelectionView {
         let fields = self
             .shell
@@ -302,11 +1343,16 @@ impl App {
                     .field_descriptors()
                     .into_iter()
                     .map(|d| {
-                        let count = self
-                            .command_inputs
-                            .as_ref()
-                            .and_then(|inputs| inputs.values.get(&d.field))
-                            .map_or(0, |v| v.entities().len());
+                        let count = self.command_inputs.as_ref().map_or(0, |inputs| {
+                            if crate::selection::geometry_field(d.field) {
+                                inputs.geometry_values.get(&d.field).map_or(0, Vec::len)
+                            } else {
+                                inputs
+                                    .values
+                                    .get(&d.field)
+                                    .map_or(0, |value| value.entities().len())
+                            }
+                        });
                         SelectionFieldCount {
                             field: d.field,
                             count,
@@ -407,6 +1453,23 @@ impl App {
         }
     }
     fn update_scene_selection(&mut self) {
+        if self.geometry.is_some() {
+            if !self.scene_available {
+                return;
+            }
+            for (index, binding) in self.scene_bindings.iter().enumerate() {
+                let selected = match binding.binding {
+                    crate::geometry_worker::SceneItemBinding::Committed { entity, .. } => {
+                        self.selection.entities().contains(&entity)
+                    }
+                    _ => false,
+                };
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.set_scene_item_selected(index, selected);
+                }
+            }
+            return;
+        }
         let selected = self.scene_entity.is_some_and(|binding| {
             binding.document == self.document.identity()
                 && binding.mesh_revision == self.navigation.scene().revision()
@@ -423,8 +1486,11 @@ impl App {
             }
         }
     }
+    #[cfg(test)]
     fn install_scene_mesh(&mut self, mesh: NewellMesh, entity: Option<EntityId>) {
         self.pending_scene_click = None;
+        self.scene_available = true;
+        self.nav_interaction.cancel();
         self.navigation.set_mesh(&mesh);
         self.scene_entity = entity
             .filter(|id| self.document.document().entity(*id).is_some())
@@ -453,7 +1519,8 @@ impl App {
         let (Some(pending), Some(origin)) = (pending, certificate) else {
             return Update::default();
         };
-        if pending.document != self.document.identity()
+        if (self.geometry.is_some() && !self.scene_available)
+            || pending.document != self.document.identity()
             || pending.mesh_revision != self.navigation.scene().revision()
             || self
                 .shell
@@ -464,6 +1531,34 @@ impl App {
             return Update::default();
         }
         let entities = if let Some(hit) = self.navigation.pick(origin) {
+            if self.geometry.is_some() {
+                let Some(item) = self.scene_bindings.iter().find(|item| {
+                    usize::try_from(item.range.face_start)
+                        .is_ok_and(|start| hit.face_index >= start)
+                        && usize::try_from(item.range.face_end)
+                            .is_ok_and(|end| hit.face_index < end)
+                }) else {
+                    return Update::default();
+                };
+                let crate::geometry_worker::SceneItemBinding::Committed { entity, generation } =
+                    item.binding
+                else {
+                    return Update::default();
+                };
+                if self
+                    .document
+                    .document()
+                    .entity_geometry(entity)
+                    .is_none_or(|geometry| geometry.generation != generation)
+                {
+                    return Update::default();
+                }
+                return self.handle_selection_request(SelectionRequest {
+                    document: self.document.identity(),
+                    op: pending.edit.into(),
+                    entities: vec![entity],
+                });
+            }
             let Some(binding) = self.scene_entity.filter(|b| {
                 b.document == pending.document
                     && b.mesh_revision == hit.mesh_revision
@@ -485,6 +1580,11 @@ impl App {
         })
     }
     fn start_command_inputs(&mut self, operation: ActionOperation) -> Update {
+        if self.geometry.is_some()
+            && self.projection_sync.acknowledged_version() != Some(self.document.version())
+        {
+            return Update::default();
+        }
         if self.shell.as_ref().is_none_or(|s| {
             s.shell().tree_projection().document != self.document.identity().tree()
                 || s.shell().operation() != operation
@@ -496,6 +1596,7 @@ impl App {
             return Update::default();
         };
         self.next_command_id = next;
+        self.extrude_edit_target = None;
         let Some(shell) = &self.shell else {
             return Update::default();
         };
@@ -580,17 +1681,23 @@ impl App {
             operation,
             insertion,
             values,
+            geometry_values: std::collections::BTreeMap::new(),
+            geometry_picker: None,
         });
         self.numeric_inputs = Some(numeric_inputs);
+        self.begin_geometry_command();
         self.numeric_last_attempt = 0;
         self.numeric_committed = false;
         self.numeric_preview_suspended = false;
         self.numeric_delivery = None;
         self.active_selection = None;
-        self.extrude_latch = ExtrudeCommitLatch {
-            armed: operation == ActionOperation::Extrude,
-            insertion: Some((self.document.identity().tree(), insertion)),
-        };
+        #[cfg(test)]
+        {
+            self.extrude_latch = ExtrudeCommitLatch {
+                armed: operation == ActionOperation::Extrude,
+                insertion: Some((self.document.identity().tree(), insertion)),
+            };
+        }
         self.commands.cancel();
         let selection_update = self.publish_selection();
         selection_update.merge(self.publish_numeric_view())
@@ -621,6 +1728,44 @@ impl App {
                     .field_descriptors()
                     .into_iter()
                     .find(|d| d.field == field)?;
+                if crate::selection::geometry_field(field) {
+                    let surface = shell.shell().extrude().values.geometry
+                        == newell_ui::ExtrudeGeometryType::Surface;
+                    return crate::selection::geometry_candidates(
+                        &self.document,
+                        field,
+                        inputs.insertion,
+                        surface,
+                    )
+                    .ok()
+                    .map(|candidates| {
+                        candidates
+                            .into_iter()
+                            .map(|candidate| candidate.row)
+                            .collect()
+                    });
+                }
+                if field.operation == ActionOperation::Extrude
+                    && descriptor.role == newell_ui::SelectionFieldRole::MergeScope
+                    && shell.shell().extrude().values.geometry
+                        == newell_ui::ExtrudeGeometryType::Surface
+                {
+                    let mut filter = descriptor;
+                    filter.role = newell_ui::SelectionFieldRole::EntityReference;
+                    return Some(
+                        candidate_rows(&self.document, Some(filter), Some(inputs.insertion))
+                            .into_iter()
+                            .filter(|row| {
+                                self.document
+                                    .document()
+                                    .entity(EntityId::from_raw(row.entity.get()))
+                                    .is_some_and(|entity| {
+                                        entity.kind() == newell_model::EntityKind::Surface
+                                    })
+                            })
+                            .collect(),
+                    );
+                }
                 Some(candidate_rows(
                     &self.document,
                     Some(descriptor),
@@ -660,6 +1805,40 @@ impl App {
                         != ids.len()
                 {
                     return Update::default();
+                }
+                if let SelectionDestination::Field { field, .. } = active.destination
+                    && crate::selection::geometry_field(field)
+                {
+                    let Some(inputs) = self.command_inputs.as_mut() else {
+                        return Update::default();
+                    };
+                    let Some(picker) = inputs.geometry_picker.take() else {
+                        return Update::default();
+                    };
+                    if picker.version != self.document.version()
+                        || picker.session != active.session
+                        || picker.field != field
+                    {
+                        return Update::default();
+                    }
+                    let references = ids
+                        .iter()
+                        .map(|id| {
+                            picker
+                                .candidates
+                                .iter()
+                                .find(|candidate| candidate.row.entity == *id)
+                                .map(|candidate| candidate.reference)
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    let Some(references) = references else {
+                        return Update::default();
+                    };
+                    inputs.geometry_values.insert(field, references);
+                    if let Some(legacy) = inputs.values.get_mut(&field) {
+                        legacy.clear();
+                    }
+                    return self.publish_selection();
                 }
                 let entities = ids
                     .iter()
@@ -727,6 +1906,41 @@ impl App {
             return Update::default();
         };
         request.rows = rows;
+        let picker = if crate::selection::geometry_field(descriptor.field) {
+            let surface = self.shell.as_ref().is_some_and(|shell| {
+                shell.shell().extrude().values.geometry == newell_ui::ExtrudeGeometryType::Surface
+            });
+            let candidates = match crate::selection::geometry_candidates(
+                &self.document,
+                descriptor.field,
+                inputs.insertion,
+                surface,
+            ) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    log(&error.to_string());
+                    return Update::default();
+                }
+            };
+            request.applied = candidates
+                .iter()
+                .filter(|candidate| {
+                    inputs
+                        .geometry_values
+                        .get(&descriptor.field)
+                        .is_some_and(|values| values.contains(&candidate.reference))
+                })
+                .map(|candidate| candidate.row.entity)
+                .collect();
+            Some(crate::selection::GeometryPicker {
+                version: self.document.version(),
+                session: request.session,
+                field: descriptor.field,
+                candidates,
+            })
+        } else {
+            None
+        };
         request
             .applied
             .retain(|id| request.rows.iter().any(|r| r.entity == *id));
@@ -737,8 +1951,12 @@ impl App {
         {
             Some(Ok(update)) => {
                 self.next_selection_id = next;
+                if let Some(inputs) = self.command_inputs.as_mut() {
+                    inputs.geometry_picker = picker;
+                }
                 self.active_selection = Some(request);
                 self.navigation.cancel();
+                self.nav_interaction.cancel();
                 self.pending_scene_click = None;
                 update
             }
@@ -756,6 +1974,7 @@ impl App {
             document,
             document_events,
             projection_sync: ProjectionSync::default(),
+            #[cfg(test)]
             extrude_latch: ExtrudeCommitLatch::default(),
             committed_cursor: None,
             layout_retry_rearm_pending: false,
@@ -767,6 +1986,12 @@ impl App {
             numeric_cache: std::collections::BTreeMap::new(),
             numeric_delivery: None,
             numeric_last_attempt: 0,
+            extrude_edit_target: None,
+            properties_editor: None,
+            properties_close_source: None,
+            properties_retry_at: None,
+            properties_attempts: 0,
+            last_properties_id: 0,
             numeric_committed: false,
             numeric_preview_suspended: false,
             active_selection: None,
@@ -780,10 +2005,24 @@ impl App {
             fail_next_selection: 0,
             commands: CommandController::default(),
             scene_entity: None,
+            geometry: None,
+            geometry_wake: None,
+            pending_scene: None,
+            #[cfg(test)]
+            fail_scene_publish: 0,
+            scene_bindings: Vec::new(),
+            scene_available: false,
+            scene_initialized: false,
             pending_scene_click: None,
             scene_selected: false,
             modifiers: ModifiersState::empty(),
             navigation: Navigation::default(),
+            nav_geometry: None,
+            nav_hover: None,
+            nav_cube_hover: None,
+            nav_interaction: NavInteraction::default(),
+            nav_generation: 0,
+            nav_ui_masks: Vec::new(),
             scene_pointer: None,
             error: None,
             resize: ResizeManager::default(),
@@ -835,6 +2074,14 @@ impl App {
         self.deliver_numeric(Instant::now(), false)
     }
     fn deliver_numeric(&mut self, now: Instant, rearm: bool) -> Update {
+        if self.geometry.is_some()
+            && self.numeric_committed
+            && (self.pending_scene.is_some()
+                || !self.scene_available
+                || self.projection_sync.acknowledged_version() != Some(self.document.version()))
+        {
+            return Update::default();
+        }
         let Some(mut pending) = self.numeric_delivery.take() else {
             return Update::default();
         };
@@ -874,15 +2121,20 @@ impl App {
         };
         match result {
             Ok(mut update) => {
+                let formula_accepted = matches!(&pending.kind,NumericDeliveryKind::FormulaApply(_,_,diagnostic) if diagnostic.is_none());
                 if let NumericDeliveryKind::Confirm(request, true, feature, _) = pending.kind
                     && (request.operation != ActionOperation::Extrude || feature.is_some())
                 {
                     self.numeric_cache.remove(&request.operation);
                     self.numeric_inputs = None;
                     self.command_inputs = None;
+                    self.extrude_edit_target = None;
                     self.active_selection = None;
                     self.numeric_committed = false;
                     update = update.merge(self.publish_selection());
+                }
+                if formula_accepted {
+                    self.sync_extrude_command();
                 }
                 update
             }
@@ -1036,7 +2288,8 @@ impl App {
             request, projection, diagnostic,
         ))
     }
-    fn complete_numeric_confirm(
+    #[cfg(test)]
+    fn complete_legacy_numeric_confirm(
         &mut self,
         request: newell_ui::NumericConfirmRequest,
         rejected: bool,
@@ -1084,10 +2337,13 @@ impl App {
                     inputs,
                     selections,
                 )?;
-                self.extrude_latch = ExtrudeCommitLatch {
-                    armed: true,
-                    insertion: Some((request.document, selections.insertion)),
-                };
+                #[cfg(test)]
+                {
+                    self.extrude_latch = ExtrudeCommitLatch {
+                        armed: true,
+                        insertion: Some((request.document, selections.insertion)),
+                    };
+                }
                 let latch = std::mem::take(&mut self.extrude_latch);
                 let (_, gap) = latch.insertion.ok_or(AppError::InvalidNumericRequest)?;
                 let before = match gap {
@@ -1116,13 +2372,17 @@ impl App {
             }
         };
         // Every attempt consumes the latch, including lexical/validation failures.
-        self.extrude_latch = ExtrudeCommitLatch::default();
+        #[cfg(test)]
+        {
+            self.extrude_latch = ExtrudeCommitLatch::default();
+        }
         self.numeric_preview_suspended = !accepted;
         self.queue_numeric_delivery(NumericDeliveryKind::Confirm(
             request, accepted, feature, projection,
         ))
     }
-    fn sync_extrude_command(&mut self) {
+    #[cfg(test)]
+    fn sync_legacy_extrude_command(&mut self) {
         if self.numeric_preview_suspended
             || self.numeric_committed
             || self
@@ -1153,7 +2413,10 @@ impl App {
         };
         if shell.shell().operation() != ActionOperation::Extrude {
             self.commands.cancel();
-            self.extrude_latch = ExtrudeCommitLatch::default();
+            #[cfg(test)]
+            {
+                self.extrude_latch = ExtrudeCommitLatch::default();
+            }
             return;
         }
         match shell.shell().extrude().status {
@@ -1180,10 +2443,13 @@ impl App {
                     .is_ok()
                     && let Some(preview) = self.commands.preview()
                     && let Ok(depth) = preview
+                        .inputs()
                         .depth
                         .evaluate(self.document.document().parameters())
                 {
-                    self.set_preview_depth(depth.as_millimetres());
+                    let _ = depth;
+                    self.scene_entity = None;
+                    self.pending_scene_click = None;
                 }
             }
             ExtrudeStatus::Confirmed => {}
@@ -1195,24 +2461,13 @@ impl App {
                 self.command_inputs = None;
                 self.numeric_inputs = None;
                 self.active_selection = None;
-                self.extrude_latch = ExtrudeCommitLatch::default();
+                #[cfg(test)]
+                {
+                    self.extrude_latch = ExtrudeCommitLatch::default();
+                }
                 self.commands.cancel();
-                self.set_preview_depth(10.0);
+                self.pending_scene_click = None;
             }
-        }
-    }
-
-    fn set_preview_depth(&mut self, depth_mm: f64) {
-        let scaled = (depth_mm / 10.0).clamp(0.01, 100.0);
-        let Ok(solid) = NewellSolid::box_solid(1.0, 1.0, scaled) else {
-            return;
-        };
-        let Ok(mesh) = solid.tessellate(0.05) else {
-            return;
-        };
-        self.install_scene_mesh(mesh, None);
-        if let Some(window) = &self.window {
-            window.request_redraw();
         }
     }
 
@@ -1284,21 +2539,57 @@ impl App {
     fn poll_document_projection(&mut self, now: Instant, trigger: ProjectionTrigger) -> Update {
         let mut invalidation_update = Update::default();
         if self.selection.document != self.document.identity() {
-            self.extrude_latch = ExtrudeCommitLatch::default();
+            #[cfg(test)]
+            {
+                self.extrude_latch = ExtrudeCommitLatch::default();
+            }
             self.committed_cursor = None;
             self.commands.cancel();
             self.command_inputs = None;
             self.numeric_inputs = None;
             self.numeric_cache.clear();
+            self.extrude_edit_target = None;
+            self.properties_editor = None;
+            self.properties_close_source = None;
+            self.properties_retry_at = None;
             self.numeric_delivery = None;
             self.numeric_committed = false;
             self.active_selection = None;
+            self.drop_pending_preview_scene();
+            self.pending_scene = None;
+            self.scene_bindings.clear();
+            self.scene_unavailable();
+            if let Some(runtime) = &mut self.geometry {
+                if let Some(mut coordinator) = runtime.coordinator.take() {
+                    coordinator.cancel();
+                }
+                runtime.latest_edit = None;
+                runtime.bootstrap = None;
+                runtime.committed_scene = None;
+                runtime.displayed_scene = None;
+                if let Err(error) = runtime.worker.replace_document(self.document.identity()) {
+                    log(&error.to_string());
+                }
+            }
+            if self.geometry.is_some()
+                && let Err(error) = self.queue_geometry_bootstrap()
+            {
+                log(&error.to_string());
+            }
             self.scene_entity = None;
             self.pending_scene_click = None;
             self.navigation.cancel();
+            self.nav_interaction.cancel();
             if let Some(shell) = &mut self.shell {
                 invalidation_update = shell.invalidate_document_interactions();
             }
+        }
+        let rearm = matches!(
+            trigger,
+            ProjectionTrigger::UserActivation | ProjectionTrigger::LayoutPublished
+        );
+        if !self.stage_pending_scene(now, rearm) {
+            return invalidation_update;
         }
         self.selection.reconcile(&self.document);
         if let Some(inputs) = &mut self.command_inputs {
@@ -1385,7 +2676,15 @@ impl App {
                 ProjectionTrigger::UserActivation | ProjectionTrigger::LayoutPublished
             ),
         ));
+        update = update.merge(self.publish_pending_scene(now));
         update = update.merge(self.deliver_numeric(
+            now,
+            matches!(
+                trigger,
+                ProjectionTrigger::UserActivation | ProjectionTrigger::LayoutPublished
+            ),
+        ));
+        update = update.merge(self.deliver_properties(
             now,
             matches!(
                 trigger,
@@ -1398,13 +2697,220 @@ impl App {
         [
             self.projection_sync.deadline(),
             self.selection_retry_at,
+            self.properties_retry_at,
             self.numeric_delivery.as_ref().and_then(|d| d.retry_at),
+            self.pending_scene
+                .as_ref()
+                .and_then(|pending| pending.retry_at),
         ]
         .into_iter()
         .flatten()
         .min()
     }
+    fn capture_properties_action(&mut self) -> Update {
+        if self
+            .shell
+            .as_ref()
+            .and_then(ShellController::pending_properties_close)
+            .is_some()
+            && self.properties_close_source.is_none()
+        {
+            self.properties_close_source = Some(self.document.version());
+            self.properties_attempts = 1;
+            self.properties_retry_at = Some(Instant::now() + Duration::from_millis(100));
+        }
+        let request = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_properties_open);
+        request.map_or_else(Update::default, |request| {
+            self.prepare_properties_editor(request)
+        })
+    }
+    fn prepare_properties_editor(
+        &mut self,
+        certificate: crate::controller::CertifiedPropertiesOpen,
+    ) -> Update {
+        let request = certificate.request;
+        if request.id.0 <= self.last_properties_id {
+            return Update::default();
+        }
+        self.last_properties_id = request.id.0;
+        let source = self
+            .properties_close_source
+            .take()
+            .unwrap_or(self.document.version());
+        self.properties_retry_at = None;
+        self.properties_attempts = 0;
+        if source != self.document.version()
+            || self.projection_sync.acknowledged_version() != Some(source)
+            || request.origin != certificate.validated_generation
+            || request.target.document != source.instance.tree()
+            || self
+                .shell
+                .as_ref()
+                .is_none_or(|shell| shell.generation() != certificate.closing_generation)
+        {
+            return Update::default();
+        }
+        let newell_ui::TreeTargetKind::Operation(operation) = request.target.kind else {
+            return Update::default();
+        };
+        let Some(feature) = self.document.feature_id(operation).filter(|feature| {
+            matches!(
+                self.document.document().feature(*feature),
+                Some(newell_model::Feature::Extrude(_))
+            )
+        }) else {
+            return self.geometry_status(Some("Focus an Extrude in Features".into()));
+        };
+        let Some(next) = self.next_command_id.checked_add(1) else {
+            return self.geometry_status(Some("Command session capacity exhausted".into()));
+        };
+        let prepared = crate::parameters::hydrate_extrude_inputs(
+            self.document.identity(),
+            CommandInputSessionId(next),
+            self.document.document(),
+            feature,
+        );
+        match prepared {
+            Ok((values, numeric, selections)) => {
+                self.next_command_id = next;
+                self.properties_editor = Some(PendingPropertiesEditor {
+                    certificate,
+                    target: ExtrudeEditTarget {
+                        version: source,
+                        feature,
+                    },
+                    values,
+                    numeric,
+                    selections,
+                });
+                Update::default()
+            }
+            Err(error) => self.geometry_status(Some(error.to_string())),
+        }
+    }
+    fn properties_failed(&mut self, now: Instant) {
+        self.properties_attempts = self.properties_attempts.saturating_add(1);
+        self.properties_retry_at =
+            (self.properties_attempts == 1).then_some(now + Duration::from_millis(100));
+    }
+    fn deliver_properties(&mut self, now: Instant, rearm: bool) -> Update {
+        let close = self
+            .shell
+            .as_ref()
+            .and_then(ShellController::pending_properties_close)
+            .is_some();
+        if !close && self.properties_editor.is_none() {
+            self.properties_close_source = None;
+            self.properties_retry_at = None;
+            return Update::default();
+        }
+        if self.numeric_committed {
+            return Update::default();
+        }
+        if self.properties_attempts > 0 {
+            if self.properties_retry_at.is_none() && !rearm {
+                return Update::default();
+            }
+            if self.properties_retry_at.is_some_and(|at| now < at) {
+                return Update::default();
+            }
+            if self.properties_retry_at.is_none() && rearm {
+                self.properties_attempts = 0;
+            }
+        }
+        let mut update = Update::default();
+        if close {
+            let valid = self.properties_close_source == Some(self.document.version())
+                && self.projection_sync.acknowledged_version() == Some(self.document.version());
+            if !valid {
+                if let Some(shell) = &mut self.shell {
+                    shell.discard_properties_close();
+                }
+                self.properties_close_source = None;
+                self.properties_retry_at = None;
+                return update;
+            }
+            let result = self
+                .shell
+                .as_mut()
+                .map(ShellController::retry_properties_close);
+            match result {
+                Some(Ok(next)) => {
+                    update = update.merge(next);
+                    update = update.merge(self.capture_properties_action());
+                }
+                _ => {
+                    self.properties_failed(now);
+                    return update;
+                }
+            }
+        }
+        let Some(pending) = self.properties_editor.take() else {
+            return update;
+        };
+        if pending.target.version != self.document.version()
+            || self.projection_sync.acknowledged_version() != Some(pending.target.version)
+            || self
+                .shell
+                .as_ref()
+                .is_none_or(|shell| shell.generation() != pending.certificate.closing_generation)
+        {
+            self.properties_retry_at = None;
+            return update;
+        }
+        let projection = match pending.numeric.project() {
+            Ok(value) => value,
+            Err(error) => return update.merge(self.geometry_status(Some(error.to_string()))),
+        };
+        let fields: Vec<_> = pending
+            .selections
+            .values
+            .iter()
+            .map(|(field, value)| SelectionFieldCount {
+                field: *field,
+                count: pending
+                    .selections
+                    .geometry_values
+                    .get(field)
+                    .map_or(value.entities().len(), Vec::len),
+            })
+            .collect();
+        let result = self
+            .shell
+            .as_mut()
+            .ok_or(newell_ui::UiError::InvalidNumericProjection)
+            .and_then(|shell| shell.open_extrude_properties(pending.values, projection, &fields));
+        match result {
+            Ok(next) => {
+                self.restore_committed_scene();
+                self.extrude_edit_target = Some(pending.target);
+                self.numeric_inputs = Some(pending.numeric);
+                self.command_inputs = Some(pending.selections);
+                self.numeric_last_attempt = 0;
+                self.numeric_committed = false;
+                self.numeric_preview_suspended = false;
+                self.numeric_delivery = None;
+                self.active_selection = None;
+                self.properties_retry_at = None;
+                self.properties_attempts = 0;
+                self.begin_geometry_command();
+                self.sync_geometry_preview();
+                update.merge(next)
+            }
+            Err(_) => {
+                self.properties_editor = Some(pending);
+                self.properties_failed(now);
+                update
+            }
+        }
+    }
     fn finish_shell_input(&mut self, mut update: Update) {
+        update = update.merge(self.capture_properties_action());
+        update = update.merge(self.deliver_properties(Instant::now(), true));
+        self.observe_geometry_lifetime();
         if update.any() {
             self.numeric_preview_suspended = false;
         }
@@ -1461,11 +2967,22 @@ impl App {
                         entities,
                     }));
                 }
-            } else if let Err(error) = self
-                .document
-                .apply_tree_edit(intent.target(), intent.kind())
-            {
-                log(&error.to_string());
+            } else {
+                match self
+                    .document
+                    .apply_tree_edit(intent.target(), intent.kind())
+                {
+                    Ok(true)
+                        if matches!(
+                            intent.kind(),
+                            newell_ui::TreeIntentKind::SetVisibility { .. }
+                        ) =>
+                    {
+                        self.republish_scene_visibility();
+                    }
+                    Ok(_) => {}
+                    Err(error) => log(&error.to_string()),
+                }
             }
         }
         if let Some(request) = selection_request {
@@ -1508,14 +3025,131 @@ impl App {
         let result = shell.scroll_panel(steps);
         if result.handled {
             self.navigation.cancel();
+            self.nav_interaction.cancel();
             self.apply(result.update);
         }
         result.handled
     }
 
+    /// Publishes one layout/basis to hit testing and rendering, independently of UI ink.
+    fn sync_navigation_widgets(&mut self) {
+        let Some(shell) = &self.shell else {
+            return;
+        };
+        let viewport = scene_viewport(shell);
+        let metrics = shell.metrics();
+        let pixel = |r: newell_ui::GridRect| PixelRect {
+            x: f64::from(r.col() * metrics.cell_width_px()),
+            y: f64::from(r.row() * metrics.cell_height_px()),
+            width: f64::from(r.width() * metrics.cell_width_px()),
+            height: f64::from(r.height() * metrics.cell_height_px()),
+        };
+        let scene = PixelRect {
+            x: f64::from(viewport.x),
+            y: f64::from(viewport.y),
+            width: f64::from(viewport.width),
+            height: f64::from(viewport.height),
+        };
+        let surface = PixelRect {
+            x: 0.,
+            y: 0.,
+            width: f64::from(self.last_size.width),
+            height: f64::from(self.last_size.height),
+        };
+        let mut layout = layout_navigation(
+            scene,
+            surface,
+            metrics,
+            shell.shell().view_panel_visible(3),
+            shell.shell().navigator_kind(),
+            shell.shell().action_panel_rect().map(pixel),
+        );
+        let ui = scene_occlusions(shell);
+        let ui_masks = shell
+            .scene_occlusions()
+            .into_iter()
+            .map(pixel)
+            .collect::<Vec<_>>();
+        let changed = self.nav_geometry.as_ref().is_none_or(|g| {
+            g.layout.tile != layout.tile
+                || g.layout.kind != layout.kind
+                || g.q != f64::from(metrics.cell_width_px()) / 8.
+        }) || self.nav_ui_masks != ui_masks;
+        if changed {
+            self.nav_generation = self.nav_generation.wrapping_add(1);
+            self.nav_interaction.cancel();
+            self.navigation.cancel();
+        }
+        layout.generation = self.nav_generation;
+        self.nav_ui_masks = ui_masks.clone();
+        let occlusions = ui.clone();
+        self.navigation.set_layout(viewport, occlusions.clone());
+        let (right, up, forward) = self.navigation.camera().basis();
+        let geometry = NavGeometry::new(layout, NavBasis { right, up, forward }, metrics);
+        let hovered = axis_hover(
+            geometry.as_ref(),
+            self.scene_pointer.map(|p| (p.x, p.y)),
+            !self.occluded
+                && !self.resize.is_active()
+                && !self.native_resizing
+                && shell.navigation_admission(
+                    (self.last_size.width, self.last_size.height),
+                    self.resizable(),
+                ),
+            self.nav_interaction.active() || self.navigation.has_capture(),
+        );
+        let hovered_cube = cube_hover(
+            geometry.as_ref(),
+            self.scene_pointer.map(|p| (p.x, p.y)),
+            !self.occluded
+                && !self.resize.is_active()
+                && !self.native_resizing
+                && shell.navigation_admission(
+                    (self.last_size.width, self.last_size.height),
+                    self.resizable(),
+                ),
+            self.nav_interaction.active() || self.navigation.has_capture(),
+        );
+        if self.nav_hover != hovered || self.nav_cube_hover != hovered_cube {
+            self.nav_hover = hovered;
+            self.nav_cube_hover = hovered_cube;
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        let snapshot = geometry.clone().map(|geometry| NavSnapshot {
+            geometry,
+            ui_masks,
+            surface: [self.last_size.width, self.last_size.height],
+            camera_revision: self.navigation.revision(),
+            hovered,
+            hovered_cube,
+        });
+        if let Some(renderer) = &mut self.renderer {
+            if let Err(error) = renderer.set_navigation(snapshot) {
+                log(&error.to_string());
+                self.nav_geometry = None;
+                self.nav_hover = None;
+                self.nav_cube_hover = None;
+                self.nav_interaction.cancel();
+                self.navigation.set_layout(viewport, ui.clone());
+                renderer.set_scene_occlusions(ui);
+                return;
+            }
+            renderer.set_scene_occlusions(occlusions);
+            if let Some(camera) = self.navigation.snapshot() {
+                renderer.set_scene_camera(camera);
+            }
+        }
+        self.nav_geometry = geometry;
+        self.nav_interaction
+            .validate(self.nav_geometry.as_ref(), self.navigation.revision());
+    }
+
     /// Uploads what `update` says changed and asks for a redraw.
     fn apply(&mut self, update: Update) {
         self.sync_view_choices();
+        self.sync_navigation_widgets();
         self.update_os_cursor();
         if !update.any() {
             return;
@@ -1530,9 +3164,6 @@ impl App {
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_ui_grid(shell.grid());
                 renderer.set_scene_viewport(scene_viewport(shell));
-                renderer.set_scene_occlusions(scene_occlusions(shell));
-                self.navigation
-                    .set_layout(scene_viewport(shell), scene_occlusions(shell));
                 if let Some(camera) = self.navigation.snapshot() {
                     renderer.set_scene_camera(camera);
                 }
@@ -1543,6 +3174,14 @@ impl App {
         }
     }
 
+    /// Targets own input even when hollow; uncovered tile pixels remain scene input.
+    fn scene_navigation_at(&self, point: (f64, f64)) -> bool {
+        self.navigation.has_capture()
+            || self
+                .nav_geometry
+                .as_ref()
+                .is_none_or(|g| !g.reserves(point))
+    }
     /// Updates the native cursor from the shell's O(1) hit target and press precedence.
     fn update_os_cursor(&self) {
         let (Some(window), Some(shell)) = (&self.window, &self.shell) else {
@@ -1557,6 +3196,20 @@ impl App {
             CursorHint::Move => CursorIcon::Move,
             CursorHint::Grab => CursorIcon::Grab,
             CursorHint::Grabbing => CursorIcon::Grabbing,
+        };
+        let icon = if !self.resize.is_active()
+            && !self.native_resizing
+            && !self.navigation.is_dragging()
+            && shell.navigation_admission((size.width, size.height), self.resizable())
+            && self.scene_pointer.is_some_and(|p| {
+                self.nav_geometry
+                    .as_ref()
+                    .and_then(|g| g.hit((p.x, p.y)))
+                    .is_some()
+            }) {
+            CursorIcon::Pointer
+        } else {
+            icon
         };
         window.set_cursor(icon);
     }
@@ -1775,9 +3428,6 @@ impl App {
             let update = shell.commit_metrics(prepared);
             self.layout_retry_rearm_pending |= update.grid;
             renderer.set_scene_viewport(scene_viewport(shell));
-            renderer.set_scene_occlusions(scene_occlusions(shell));
-            self.navigation
-                .set_layout(scene_viewport(shell), scene_occlusions(shell));
             if let Some(camera) = self.navigation.snapshot() {
                 renderer.set_scene_camera(camera);
             }
@@ -1904,7 +3554,37 @@ impl App {
 
     /// A left press: window control, resize zone, MenuBar drag or normal shell routing.
     fn left_pressed(&mut self) {
+        self.sync_navigation_widgets();
+        if !self.resize.is_active()
+            && !self.native_resizing
+            && !self.navigation.is_dragging()
+            && self.shell.as_ref().is_some_and(|shell| {
+                shell.navigation_admission(
+                    (self.last_size.width, self.last_size.height),
+                    self.resizable(),
+                )
+            })
+            && let Some(pointer) = self.scene_pointer
+            && let Some(g) = &self.nav_geometry
+            && g.reserves((pointer.x, pointer.y))
+        {
+            self.pending_scene_click = None;
+            self.navigation.cancel();
+            self.nav_interaction.press(
+                g,
+                (pointer.x, pointer.y),
+                self.window.as_ref().map_or(1., |w| w.scale_factor()),
+                self.navigation.revision(),
+            );
+            if let Some(shell) = &mut self.shell {
+                let update = shell.clear_hover();
+                self.apply(update);
+            }
+            return;
+        }
+
         self.navigation.cancel();
+        self.nav_interaction.cancel();
         // A press while a resize or control press is pending means its release was missed.
         self.cancel_resize(CancelReason::StateChanged);
         self.control.cancel();
@@ -2069,7 +3749,15 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::GeometryReady => {
+                let update = self.drain_worker_reply();
+                self.apply(update);
+            }
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Can be called more than once (macOS, Android).
         if self.window.is_some() {
@@ -2120,30 +3808,17 @@ impl ApplicationHandler for App {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_ui_grid(shell.grid());
             renderer.set_scene_viewport(scene_viewport(&shell));
-            renderer.set_scene_occlusions(scene_occlusions(&shell));
         }
-        self.navigation
-            .set_layout(scene_viewport(&shell), scene_occlusions(&shell));
-        let base = match self.document.add_base_solid("Base Solid") {
+        let base = match self.document.add_seeded_solid("Base Solid") {
             Ok(base) => base,
             Err(error) => return self.fail(event_loop, error),
         };
-        let entity = self
-            .document
-            .document()
-            .feature(base)
-            .and_then(|f| f.outputs().first().copied());
-        let solid = match NewellSolid::box_solid(1.0, 1.0, 1.0) {
-            Ok(solid) => solid,
-            Err(error) => return self.fail(event_loop, error),
-        };
-        let mesh = match solid.tessellate(0.05) {
-            Ok(mesh) => mesh,
-            Err(error) => return self.fail(event_loop, error),
-        };
-        self.install_scene_mesh(mesh, entity);
+        let _ = base;
         self.shell = Some(shell);
         self.window = Some(window.clone());
+        if let Err(error) = self.queue_geometry_bootstrap() {
+            return self.fail(event_loop, error);
+        }
         let update = self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
         self.apply(update);
         self.log_monitors(&window);
@@ -2181,6 +3856,18 @@ impl ApplicationHandler for App {
         if window.id() != id {
             return;
         }
+        if matches!(
+            &event,
+            WindowEvent::ScaleFactorChanged { .. }
+                | WindowEvent::Resized(_)
+                | WindowEvent::Focused(false)
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Occluded(true)
+                | WindowEvent::CloseRequested
+        ) {
+            self.nav_interaction.cancel();
+        }
+        self.sync_navigation_widgets();
         match event {
             WindowEvent::CloseRequested => {
                 self.cancel_resize(CancelReason::CloseRequested);
@@ -2195,6 +3882,7 @@ impl ApplicationHandler for App {
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.navigation.cancel();
+                self.nav_interaction.cancel();
                 self.native_resizing = false;
                 self.cancel_resize(CancelReason::FocusLost);
                 self.control.cancel();
@@ -2214,6 +3902,7 @@ impl ApplicationHandler for App {
                 self.moved_at = Some(Instant::now());
             }
             WindowEvent::Resized(size) => {
+                self.nav_interaction.cancel();
                 if size.width > 0 && size.height > 0 {
                     self.last_size = size;
                 }
@@ -2288,6 +3977,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.scene_pointer = Some(position);
+                if self.nav_interaction.active() {
+                    self.nav_interaction.advance((position.x, position.y));
+                    self.update_os_cursor();
+                    return;
+                }
                 let point = ui_point(position.x, position.y);
                 let camera_changed = self.navigation.advance_pointer((position.x, position.y));
                 if !self.navigation.primary_orbit_pending() {
@@ -2322,6 +4016,7 @@ impl ApplicationHandler for App {
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.navigation.cancel();
+                self.nav_interaction.cancel();
                 if let Some(shell) = &mut self.shell {
                     let update = shell.pointer_moved(None);
                     self.apply(update);
@@ -2337,6 +4032,21 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.nav_interaction.active() {
+                    let p = self
+                        .scene_pointer
+                        .map_or((f64::NAN, f64::NAN), |p| (p.x, p.y));
+                    if let Some(direction) = self.nav_interaction.release(
+                        self.nav_geometry.as_ref(),
+                        p,
+                        self.navigation.revision(),
+                    ) {
+                        self.navigation.align_view(direction);
+                        window.request_redraw();
+                    }
+                    self.sync_navigation_widgets();
+                    return;
+                }
                 self.native_resizing = false;
                 let point = self
                     .scene_pointer
@@ -2368,7 +4078,9 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 if let Some(cursor) = self.scene_pointer {
-                    let eligible = !self.resize.is_active()
+                    let eligible = !self.nav_interaction.active()
+                        && self.scene_navigation_at((cursor.x, cursor.y))
+                        && !self.resize.is_active()
                         && !self.native_resizing
                         && self
                             .shell
@@ -2406,6 +4118,7 @@ impl ApplicationHandler for App {
                     if matches!(delta, MouseScrollDelta::PixelDelta(_)) {
                         self.navigation.reject_trackpad_pan_scroll(phase);
                     }
+                    self.sync_navigation_widgets();
                     return;
                 }
                 let point = self
@@ -2420,9 +4133,12 @@ impl ApplicationHandler for App {
                     if matches!(delta, MouseScrollDelta::PixelDelta(_)) {
                         self.navigation.reject_trackpad_pan_scroll(phase);
                     }
+                    self.sync_navigation_widgets();
                     return;
                 }
-                let eligible = !self.resize.is_active()
+                let eligible = !self.nav_interaction.active()
+                    && self.scene_navigation_at(point)
+                    && !self.resize.is_active()
                     && !self.native_resizing
                     && self
                         .shell
@@ -2442,6 +4158,7 @@ impl ApplicationHandler for App {
                             }
                             window.request_redraw();
                         }
+                        self.sync_navigation_widgets();
                         return;
                     }
                     // macOS winit emits phased PixelDelta events for trackpad scrolling. A
@@ -2462,6 +4179,7 @@ impl ApplicationHandler for App {
                             }
                             window.request_redraw();
                         }
+                        self.sync_navigation_widgets();
                         return;
                     }
                 }
@@ -2483,15 +4201,17 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::PinchGesture { delta, phase, .. } => {
-                let eligible = !self.resize.is_active()
+                let point = self
+                    .scene_pointer
+                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
+                let eligible = !self.nav_interaction.active()
+                    && self.scene_navigation_at(point)
+                    && !self.resize.is_active()
                     && !self.native_resizing
                     && self
                         .shell
                         .as_ref()
                         .is_some_and(ShellController::scene_input_enabled);
-                let point = self
-                    .scene_pointer
-                    .map_or((f64::NAN, f64::NAN), |cursor| (cursor.x, cursor.y));
                 if self.navigation.zoom(
                     point,
                     f64::from(pinch_steps(delta)),
@@ -2509,6 +4229,7 @@ impl ApplicationHandler for App {
             WindowEvent::Occluded(occluded) => {
                 if occluded {
                     self.navigation.cancel();
+                    self.nav_interaction.cancel();
                 }
                 self.occluded = occluded;
                 if !occluded {
@@ -2527,6 +4248,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.navigation.cancel();
+                self.nav_interaction.cancel();
                 self.pending_scene_click = None;
                 if event.logical_key == Key::Named(NamedKey::Escape)
                     && self
@@ -2555,7 +4277,9 @@ impl ApplicationHandler for App {
                 }
                 // Home fits only when the pointer is on unobstructed scene pixels.
                 if event.logical_key == Key::Named(NamedKey::Home)
-                    && self.scene_pointer.is_some()
+                    && self.scene_pointer.is_some_and(|p| {
+                        self.navigation.visible((p.x, p.y)) && self.scene_navigation_at((p.x, p.y))
+                    })
                     && !self.resize.is_active()
                     && !self.native_resizing
                     && self.shell.as_ref().is_some_and(|shell| {
@@ -2608,6 +4332,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.sync_navigation_widgets();
                 if let Some(gate) = self.gate {
                     if Instant::now() < gate.deadline {
                         // The OS has not reported the new size yet: keep the last frame.
@@ -2636,6 +4361,7 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+        self.sync_navigation_widgets();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -2742,7 +4468,7 @@ mod tests {
                         y: row * 9 + 4,
                     })
             })
-            .expect("requested control is visible");
+            .expect(needle);
         shell.pointer_moved(Some(point));
         let update = shell.pointer_pressed();
         shell.pointer_released();
@@ -3432,6 +5158,8 @@ mod shared_selection_tests {
         select(&mut app, SelectionOp::Replace, vec![ids[0]]);
         click(&mut app, "Create");
         click(&mut app, "[E]xtrude");
+        click(&mut app, "Add");
+        click(&mut app, "Merge with all");
         let session = app.command_inputs.as_ref().unwrap().session;
         let d = app
             .shell
@@ -3442,7 +5170,7 @@ mod shared_selection_tests {
             .into_iter()
             .find(|d| {
                 d.field.operation == ActionOperation::Extrude
-                    && d.role == SelectionFieldRole::Direction
+                    && d.role == SelectionFieldRole::MergeScope
             })
             .unwrap();
         select(&mut app, SelectionOp::Replace, vec![ids[1]]);
@@ -3463,16 +5191,15 @@ mod shared_selection_tests {
             1
         );
         key(&mut app, ShellKey::Char(' '));
-        assert!(
-            app.command_inputs.as_ref().unwrap().values[&d.field]
-                .entities()
-                .is_empty()
+        assert_eq!(
+            app.command_inputs.as_ref().unwrap().values[&d.field].entities(),
+            &[ids[0]]
         );
         click(&mut app, "OK");
         assert_eq!(app.command_inputs.as_ref().unwrap().session, session);
         assert_eq!(
             app.command_inputs.as_ref().unwrap().values[&d.field].entities(),
-            &[ids[2]]
+            &[]
         );
         assert_eq!(
             app.shell
@@ -3480,7 +5207,7 @@ mod shared_selection_tests {
                 .unwrap()
                 .shell()
                 .selection_field_count(d.field),
-            1
+            0
         );
         assert_eq!(app.selection.entities(), &[ids[1]]);
         let update = app.open_field_selection(d);
@@ -3489,7 +5216,7 @@ mod shared_selection_tests {
         key(&mut app, ShellKey::Escape);
         assert_eq!(
             app.command_inputs.as_ref().unwrap().values[&d.field].entities(),
-            &[ids[2]]
+            &[]
         );
         assert_eq!(app.document.revision(), revision);
         assert!(events.try_recv().is_err());
@@ -3720,6 +5447,99 @@ mod numeric_binding_tests {
     use newell_model::{Direction, Feature, Length, Quantity, Unit};
     use newell_ui::{EditKey, NumericFieldKey, ShellKey, UiPoint, WidgetId};
 
+    #[test]
+    fn placeholder_focus_and_empty_exits_never_mutate_accepted_or_document_state() {
+        let mut a = app();
+        let document = a.document.document().clone();
+        let version = a.document.version();
+        let accepted = a.numeric_inputs.as_ref().unwrap().values.clone();
+        let parameters = a.numeric_inputs.as_ref().unwrap().parameter_draft.clone();
+        let sequence = a.numeric_inputs.as_ref().unwrap().consumed_sequence;
+        for exit in [ShellKey::Enter, ShellKey::Escape] {
+            activate(&mut a, 4, 0);
+            assert!(a.shell.as_ref().unwrap().shell().numeric_editing());
+            assert_eq!(
+                a.numeric_inputs.as_ref().unwrap().consumed_sequence,
+                sequence
+            );
+            key(&mut a, exit);
+            assert_eq!(a.numeric_inputs.as_ref().unwrap().values, accepted);
+            assert_eq!(
+                a.numeric_inputs.as_ref().unwrap().parameter_draft,
+                parameters
+            );
+            assert_eq!(a.document.version(), version);
+            assert_eq!(a.document.document(), &document);
+            assert!(!a.numeric_committed);
+        }
+        activate(&mut a, 4, 0);
+        let update = a.shell.as_mut().unwrap().numeric_focus_lost();
+        a.finish_shell_input(update);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().consumed_sequence,
+            sequence
+        );
+        assert_eq!(a.numeric_inputs.as_ref().unwrap().values, accepted);
+        assert_eq!(a.document.version(), version);
+        assert_eq!(a.document.document(), &document);
+        assert!(a.shell.as_mut().unwrap().take_numeric_requests().is_empty());
+    }
+
+    #[test]
+    fn explicit_zero_and_formula_zero_survive_focus_rejection_and_formula_cancel() {
+        let mut a = app();
+        edit(&mut a, 4, "0", false, true);
+        assert_eq!(value(&a, 4), 0.0);
+        assert!(!a.numeric_inputs.as_ref().unwrap().values[&field(4)].initial_placeholder);
+        let sequence = a.numeric_inputs.as_ref().unwrap().consumed_sequence;
+        activate(&mut a, 4, 0);
+        key(&mut a, ShellKey::Enter);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().consumed_sequence,
+            sequence
+        );
+        edit(&mut a, 4, ".", false, true);
+        assert_eq!(value(&a, 4), 0.0);
+        assert!(!a.numeric_inputs.as_ref().unwrap().values[&field(4)].initial_placeholder);
+        formula(&mut a, 4, "0mm");
+        assert!(!a.shell.as_ref().unwrap().shell().formula().is_open());
+        let accepted = a.numeric_inputs.as_ref().unwrap().values[&field(4)].clone();
+        assert!(!accepted.initial_placeholder);
+        activate(&mut a, 4, 0);
+        key(&mut a, ShellKey::Enter);
+        activate(&mut a, 4, 1);
+        assert_eq!(a.shell.as_ref().unwrap().shell().formula().draft(), "0mm");
+        key(&mut a, ShellKey::Escape);
+        assert_eq!(
+            a.numeric_inputs.as_ref().unwrap().values[&field(4)],
+            accepted
+        );
+    }
+
+    #[test]
+    fn direct_formula_and_empty_blur_preserve_initial_placeholder() {
+        let mut a = app();
+        for with_empty_edit in [false, true] {
+            if with_empty_edit {
+                activate(&mut a, 4, 0);
+            }
+            activate(&mut a, 4, 1);
+            assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+            assert_eq!(a.shell.as_ref().unwrap().shell().formula().draft(), "");
+            assert!(!a.shell.as_ref().unwrap().shell().numeric_editing());
+            key(&mut a, ShellKey::Escape);
+            assert!(a.numeric_inputs.as_ref().unwrap().values[&field(4)].initial_placeholder);
+            assert!(!a.shell.as_ref().unwrap().shell().numeric_editing());
+        }
+        formula(&mut a, 4, "");
+        assert!(a.numeric_inputs.as_ref().unwrap().values[&field(4)].initial_placeholder);
+        let before = a.numeric_inputs.as_ref().unwrap().values.clone();
+        formula(&mut a, 4, "#missing");
+        assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
+        assert_eq!(a.numeric_inputs.as_ref().unwrap().values, before);
+        key(&mut a, ShellKey::Escape);
+    }
+
     fn field(key: u32) -> NumericFieldKey {
         NumericFieldKey {
             operation: ActionOperation::Extrude,
@@ -3778,13 +5598,13 @@ mod numeric_binding_tests {
             .value_in(Unit::Millimetre)
             .unwrap()
     }
-    fn committed(a: &App) -> &newell_model::ExtrudeSpec {
+    fn committed(a: &App) -> newell_model::ExtrudeInputProjection {
         a.document
             .document()
             .features()
             .last()
             .and_then(|(_, feature)| match feature {
-                Feature::Extrude(f) => Some(&f.spec),
+                Feature::Extrude(f) => Some(f.spec.inputs()),
                 _ => None,
             })
             .unwrap()
@@ -3826,36 +5646,66 @@ mod numeric_binding_tests {
     }
     #[test]
     fn nested_second_offset_is_separate_and_hidden_values_survive_branches() {
-        let mut a = app();
+        let (mut a, wake) = super::real_extrude_tests::runtime_app().unwrap();
+        super::real_extrude_tests::open(&mut a);
+        super::real_extrude_tests::profile(&mut a);
         edit(&mut a, 4, "12.3", false, true);
         activate(&mut a, 9, 0);
         edit(&mut a, 11, "4.5", false, false);
         activate(&mut a, 9, 0);
         assert_eq!(value(&a, 11), 4.5);
-        assert!(a.commands.preview().unwrap().starting_offset.is_none());
+        assert!(
+            (match a.geometry_edit().unwrap() {
+                newell_model::geometry::DocumentEdit::ExtrudeInsert { spec, .. } =>
+                    Some(spec.inputs()),
+                _ => None,
+            })
+            .unwrap()
+            .starting_offset
+            .is_none()
+        );
         activate(&mut a, 9, 0);
         assert_eq!(
-            mm(a.commands
-                .preview()
-                .unwrap()
-                .starting_offset
-                .as_ref()
-                .unwrap()),
+            mm((match a.geometry_edit().unwrap() {
+                newell_model::geometry::DocumentEdit::ExtrudeInsert { spec, .. } =>
+                    Some(spec.inputs()),
+                _ => None,
+            })
+            .unwrap()
+            .starting_offset
+            .as_ref()
+            .unwrap()),
             4.5
         );
         activate(&mut a, 10, 0);
-        assert!(a.commands.preview().unwrap().starting_offset.is_none());
+        assert!(matches!(
+            a.geometry_edit(),
+            Err(AppError::Model(newell_model::ModelError::MissingTarget(_)))
+        ));
         activate(&mut a, 10, 0);
         activate(&mut a, 18, 0);
         edit(&mut a, 20, "8.9", true, true);
         activate(&mut a, 17, 0);
-        assert!(a.commands.preview().unwrap().second_end.is_none());
+        assert!(
+            (match a.geometry_edit().unwrap() {
+                newell_model::geometry::DocumentEdit::ExtrudeInsert { spec, .. } =>
+                    Some(spec.inputs()),
+                _ => None,
+            })
+            .unwrap()
+            .second_end
+            .is_none()
+        );
         activate(&mut a, 17, 0);
         assert_eq!(value(&a, 20), 8.9);
         activate(&mut a, 19, 0);
+        activate(&mut a, 21, 0);
+        super::tests::click(&mut a, "Base Solid / Face 2");
+        super::tests::click(&mut a, "OK");
         activate(&mut a, 22, 0);
         edit(&mut a, 24, "2.4", false, true);
         activate(&mut a, 28, 0);
+        super::real_extrude_tests::pump(&mut a, &wake).unwrap();
         let spec = committed(&a);
         assert!(spec.second_end.is_none());
         assert!(spec.end_offset.is_none());
@@ -3909,6 +5759,13 @@ mod numeric_binding_tests {
             .get_mut(&field(4))
             .unwrap()
             .quantity = Quantity::Length(Length::millimetres(exact).unwrap());
+        a.numeric_inputs
+            .as_mut()
+            .unwrap()
+            .values
+            .get_mut(&field(4))
+            .unwrap()
+            .initial_placeholder = false;
         let projection = a.numeric_inputs.as_ref().unwrap().project().unwrap();
         a.shell
             .as_mut()
@@ -4132,15 +5989,25 @@ mod numeric_binding_tests {
     }
     #[test]
     fn depth_expression_is_evaluated_and_invalid_source_is_not_accepted() {
-        let mut a = app();
+        let (mut a, wake) = super::real_extrude_tests::runtime_app().unwrap();
+        super::real_extrude_tests::open(&mut a);
+        super::real_extrude_tests::profile(&mut a);
         formula(&mut a, 4, "2mm + 3mm");
         assert_eq!(value(&a, 4), 5.);
         activate(&mut a, 28, 0);
+        super::real_extrude_tests::pump(&mut a, &wake).unwrap();
         assert!(matches!(
             committed(&a).depth,
-            newell_model::ParameterValue::Expression(_)
+            newell_model::ParameterValue::Bound(_)
         ));
-        assert_eq!(mm(&committed(&a).depth), 5.);
+        assert_eq!(
+            committed(&a)
+                .depth
+                .evaluate(a.document.document().parameters())
+                .unwrap()
+                .as_millimetres(),
+            5.
+        );
         let mut a = app();
         formula(&mut a, 4, "not-defined");
         assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
@@ -4367,5 +6234,1360 @@ mod numeric_binding_tests {
         let v = &a.numeric_inputs.as_ref().unwrap().values[&field(24)];
         assert_eq!(v.direction, Direction::Forward);
         assert_eq!(v.quantity.value_in(Unit::Millimetre).unwrap(), 2.4);
+    }
+}
+#[cfg(test)]
+mod navigation_widget_tests {
+    use super::*;
+    fn app() -> App {
+        let mut app = App::new();
+        let m = GridMetrics::from_k(2).unwrap();
+        app.last_size = PhysicalSize::new(656, 540);
+        app.shell = Some(ShellController::new(82, 30, m).unwrap());
+        app.sync_navigation_widgets();
+        app
+    }
+    #[test]
+    fn hollow_marker_centers_capture_and_empty_tile_pixels_pass_to_scene() {
+        let mut app = app();
+        let geometry = app.nav_geometry.clone().unwrap();
+        let tile = geometry.layout.tile.unwrap();
+        let empty = (tile.x + 1., tile.y + 1.);
+        assert!(geometry.hit(empty).is_none());
+        assert!(!geometry.reserves(empty));
+        assert!(app.navigation.visible(empty));
+        assert!(app.scene_navigation_at(empty));
+        for (direction, center) in geometry.caps() {
+            let point = (tile.x + center[0], tile.y + center[1]);
+            let expected = newell_ui::navigation_widgets::NavPart::Axis(
+                newell_ui::navigation_widgets::AxisCap::from_direction(direction).unwrap(),
+            );
+            assert_eq!(geometry.hit(point), Some(expected));
+            assert!(
+                app.navigation.visible(point),
+                "scene still renders beneath the marker"
+            );
+            assert!(!app.scene_navigation_at(point));
+            app.scene_pointer = Some(PhysicalPosition::new(point.0, point.1));
+            app.shell
+                .as_mut()
+                .unwrap()
+                .pointer_moved(Some(newell_ui::UiPoint {
+                    x: point.0 as u32,
+                    y: point.1 as u32,
+                }));
+            app.left_pressed();
+            assert!(app.pending_scene_click.is_none());
+            assert!(!app.navigation.primary_orbit_pending());
+            assert!(app.nav_interaction.active());
+            assert_eq!(
+                app.nav_interaction
+                    .release(Some(&geometry), point, app.navigation.revision()),
+                Some(direction)
+            );
+        }
+        assert!(app.navigation.begin_primary_orbit(empty, 1., true));
+        let (_, center) = geometry.caps()[0];
+        assert!(
+            app.scene_navigation_at((tile.x + center[0], tile.y + center[1])),
+            "an existing scene capture keeps ownership"
+        );
+    }
+    #[test]
+    fn reserved_press_never_arms_scene_selection_and_fps_recompose_keeps_capture() {
+        let mut app = app();
+        let g = app.nav_geometry.as_ref().unwrap();
+        let tile = g.layout.tile.unwrap();
+        let p = g
+            .caps()
+            .into_iter()
+            .find_map(|(d, c)| {
+                let p = (tile.x + c[0], tile.y + c[1]);
+                (g.hit(p)
+                    == Some(newell_ui::navigation_widgets::NavPart::Axis(
+                        newell_ui::navigation_widgets::AxisCap::from_direction(d).unwrap(),
+                    )))
+                .then_some(p)
+            })
+            .unwrap();
+        app.scene_pointer = Some(PhysicalPosition::new(p.0, p.1));
+        app.shell
+            .as_mut()
+            .unwrap()
+            .pointer_moved(Some(newell_ui::UiPoint {
+                x: p.0 as u32,
+                y: p.1 as u32,
+            }));
+        let camera = app.navigation.camera();
+        let generation = app.nav_generation;
+        app.left_pressed();
+        assert!(app.nav_interaction.active());
+        assert!(app.pending_scene_click.is_none());
+        assert!(!app.navigation.primary_orbit_pending());
+        assert_eq!(app.navigation.camera(), camera);
+        app.sync_navigation_widgets();
+        assert_eq!(app.nav_generation, generation);
+        assert!(matches!(
+            app.nav_interaction,
+            NavInteraction::Pressed { .. }
+        ));
+        app.nav_interaction.advance((p.0 + 9., p.1));
+        assert!(
+            app.nav_interaction
+                .release(app.nav_geometry.as_ref(), p, app.navigation.revision())
+                .is_none()
+        );
+        assert_eq!(app.navigation.camera(), camera);
+    }
+    #[test]
+    fn menu_open_blocks_widget_and_changes_only_ui_occlusion() {
+        let mut app = app();
+        let camera = app.navigation.camera();
+        let update = app
+            .shell
+            .as_mut()
+            .unwrap()
+            .key(newell_ui::ShellKey::Alt('v'));
+        app.apply(update);
+        assert!(!app.shell.as_ref().unwrap().scene_input_enabled());
+        assert!(!app.nav_ui_masks.is_empty());
+        assert_eq!(app.navigation.camera(), camera);
+    }
+    fn point_at_positive_cap(app: &mut App) -> (f64, f64) {
+        let g = app.nav_geometry.as_ref().unwrap();
+        let t = g.layout.tile.unwrap();
+        let p = g
+            .caps()
+            .into_iter()
+            .find_map(|(d, c)| {
+                let cap = newell_ui::navigation_widgets::AxisCap::from_direction(d).unwrap();
+                let p = (t.x + c[0], t.y + c[1]);
+                (cap.positive
+                    && g.hit(p) == Some(newell_ui::navigation_widgets::NavPart::Axis(cap)))
+                .then_some(p)
+            })
+            .unwrap();
+        app.scene_pointer = Some(PhysicalPosition::new(p.0, p.1));
+        app.shell
+            .as_mut()
+            .unwrap()
+            .pointer_moved(Some(newell_ui::UiPoint {
+                x: p.0 as u32,
+                y: p.1 as u32,
+            }));
+        app.sync_navigation_widgets();
+        assert!(app.nav_hover.is_some());
+        p
+    }
+    #[test]
+    fn marker_hover_is_controller_owned_and_recomputed_without_pointer_motion() {
+        let mut app = app();
+        let p = point_at_positive_cap(&mut app);
+        let pointer = app.scene_pointer;
+        let before = app.nav_geometry.as_ref().unwrap().basis;
+        app.navigation
+            .align_view(newell_ui::navigation_widgets::ViewDirection::new([0, 0, 1]).unwrap());
+        app.sync_navigation_widgets();
+        assert_ne!(before, app.nav_geometry.as_ref().unwrap().basis);
+        assert_eq!(app.scene_pointer, pointer);
+        let expected = app
+            .nav_geometry
+            .as_ref()
+            .unwrap()
+            .hit(p)
+            .and_then(|part| match part {
+                newell_ui::navigation_widgets::NavPart::Axis(cap) => Some(cap),
+                _ => None,
+            });
+        assert_eq!(app.nav_hover, expected);
+        point_at_positive_cap(&mut app);
+        app.native_resizing = true;
+        app.sync_navigation_widgets();
+        assert_eq!(app.nav_hover, None);
+        app.native_resizing = false;
+        app.sync_navigation_widgets();
+        assert!(app.nav_hover.is_some());
+        app.scene_pointer = None;
+        app.sync_navigation_widgets();
+        assert_eq!(app.nav_hover, None);
+    }
+    #[test]
+    fn marker_hover_clears_on_menu_hide_press_and_scene_capture() {
+        let mut app = app();
+        let p = point_at_positive_cap(&mut app);
+        app.nav_interaction.press(
+            app.nav_geometry.as_ref().unwrap(),
+            p,
+            1.,
+            app.navigation.revision(),
+        );
+        app.sync_navigation_widgets();
+        assert_eq!(app.nav_hover, None);
+        app.nav_interaction
+            .release(app.nav_geometry.as_ref(), p, app.navigation.revision());
+        app.sync_navigation_widgets();
+        assert!(app.nav_hover.is_some());
+        let v = app.navigation.camera().viewport;
+        assert!(app.navigation.begin_primary_orbit(
+            (f64::from(v.x + v.width / 2), f64::from(v.y + v.height / 2)),
+            1.,
+            true
+        ));
+        app.sync_navigation_widgets();
+        assert_eq!(app.nav_hover, None);
+        app.navigation.cancel();
+        app.sync_navigation_widgets();
+        assert!(app.nav_hover.is_some());
+        let update = app
+            .shell
+            .as_mut()
+            .unwrap()
+            .key(newell_ui::ShellKey::Alt('v'));
+        app.apply(update);
+        assert_eq!(app.nav_hover, None);
+        for _ in 0..8 {
+            app.shell.as_mut().unwrap().key(newell_ui::ShellKey::Down);
+        }
+        let update = app.shell.as_mut().unwrap().key(newell_ui::ShellKey::Enter);
+        app.apply(update);
+        assert!(!app.shell.as_ref().unwrap().shell().view_panel_visible(3));
+        assert!(app.nav_geometry.as_ref().unwrap().layout.tile.is_none());
+        assert_eq!(app.nav_hover, None);
+    }
+}
+
+#[cfg(test)]
+mod real_extrude_tests {
+    use super::*;
+    use newell_ui::{EditKey, ShellKey, UiPoint, WidgetId};
+    use std::sync::mpsc;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    #[test]
+    fn dead_worker_keeps_the_document_and_explicit_ok_rebuilds_in_a_new_lifetime() -> TestResult {
+        let (mut app,wake)=runtime_app()?;
+        open(&mut app);profile(&mut app);depth(&mut app,"#Depth := 2mm",true);pump(&mut app,&wake)?;
+        let source=app.document.document().clone();let version=app.document.version();let token=app.document.geometry_token();let events=app.document.subscribe();
+        let bindings=app.numeric_inputs.as_ref().ok_or("inputs")?.bindings.clone();
+        app.geometry.as_ref().ok_or("runtime")?.worker.stop_for_test()?;
+        wake.recv_timeout(Duration::from_secs(10))?;
+        assert!(!app.geometry.as_ref().ok_or("runtime")?.worker.is_alive());
+        let update=app.drain_worker_reply();app.apply(update);
+        app.poll_document_projection(Instant::now(),ProjectionTrigger::Notification);
+        assert_eq!(app.document.document(),&source);assert_eq!(app.document.version(),version);assert_eq!(app.document.geometry_token(),token);assert_eq!(events.try_iter().count(),0);
+        assert!(app.scene_available);
+        activate(&mut app,28,0);pump(&mut app,&wake)?;
+        assert_eq!(app.geometry.as_ref().ok_or("runtime")?.epoch,2);
+        assert!(app.geometry.as_ref().ok_or("runtime")?.worker.is_alive());
+        assert_eq!(app.document.revision(),version.revision+1);assert_eq!(app.document.document().features().len(),2);assert_eq!(events.try_iter().count(),1);
+        let newell_model::Feature::Extrude(extrude)=&app.document.document().features()[1].1 else {return Err("missing Extrude".into());};
+        let newell_model::ExtentSpec::Blind{depth:newell_model::ParameterValue::Bound(parameter),..}=extrude.spec.extent else {return Err("lost binding".into());};
+        assert!(bindings.values().any(|id|*id==parameter));
+        assert_eq!(app.document.geometry_token().ok_or("token")?.worker_epoch(),2);
+        Ok(())
+    }
+    #[test]
+    fn successful_current_geometry_clears_the_prior_visible_error() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        let source = app.document.document().clone();
+        let version = app.document.version();
+        let events = app.document.subscribe();
+        let text = |app: &App| -> String {
+            app.shell
+                .as_ref()
+                .unwrap()
+                .grid()
+                .cells()
+                .iter()
+                .map(|cell| match cell.content {
+                    newell_ui::CellContent::Glyph(ch) => ch,
+                    _ => ' ',
+                })
+                .collect()
+        };
+        // Enter a real invalid value; an untouched placeholder is not accepted input.
+        depth(&mut app, "0", false);
+        pump(&mut app, &wake)?;
+        assert!(text(&app).contains("greater than zero"), "{}", text(&app));
+        assert_eq!(app.document.document(), &source);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(events.try_iter().count(), 0);
+        depth(&mut app, "2", false);
+        pump(&mut app, &wake)?;
+        assert!(!text(&app).contains("greater than zero"));
+        assert_eq!(app.document.document(), &source);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(events.try_iter().count(), 0);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert!(!text(&app).contains("greater than zero"));
+        assert_eq!(app.document.document().features().len(), 2);
+        assert_eq!(app.document.revision(), version.revision + 1);
+        assert_eq!(events.try_iter().count(), 1);
+        Ok(())
+    }
+    pub(super) fn pump(
+        app: &mut App,
+        wake: &mpsc::Receiver<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for _ in 0..64 {
+            let computing = app.geometry.as_ref().is_some_and(|runtime| {
+                runtime.bootstrap.is_some()
+                    || runtime
+                        .coordinator
+                        .as_ref()
+                        .is_some_and(|coordinator| coordinator.computing())
+            });
+            if computing {
+                wake.recv_timeout(Duration::from_secs(10))?;
+                let update = app.drain_worker_reply();
+                app.apply(update);
+                continue;
+            }
+            if let Some(deadline) = app.next_document_retry_deadline() {
+                let update =
+                    app.poll_document_projection(deadline, ProjectionTrigger::RetryDeadline);
+                app.apply(update);
+                continue;
+            }
+            return Ok(());
+        }
+        Err("geometry did not settle within bounded replies".into())
+    }
+    pub(super) fn runtime_app() -> Result<(App, mpsc::Receiver<()>), Box<dyn std::error::Error>> {
+        let mut app = super::tests::live_app();
+        if app
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.shell().command_open())
+        {
+            super::tests::click(&mut app, "Cancel");
+        }
+        let (sender, wake) = mpsc::channel();
+        app.enable_geometry_worker(move || {
+            let _ = sender.send(());
+        })?;
+        app.document.add_base_solid("Base Solid")?;
+        app.queue_geometry_bootstrap()?;
+        pump(&mut app, &wake)?;
+        assert!(app.scene_available);
+        assert_eq!(app.scene_bindings.len(), 1);
+        assert_eq!(app.document.document().features().len(), 1);
+        Ok((app, wake))
+    }
+    #[test]
+    fn entity_visibility_republishes_only_the_stable_entity_after_rename() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let base_feature = app.document.document().features()[0].0;
+        let base_entity = app
+            .document
+            .document()
+            .feature(base_feature)
+            .unwrap()
+            .outputs()[0];
+        let other_feature = app.document.add_base_solid("Other Solid")?;
+        app.queue_geometry_bootstrap()?;
+        pump(&mut app, &wake)?;
+        let other_entity = app
+            .document
+            .document()
+            .feature(other_feature)
+            .unwrap()
+            .outputs()[0];
+        assert_eq!(app.scene_bindings.len(), 2);
+
+        app.document
+            .rename_feature(base_feature, "Renamed Base Operation".into())?;
+        app.document
+            .rename_entity(base_entity, "Renamed Cube".into())?;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let geometry_generation = app.document.document().geometry_generation();
+        let original_geometry = app
+            .document
+            .document()
+            .entity_geometry(base_entity)
+            .ok_or("base solid geometry")?;
+        let original_measure = original_geometry.measure;
+        let original_entity_generation = original_geometry.generation;
+        let revision = app.document.revision();
+
+        // The Features control resolves the output ID after both labels change.
+        super::tests::click(&mut app, "■ Renamed Ba…");
+        assert_eq!(app.document.revision(), revision + 1);
+        assert!(
+            !app.document
+                .document()
+                .entity(base_entity)
+                .unwrap()
+                .visible()
+        );
+        assert!(
+            app.document
+                .document()
+                .entity(other_entity)
+                .unwrap()
+                .visible()
+        );
+        assert_eq!(app.document.document().features().len(), 2);
+        assert_eq!(
+            app.document.document().geometry_generation(),
+            geometry_generation
+        );
+        let hidden_geometry = app
+            .document
+            .document()
+            .entity_geometry(base_entity)
+            .ok_or("retained base geometry")?;
+        assert_eq!(hidden_geometry.generation, original_entity_generation);
+        assert_eq!(hidden_geometry.measure, original_measure);
+        let visible_bindings: Vec<_> = app
+            .scene_bindings
+            .iter()
+            .filter_map(|item| match item.binding {
+                crate::geometry_worker::SceneItemBinding::Committed { entity, .. } => Some(entity),
+                crate::geometry_worker::SceneItemBinding::Preview { .. } => None,
+            })
+            .collect();
+        assert_eq!(visible_bindings, [other_entity]);
+        assert!(app.navigation.scene().bounds().is_some());
+        assert!(app.scene_available);
+        let projection = app.shell.as_ref().unwrap().shell().tree_projection();
+        assert!(projection.elements.iter().any(|item| {
+            item.id.get() == base_entity.get() && !item.visible && item.name == "Renamed Cube"
+        }));
+        assert!(
+            projection
+                .elements
+                .iter()
+                .any(|item| { item.id.get() == other_entity.get() && item.visible })
+        );
+        assert!(projection.features.iter().any(|item| {
+            item.name == "Renamed Base Operation" && item.visibility == Some(false)
+        }));
+
+        super::tests::click(&mut app, "□ Renamed …");
+        assert!(
+            app.document
+                .document()
+                .entity(base_entity)
+                .unwrap()
+                .visible()
+        );
+        assert_eq!(
+            app.document.document().geometry_generation(),
+            geometry_generation
+        );
+        let restored_bindings: Vec<_> = app
+            .scene_bindings
+            .iter()
+            .filter_map(|item| match item.binding {
+                crate::geometry_worker::SceneItemBinding::Committed { entity, .. } => Some(entity),
+                crate::geometry_worker::SceneItemBinding::Preview { .. } => None,
+            })
+            .collect();
+        assert_eq!(restored_bindings, [base_entity, other_entity]);
+        assert!(
+            app.shell
+                .as_ref()
+                .unwrap()
+                .shell()
+                .tree_projection()
+                .features
+                .iter()
+                .any(|item| item.name == "Renamed Base Operation" && item.visibility == Some(true))
+        );
+        assert!(app.document.document().feature(base_feature).is_some());
+        assert!(app.scene_available);
+        Ok(())
+    }
+    fn activate(app: &mut App, key: u32, slot: u32) {
+        let shell = app.shell.as_mut().unwrap();
+        let base = shell.shell().extrude().depth_field_id().get() - 16;
+        let id = WidgetId::new(base + key * 4 + slot);
+        let point = (0..shell.grid().rows())
+            .find_map(|row| {
+                (0..shell.grid().cols())
+                    .find(|col| shell.grid().get(*col, row).unwrap().widget_id == Some(id))
+                    .map(|col| UiPoint {
+                        x: col * 4 + 2,
+                        y: row * 9 + 4,
+                    })
+            })
+            .expect("visible command control");
+        shell.pointer_moved(Some(point));
+        let update = shell.pointer_pressed();
+        shell.pointer_released();
+        app.finish_shell_input(update);
+    }
+    pub(super) fn open(app: &mut App) {
+        super::tests::click(app, "Create");
+        super::tests::click(app, "[E]xtrude");
+    }
+    fn depth(app: &mut App, source: &str, formula: bool) {
+        activate(app, 4, u32::from(formula));
+        super::tests::key(app, ShellKey::Edit(EditKey::SelectAll));
+        for character in source.chars() {
+            super::tests::key(app, ShellKey::Char(character));
+        }
+        super::tests::key(app, ShellKey::Enter);
+    }
+    pub(super) fn profile(app: &mut App) {
+        let version = app.document.version();
+        activate(app, 2, 0);
+        assert!(app.shell.as_ref().unwrap().shell().selection().is_open());
+        // Only the generic modal's real candidate row applies a supporting face.
+        super::tests::click(app, "Base Solid / Face 1");
+        super::tests::click(app, "OK");
+        assert_eq!(app.document.version(), version);
+        assert!(
+            app.command_inputs
+                .as_ref()
+                .unwrap()
+                .geometry_values
+                .get(&newell_ui::SelectionFieldKey {
+                    operation: ActionOperation::Extrude,
+                    key: 2
+                })
+                .is_some_and(|values| values.len() == 1)
+        );
+    }
+    #[test]
+    fn real_face_formula_preview_cancel_and_exactly_once_confirmation() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let baseline = app.document.document().clone();
+        let version = app.document.version();
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 5.25mm", true);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.document(), &baseline);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(app.scene_bindings.len(), 2);
+        assert!(app.scene_bindings.iter().any(|item| matches!(
+            item.binding,
+            crate::geometry_worker::SceneItemBinding::Preview { .. }
+        )));
+        assert_eq!(
+            app.geometry
+                .as_ref()
+                .unwrap()
+                .displayed_scene
+                .as_ref()
+                .unwrap()
+                .items
+                .len(),
+            2
+        );
+        activate(&mut app, 28, 1);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.document(), &baseline);
+        assert_eq!(app.scene_bindings.len(), 1);
+        assert_eq!(
+            app.geometry
+                .as_ref()
+                .unwrap()
+                .displayed_scene
+                .as_ref()
+                .unwrap()
+                .generation,
+            app.document.document().geometry_generation()
+        );
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 5.25mm", true);
+        pump(&mut app, &wake)?;
+        let before = app.document.revision();
+        let events = app.document.subscribe();
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), before + 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        assert_eq!(events.try_iter().count(), 1);
+        let (feature, operation) = app
+            .document
+            .document()
+            .features()
+            .last()
+            .ok_or("missing committed extrude")?;
+        let newell_model::Feature::Extrude(extrude) = operation else {
+            return Err("wrong feature".into());
+        };
+        let output = extrude.outputs[0];
+        let geometry = app
+            .document
+            .document()
+            .entity_geometry(output)
+            .ok_or("missing actual geometry")?;
+        assert!((geometry.measure - 5.25).abs() < 1e-6);
+        assert_eq!(geometry.face_count, 6);
+        let newell_model::ParameterValue::Bound(parameter) = extrude.spec.inputs().depth else {
+            return Err("formula identity was not retained".into());
+        };
+        assert_eq!(
+            app.document
+                .document()
+                .parameters()
+                .definition(parameter)
+                .map(|definition| definition.owner),
+            Some(newell_model::parameters::ParameterOwner::Feature(*feature))
+        );
+        assert!(app.scene_bindings.iter().all(|item| matches!(
+            item.binding,
+            crate::geometry_worker::SceneItemBinding::Committed { .. }
+        )));
+        assert!(app.selection.entities().contains(&output));
+        assert!(app.scene_available);
+        for _ in 0..3 {
+            app.finish_shell_input(Update::default());
+        }
+        assert_eq!(app.document.revision(), before + 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        Ok(())
+    }
+    fn properties(app: &mut App) {
+        super::tests::click(app, "Utilities");
+        super::tests::click(app, "Properties");
+    }
+    #[test]
+    fn committed_scene_upload_retries_once_then_suspends_without_repeating_the_commit() -> TestResult
+    {
+        for failures in [1, 2] {
+            let (mut app, wake) = runtime_app()?;
+            open(&mut app);
+            profile(&mut app);
+            depth(&mut app, "2", false);
+            pump(&mut app, &wake)?;
+            let revision = app.document.revision();
+            let events = app.document.subscribe();
+            app.fail_scene_publish = failures;
+            activate(&mut app, 28, 0);
+            assert_eq!(app.document.revision(), revision + 1);
+            let token = app.document.geometry_token();
+            let accepted = app.document.document().clone();
+            assert!(app.numeric_committed);
+            assert!(!app.scene_available);
+            let deadline = app
+                .pending_scene
+                .as_ref()
+                .and_then(|pending| pending.retry_at)
+                .ok_or("scene retry missing")?;
+            assert!(
+                !app.geometry
+                    .as_ref()
+                    .ok_or("runtime")?
+                    .coordinator
+                    .as_ref()
+                    .ok_or("coordinator")?
+                    .computing()
+            );
+            app.poll_document_projection(deadline, ProjectionTrigger::RetryDeadline);
+            if failures == 2 {
+                let pending = app.pending_scene.as_ref().ok_or("suspended scene")?;
+                assert_eq!(pending.attempts, 2);
+                assert!(pending.retry_at.is_none());
+                assert!(!app.scene_available);
+                assert!(app.numeric_delivery.is_some());
+                for _ in 0..3 {
+                    app.poll_document_projection(
+                        deadline + Duration::from_secs(1),
+                        ProjectionTrigger::Notification,
+                    );
+                }
+                assert_eq!(
+                    app.pending_scene
+                        .as_ref()
+                        .ok_or("suspended scene")?
+                        .attempts,
+                    2
+                );
+                assert_eq!(app.document.document(), &accepted);
+                app.poll_document_projection(
+                    deadline + Duration::from_secs(2),
+                    ProjectionTrigger::UserActivation,
+                );
+            }
+            assert!(app.pending_scene.is_none());
+            assert!(app.scene_available);
+            assert!(app.numeric_delivery.is_none());
+            assert_eq!(app.document.revision(), revision + 1);
+            assert_eq!(app.document.document(), &accepted);
+            assert_eq!(app.document.geometry_token(), token);
+            assert_eq!(events.try_iter().count(), 1);
+            assert_eq!(app.document.document().features().len(), 2);
+        }
+        Ok(())
+    }
+    #[test]
+    fn properties_replays_suffix_and_remaps_a_unique_cap_atomically() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 3mm", true);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let first = app.document.document().features().last().ok_or("first")?.0;
+        let first_output = app
+            .document
+            .document()
+            .feature(first)
+            .ok_or("first")?
+            .outputs()[0];
+        let cap = app
+            .document
+            .document()
+            .entity_geometry(first_output)
+            .ok_or("first geometry")?
+            .faces
+            .iter()
+            .find(|face| face.provenance == newell_model::geometry::FaceProvenance::EndCap)
+            .ok_or("end cap")?
+            .face;
+        open(&mut app);
+        activate(&mut app, 2, 0);
+        let update = app.shell.as_mut().ok_or("shell")?.scroll(i32::MIN);
+        app.finish_shell_input(update);
+        super::tests::click(&mut app, &format!("Extrude / Face {}", u64::from(cap) + 1));
+        super::tests::click(&mut app, "OK");
+        depth(&mut app, "2", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let second = app.document.document().features().last().ok_or("second")?.0;
+        let second_output = app
+            .document
+            .document()
+            .feature(second)
+            .ok_or("second")?
+            .outputs()[0];
+        let revision = app.document.revision();
+        let events = app.document.subscribe();
+        super::tests::click(&mut app, "Extrude");
+        properties(&mut app);
+        assert_eq!(
+            app.extrude_edit_target.map(|target| target.feature),
+            Some(first)
+        );
+        depth(&mut app, "#Depth := 4.5mm", true);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        assert_eq!(events.try_iter().count(), 1);
+        let document = app.document.document();
+        assert_eq!(document.features().len(), 3);
+        assert_eq!(
+            document.feature(first).ok_or("first")?.outputs(),
+            &[first_output]
+        );
+        assert_eq!(
+            document.feature(second).ok_or("second")?.outputs(),
+            &[second_output]
+        );
+        let first_geometry = document
+            .entity_geometry(first_output)
+            .ok_or("first geometry")?;
+        let second_geometry = document
+            .entity_geometry(second_output)
+            .ok_or("second geometry")?;
+        let newell_model::Feature::Extrude(extrude) = document.feature(second).ok_or("second")?
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(
+            extrude
+                .spec
+                .inputs()
+                .profile_geometry
+                .ok_or("profile")?
+                .support()
+                .generation,
+            first_geometry.generation
+        );
+        assert!(second_geometry.faces.iter().any(|face| face.provenance
+            == newell_model::geometry::FaceProvenance::EndCap
+            && (face.frame.origin[2] + 6.5).abs() < 1e-6));
+        assert!((first_geometry.measure - 4.5).abs() < 1e-6);
+        assert!((second_geometry.measure - 2.).abs() < 1e-6);
+        Ok(())
+    }
+    #[test]
+    fn properties_can_reopen_zero_output_remove_and_cancel_is_read_only() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "-2", false);
+        activate(&mut app, 1, 2);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let feature = app.document.document().features().last().ok_or("remove")?.0;
+        assert!(
+            app.document
+                .document()
+                .feature(feature)
+                .ok_or("remove")?
+                .outputs()
+                .is_empty()
+        );
+        let baseline = app.document.document().clone();
+        let revision = app.document.revision();
+        super::tests::click(&mut app, "Extrude");
+        properties(&mut app);
+        assert_eq!(
+            app.extrude_edit_target.map(|target| target.feature),
+            Some(feature)
+        );
+        depth(&mut app, "0.5", false);
+        pump(&mut app, &wake)?;
+        activate(&mut app, 28, 1);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.document(), &baseline);
+        assert_eq!(app.document.revision(), revision);
+        assert!(app.numeric_inputs.is_none());
+        assert!(app.extrude_edit_target.is_none());
+        super::tests::click(&mut app, "Extrude");
+        properties(&mut app);
+        depth(&mut app, "0.5", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        let output = app
+            .document
+            .document()
+            .feature(feature)
+            .ok_or("remove")?
+            .outputs()[0];
+        assert!(
+            (app.document
+                .document()
+                .entity_geometry(output)
+                .ok_or("remaining body")?
+                .measure
+                - 0.5)
+                .abs()
+                < 1e-6
+        );
+        Ok(())
+    }
+    #[test]
+    fn properties_close_and_editor_retry_once_without_opening_early_or_mutating_document()
+    -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "2", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let source = app.document.document().clone();
+        let events = app.document.subscribe();
+        super::tests::click(&mut app, "Extrude");
+        app.shell.as_mut().ok_or("shell")?.fail_properties_close = 1;
+        app.shell.as_mut().ok_or("shell")?.fail_properties_editor = 1;
+        properties(&mut app);
+        assert!(!app.shell.as_ref().ok_or("shell")?.shell().command_open());
+        assert!(app.extrude_edit_target.is_none());
+        assert_eq!(app.document.document(), &source);
+        assert!(app.next_document_retry_deadline().is_some());
+        pump(&mut app, &wake)?;
+        assert!(app.shell.as_ref().ok_or("shell")?.shell().command_open());
+        assert!(app.extrude_edit_target.is_some());
+        assert_eq!(app.last_properties_id, 1);
+        assert_eq!(app.document.document(), &source);
+        assert_eq!(events.try_iter().count(), 0);
+        let revision = app.document.revision();
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        Ok(())
+    }
+    #[test]
+    fn properties_editor_suspends_after_two_failures_and_rearms_without_a_model_change()
+    -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "2", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let source = app.document.document().clone();
+        let version = app.document.version();
+        let events = app.document.subscribe();
+        super::tests::click(&mut app, "Extrude");
+        app.shell.as_mut().ok_or("shell")?.fail_properties_editor = 2;
+        properties(&mut app);
+        let deadline = app.properties_retry_at.ok_or("first retry")?;
+        assert!(app.properties_editor.is_some());
+        app.deliver_properties(deadline, false);
+        assert!(app.properties_editor.is_some());
+        assert!(app.properties_retry_at.is_none());
+        assert_eq!(app.properties_attempts, 2);
+        for _ in 0..3 {
+            app.deliver_properties(deadline + Duration::from_secs(1), false);
+        }
+        assert!(!app.shell.as_ref().ok_or("shell")?.shell().command_open());
+        assert!(app.extrude_edit_target.is_none());
+        assert_eq!(app.document.version(), version);
+        assert_eq!(app.document.document(), &source);
+        app.deliver_properties(deadline + Duration::from_secs(2), true);
+        assert!(app.shell.as_ref().ok_or("shell")?.shell().command_open());
+        assert!(app.extrude_edit_target.is_some());
+        assert!(app.properties_editor.is_none());
+        assert_eq!(app.last_properties_id, 1);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(app.document.document(), &source);
+        assert_eq!(events.try_iter().count(), 0);
+        pump(&mut app, &wake)?;
+        Ok(())
+    }
+    #[test]
+    fn properties_pending_editor_is_discarded_when_its_source_document_is_replaced() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "2", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        super::tests::click(&mut app, "Extrude");
+        app.shell.as_mut().ok_or("shell")?.fail_properties_editor = 1;
+        properties(&mut app);
+        let deadline = app.properties_retry_at.ok_or("first retry")?;
+        assert!(app.properties_editor.is_some());
+        app.document.replace(newell_model::Document::default())?;
+        let version = app.document.version();
+        app.poll_document_projection(deadline, ProjectionTrigger::Notification);
+        app.deliver_properties(deadline + Duration::from_secs(1), true);
+        assert!(app.properties_editor.is_none());
+        assert!(app.properties_retry_at.is_none());
+        assert!(app.extrude_edit_target.is_none());
+        assert!(app.numeric_inputs.is_none());
+        assert!(!app.shell.as_ref().ok_or("shell")?.shell().command_open());
+        assert_eq!(app.document.version(), version);
+        assert!(app.document.document().features().is_empty());
+        pump(&mut app, &wake)?;
+        Ok(())
+    }
+    #[test]
+    fn properties_uses_focused_operation_preserves_bindings_and_replaces_one_feature() -> TestResult
+    {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 3.25mm", true);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let (feature, parameter) =
+            match app.document.document().features().last().ok_or("feature")? {
+                (id, newell_model::Feature::Extrude(extrude)) => {
+                    let newell_model::ParameterValue::Bound(parameter) =
+                        extrude.spec.inputs().depth
+                    else {
+                        return Err("binding".into());
+                    };
+                    (*id, parameter)
+                }
+                _ => return Err("wrong feature".into()),
+            };
+        super::tests::click(&mut app, "Extrude");
+        let base = app.document.document().features()[0].1.outputs()[0];
+        let update = app.handle_selection_request(SelectionRequest {
+            document: app.document.identity(),
+            op: SelectionOp::Replace,
+            entities: vec![base],
+        });
+        app.apply(update);
+        let revision = app.document.revision();
+        let events = app.document.subscribe();
+        properties(&mut app);
+        assert_eq!(
+            app.extrude_edit_target.map(|target| target.feature),
+            Some(feature)
+        );
+        assert_eq!(app.selection.entities(), &[base]);
+        let inputs = app.numeric_inputs.as_ref().ok_or("edit draft")?;
+        assert_eq!(
+            inputs.bindings.get(&newell_ui::NumericFieldKey {
+                operation: ActionOperation::Extrude,
+                key: 4
+            }),
+            Some(&parameter)
+        );
+        depth(&mut app, "#Depth := 4.5mm", true);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        assert_eq!(events.try_iter().count(), 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        assert_eq!(
+            app.document
+                .document()
+                .features()
+                .last()
+                .ok_or("edited feature")?
+                .0,
+            feature
+        );
+        let newell_model::Feature::Extrude(extrude) =
+            app.document.document().feature(feature).ok_or("feature")?
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(
+            extrude.spec.inputs().depth,
+            newell_model::ParameterValue::Bound(parameter)
+        );
+        assert!(
+            (app.document
+                .document()
+                .entity_geometry(extrude.outputs[0])
+                .ok_or("edited geometry")?
+                .measure
+                - 4.5)
+                .abs()
+                < 1e-6
+        );
+        Ok(())
+    }
+    #[test]
+    fn real_add_replaces_the_active_body_without_changing_its_historical_input() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let base = app.document.document().features()[0].1.outputs()[0];
+        let baseline = app
+            .document
+            .document()
+            .entity_geometry(base)
+            .cloned()
+            .ok_or("baseline geometry")?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "2", false);
+        activate(&mut app, 1, 1);
+        pump(&mut app, &wake)?;
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let document = app.document.document();
+        let newell_model::Feature::Extrude(extrude) =
+            &document.features().last().ok_or("feature")?.1
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(extrude.consumed_inputs(), &[base]);
+        let output = extrude.outputs[0];
+        assert_ne!(output, base);
+        assert!((document.entity_geometry(output).ok_or("result")?.measure - 3.).abs() < 1e-6);
+        assert_eq!(document.entity_geometry(base), Some(&baseline));
+        assert!(document.entity(base).is_some_and(|entity| entity.visible()));
+        assert_eq!(
+            document
+                .active_entities_at(None)?
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![output]
+        );
+        assert_eq!(app.scene_bindings.len(), 1);
+        assert_eq!(
+            app.shell
+                .as_ref()
+                .ok_or("shell")?
+                .shell()
+                .tree_projection()
+                .elements
+                .len(),
+            1
+        );
+        Ok(())
+    }
+    #[test]
+    fn real_remove_can_commit_zero_outputs_and_retains_its_operation() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let base = app.document.document().features()[0].1.outputs()[0];
+        let revision = app.document.revision();
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "-2", false);
+        activate(&mut app, 1, 2);
+        pump(&mut app, &wake)?;
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let document = app.document.document();
+        assert_eq!(app.document.revision(), revision + 1);
+        let newell_model::Feature::Extrude(extrude) =
+            &document.features().last().ok_or("feature")?.1
+        else {
+            return Err("wrong feature".into());
+        };
+        assert!(extrude.outputs.is_empty());
+        assert_eq!(extrude.consumed_inputs(), &[base]);
+        assert!(document.active_entities_at(None)?.is_empty());
+        assert!(document.entity(base).is_some());
+        assert!(app.scene_bindings.is_empty());
+        assert!(app.selection.entities().is_empty());
+        assert!(
+            app.shell
+                .as_ref()
+                .ok_or("shell")?
+                .shell()
+                .tree_projection()
+                .elements
+                .is_empty()
+        );
+        assert_eq!(document.features().len(), 2);
+        assert!(app.scene_available);
+        Ok(())
+    }
+    #[test]
+    fn real_surface_add_and_remove_replace_only_active_surface_versions() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        depth(&mut app, "3", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let first = app
+            .document
+            .document()
+            .features()
+            .last()
+            .ok_or("first sheet")?
+            .1
+            .outputs()[0];
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        depth(&mut app, "5", false);
+        activate(&mut app, 1, 1);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let newell_model::Feature::Extrude(add) = &app
+            .document
+            .document()
+            .features()
+            .last()
+            .ok_or("add sheet")?
+            .1
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(add.consumed_inputs(), &[first]);
+        let added = add.outputs[0];
+        assert!(
+            (app.document
+                .document()
+                .entity_geometry(added)
+                .ok_or("added geometry")?
+                .measure
+                - 20.)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(app.scene_bindings.len(), 2);
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        depth(&mut app, "2", false);
+        activate(&mut app, 1, 2);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let newell_model::Feature::Extrude(remove) = &app
+            .document
+            .document()
+            .features()
+            .last()
+            .ok_or("remove sheet")?
+            .1
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(remove.consumed_inputs(), &[added]);
+        let output = remove.outputs[0];
+        assert!(
+            (app.document
+                .document()
+                .entity_geometry(output)
+                .ok_or("remaining geometry")?
+                .measure
+                - 12.)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(app.scene_bindings.len(), 2);
+        assert_eq!(app.document.document().active_entities_at(None)?.len(), 2);
+        assert!(
+            !app.document
+                .document()
+                .active_entities_at(None)?
+                .contains(&first)
+        );
+        assert!(
+            !app.document
+                .document()
+                .active_entities_at(None)?
+                .contains(&added)
+        );
+        Ok(())
+    }
+    #[test]
+    fn real_surface_through_all_uses_hidden_active_sheet_geometry() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        depth(&mut app, "3", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let sheet = app
+            .document
+            .document()
+            .features()
+            .last()
+            .ok_or("sheet")?
+            .1
+            .outputs()[0];
+        app.document.set_entity_visibility(sheet, false)?;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let revision = app.document.revision();
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        activate(&mut app, 3, 1);
+        activate(&mut app, 3, 1);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        let document = app.document.document();
+        let output = document.features().last().ok_or("ThroughAll")?.1.outputs()[0];
+        assert!(
+            (document.entity_geometry(output).ok_or("geometry")?.measure - 12.000004).abs() < 1e-6
+        );
+        assert!(
+            document
+                .entity(sheet)
+                .is_some_and(|entity| !entity.visible())
+        );
+        assert_eq!(document.active_entities_at(None)?.len(), 3);
+        assert_eq!(app.scene_bindings.len(), 2);
+        Ok(())
+    }
+    #[test]
+    fn real_surface_new_publishes_uncapped_faces_and_surface_metadata() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let revision = app.document.revision();
+        open(&mut app);
+        activate(&mut app, 0, 1);
+        profile(&mut app);
+        depth(&mut app, "3", false);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision);
+        assert_eq!(app.scene_bindings.len(), 2);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        let document = app.document.document();
+        let output = document.features().last().ok_or("feature")?.1.outputs()[0];
+        let geometry = document.entity_geometry(output).ok_or("surface geometry")?;
+        assert_eq!(geometry.kind, newell_model::EntityKind::Surface);
+        assert_eq!(geometry.face_count, 4);
+        assert!((geometry.measure - 12.).abs() < 1e-6);
+        let scene = app
+            .geometry
+            .as_ref()
+            .and_then(|runtime| runtime.committed_scene.as_ref())
+            .ok_or("scene")?;
+        let item = scene
+            .items
+            .iter()
+            .find(|item| item.entity == output)
+            .ok_or("surface item")?;
+        assert!(
+            item.mesh
+                .normals()
+                .iter()
+                .all(|normal| normal[2].abs() < 1e-6)
+        );
+        assert!(app.selection.entities().contains(&output));
+        assert!(app.scene_available);
+        Ok(())
+    }
+    #[test]
+    fn real_up_to_face_and_formula_clearance_commit_exact_geometry() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "5", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        let document = app.document.document();
+        let output = document.features().last().ok_or("extrude")?.1.outputs()[0];
+        let target = document
+            .entity_geometry(output)
+            .ok_or("geometry")?
+            .faces
+            .iter()
+            .find(|face| {
+                (face.frame.origin[2] + 5.).abs() < 1e-7 && face.frame.normal[2].abs() > 0.99
+            })
+            .ok_or("termination face")?
+            .face;
+        let revision = app.document.revision();
+        open(&mut app);
+        profile(&mut app);
+        activate(&mut app, 3, 1);
+        activate(&mut app, 6, 0);
+        let update = app.shell.as_mut().ok_or("shell")?.scroll(i32::MIN);
+        app.finish_shell_input(update);
+        super::tests::click(
+            &mut app,
+            &format!("Extrude / Face {}", u64::from(target) + 1),
+        );
+        super::tests::click(&mut app, "OK");
+        activate(&mut app, 7, 0);
+        activate(&mut app, 29, 1);
+        for character in "#Clearance := 0.25mm".chars() {
+            super::tests::key(&mut app, ShellKey::Char(character));
+        }
+        super::tests::key(&mut app, ShellKey::Enter);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.revision(), revision + 1);
+        let document = app.document.document();
+        let feature = document.features().last().ok_or("new feature")?;
+        let newell_model::Feature::Extrude(extrude) = &feature.1 else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(
+            extrude.spec.inputs().termination,
+            newell_model::ExtrudeTermination::UpTo
+        );
+        assert!(extrude.spec.inputs().targets.main.is_some());
+        assert!(matches!(
+            extrude.spec.inputs().main_clearance,
+            Some(newell_model::ParameterValue::Bound(_))
+        ));
+        let geometry = document
+            .entity_geometry(extrude.outputs[0])
+            .ok_or("result geometry")?;
+        assert!((geometry.measure - 4.75).abs() < 1e-6);
+        assert_eq!(geometry.face_count, 6);
+        assert!(app.scene_available);
+        Ok(())
+    }
+    #[test]
+    fn missing_profile_cannot_create_a_feature_or_an_arbitrary_box() -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        let before = app.document.document().clone();
+        let token = app.document.geometry_token();
+        open(&mut app);
+        depth(&mut app, "7.0", false);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.document(), &before);
+        assert_eq!(app.document.geometry_token(), token);
+        assert_eq!(app.scene_bindings.len(), 1);
+        assert!(app.shell.as_ref().unwrap().shell().command_open());
+        Ok(())
     }
 }

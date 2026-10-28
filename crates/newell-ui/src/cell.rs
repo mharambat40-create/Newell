@@ -29,10 +29,12 @@ pub enum InkRole {
     Contour = 1,
     /// Explicit control affordances, independent of their interaction state.
     Action = 2,
+    /// Initial input placeholder text only; never a focus or disabled style.
+    Placeholder = 3,
 }
 
 impl InkRole {
-    /// Stable GPU palette index: Text = 0, Contour = 1, Action = 2.
+    /// Stable GPU palette index: Text = 0, Contour = 1, Action = 2, Placeholder = 3.
     #[must_use]
     pub const fn index(self) -> u32 {
         self as u32

@@ -13,7 +13,7 @@ use super::gpu_cell::{GPU_CELL_BYTES, cells_to_bytes};
 use super::theme::{Theme, UiPalette};
 use crate::glyph_atlas::GlyphAtlas;
 
-const UNIFORM_BYTES: usize = 96;
+const UNIFORM_BYTES: usize = 112;
 /// Vertices per cell quad (two triangles).
 const QUAD_VERTICES: u32 = 6;
 
@@ -356,6 +356,7 @@ fn uniform_bytes(floats: [f32; 8], cols: u32, srgb: bool, palette: UiPalette) ->
         newell_ui::InkRole::Text,
         newell_ui::InkRole::Contour,
         newell_ui::InkRole::Action,
+        newell_ui::InkRole::Placeholder,
     ] {
         for c in palette.foreground(ink) {
             bytes.extend_from_slice(&c.to_le_bytes());
@@ -372,7 +373,7 @@ mod color_tests {
     fn palette_uniform_has_exact_header_padding_and_aligned_inks() {
         let palette = UiPalette::new(Theme::Light, true);
         let bytes = uniform_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 42, true, palette);
-        assert_eq!(bytes.len(), 96);
+        assert_eq!(bytes.len(), 112);
         assert_eq!(&bytes[32..36], &42u32.to_le_bytes());
         assert_eq!(&bytes[36..40], &1u32.to_le_bytes());
         assert_eq!(&bytes[40..48], &[0; 8]);
@@ -380,6 +381,7 @@ mod color_tests {
             newell_ui::InkRole::Text,
             newell_ui::InkRole::Contour,
             newell_ui::InkRole::Action,
+            newell_ui::InkRole::Placeholder,
         ]
         .into_iter()
         .enumerate()
@@ -417,6 +419,15 @@ mod color_tests {
     #[test]
     #[ignore = "needs a GPU"]
     fn color_invalid_raw_gpu_role_falls_back_to_text() {
+        for format in [
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        ] {
+            check_placeholder_and_invalid_role(format);
+        }
+    }
+
+    fn check_placeholder_and_invalid_role(format: wgpu::TextureFormat) {
         use newell_ui::{CellContent, GridMetrics};
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter =
@@ -428,17 +439,21 @@ mod color_tests {
         )
         .unwrap();
         let atlas = GlyphAtlas::build(&font, GridMetrics::from_k(5).unwrap()).unwrap();
-        let mut overlay = UiOverlay::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, atlas);
-        let mut grid = CellGrid::new(2, 1).unwrap();
-        for x in 0..2 {
-            grid.get_mut(x, 0).unwrap().content = CellContent::Glyph('█');
+        let mut overlay = UiOverlay::new(&device, &queue, format, atlas);
+        let mut grid = CellGrid::new(4, 1).unwrap();
+        for x in 0..4 {
+            let cell = grid.get_mut(x, 0).unwrap();
+            cell.content = CellContent::Glyph('█');
+            if x >= 2 {
+                cell.ink = newell_ui::InkRole::Placeholder;
+            }
         }
         overlay.set_grid(&device, &queue, &grid);
         overlay.set_palette(&queue, UiPalette::new(Theme::Dark, true));
-        overlay.set_viewport(&queue, 40, 45);
+        overlay.set_viewport(&queue, 80, 45);
         queue.write_buffer(&overlay.cells, 12, &99u32.to_le_bytes());
         let size = wgpu::Extent3d {
-            width: 40,
+            width: 80,
             height: 45,
             depth_or_array_layers: 1,
         };
@@ -448,14 +463,14 @@ mod color_tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 256 * 45,
+            size: 512 * 45,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -484,7 +499,7 @@ mod color_tests {
                 buffer: &readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(256),
+                    bytes_per_row: Some(512),
                     rows_per_image: Some(45),
                 },
             },
@@ -496,9 +511,19 @@ mod color_tests {
             .map_async(wgpu::MapMode::Read, |result| result.unwrap());
         device.poll(wgpu::PollType::Wait).unwrap();
         let pixels = readback.slice(..).get_mapped_range();
-        for row in pixels.chunks(256) {
+        let mut text_peak = 0;
+        let mut placeholder_peak = 0;
+        for row in pixels.chunks(512) {
             assert_eq!(&row[..80], &row[80..160]);
+            assert_eq!(&row[160..240], &row[240..320]);
+            text_peak = text_peak.max(row[..80].chunks(4).map(|p| p[0]).max().unwrap());
+            placeholder_peak =
+                placeholder_peak.max(row[160..240].chunks(4).map(|p| p[0]).max().unwrap());
         }
-        assert!(pixels.contains(&255));
+        assert_eq!(text_peak, 255);
+        assert!(
+            (i16::from(placeholder_peak) - 205).abs() <= 1,
+            "{format:?}: {placeholder_peak}"
+        );
     }
 }

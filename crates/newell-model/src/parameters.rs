@@ -110,6 +110,31 @@ impl ParameterRegistry {
     pub const fn epoch(&self) -> u64 {
         self.epoch
     }
+    /// Checks a feature's active input owners independently from parameter-to-parameter edges.
+    ///
+    /// # Errors
+    /// Allows intrinsic inputs owned by this feature, rejects external owners at/after it.
+    pub fn validate_feature_inputs(
+        &self,
+        feature: FeatureId,
+        position: usize,
+        inputs: &BTreeSet<ParameterId>,
+        order: &BTreeMap<FeatureId, usize>,
+    ) -> Result<(), FormulaError> {
+        for input in inputs {
+            let definition = self
+                .definition(*input)
+                .ok_or_else(|| failure(FormulaErrorCode::MissingParameter))?;
+            match definition.owner {
+                ParameterOwner::Document => {}
+                ParameterOwner::Feature(owner) if owner == feature => {}
+                ParameterOwner::Feature(owner)
+                    if order.get(&owner).is_some_and(|owner| *owner < position) => {}
+                _ => return Err(failure(FormulaErrorCode::ForwardDependency)),
+            }
+        }
+        Ok(())
+    }
     /// Produces a fully evaluated candidate; feature positions include the private owner reservation.
     ///
     /// # Errors
@@ -226,10 +251,12 @@ impl ParameterRegistry {
                 roots
             }),
         )?;
-        candidate.epoch = candidate
-            .epoch
-            .checked_add(1)
-            .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        if candidate.definitions != self.definitions || candidate.names != self.names {
+            candidate.epoch = candidate
+                .epoch
+                .checked_add(1)
+                .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        }
         Ok(ParameterCandidate {
             registry: candidate,
             parameter: id,
@@ -269,10 +296,12 @@ impl ParameterRegistry {
                 roots
             }),
         )?;
-        candidate.epoch = candidate
-            .epoch
-            .checked_add(1)
-            .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        if candidate.definitions != self.definitions || candidate.names != self.names {
+            candidate.epoch = candidate
+                .epoch
+                .checked_add(1)
+                .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        }
         Ok(ParameterCandidate {
             registry: candidate,
             parameter: id,
@@ -304,10 +333,12 @@ impl ParameterRegistry {
         }
         candidate.names.insert(name.as_str().to_owned(), id);
         definition.name = Some(name);
-        candidate.epoch = candidate
-            .epoch
-            .checked_add(1)
-            .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        if candidate.definitions != self.definitions || candidate.names != self.names {
+            candidate.epoch = candidate
+                .epoch
+                .checked_add(1)
+                .ok_or_else(|| failure(FormulaErrorCode::TooComplex))?;
+        }
         Ok(ParameterCandidate {
             registry: candidate,
             parameter: id,
@@ -434,6 +465,24 @@ mod tests {
             source_edit: None,
             source_origins: None,
         }
+    }
+    #[test]
+    fn unchanged_definitions_keep_the_semantic_epoch() -> Result<(), FormulaError> {
+        let order = BTreeMap::new();
+        let candidate = ParameterRegistry::default()
+            .stage_edit(edit("#D := 12mm", ParameterOwner::Document), &order)?;
+        let id = candidate.parameter();
+        let registry = candidate.into_registry();
+        let mut same = edit("#D := 12mm", ParameterOwner::Document);
+        same.parameter = Some(id);
+        assert_eq!(registry.stage_edit(same, &order)?.registry(), &registry);
+        assert_eq!(
+            registry
+                .rename(id, ParameterName::new("D".into())?)?
+                .registry(),
+            &registry
+        );
+        Ok(())
     }
     #[test]
     fn local_ownership_is_not_an_edge_and_failures_are_atomic() -> Result<(), FormulaError> {

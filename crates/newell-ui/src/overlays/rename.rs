@@ -60,10 +60,17 @@ enum Slot {
     Cancel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameMode {
+    Rename,
+    EnterName,
+}
+
 /// The Rename modal state. Widget ids are `base_id` plus a fixed offset per control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenameModal {
     base_id: u32,
+    mode: NameMode,
     applied: String,
     draft: String,
     focus: Option<WidgetId>,
@@ -78,6 +85,7 @@ impl RenameModal {
     pub const fn new(base_id: u32) -> Self {
         Self {
             base_id,
+            mode: NameMode::Rename,
             applied: String::new(),
             draft: String::new(),
             focus: None,
@@ -127,6 +135,16 @@ impl RenameModal {
     /// opening an open modal, or one whose focus has not been synced away yet, keeps the
     /// earlier memory.
     pub fn open(&mut self, inter: &mut InteractionState, name: &str) {
+        self.open_mode(inter, name, NameMode::Rename);
+    }
+
+    /// Opens the Validation Operation Box with an empty name and display-only instruction.
+    pub fn open_enter_name(&mut self, inter: &mut InteractionState) {
+        self.open_mode(inter, "", NameMode::EnterName);
+    }
+
+    fn open_mode(&mut self, inter: &mut InteractionState, name: &str, mode: NameMode) {
+        self.mode = mode;
         let stale = inter.focused.is_some_and(|f| self.slot(f).is_some());
         if !self.is_open() && !stale {
             self.return_focus = inter.focused;
@@ -256,15 +274,30 @@ impl RenameModal {
         let inner = (SIZE.0 - 2) as usize;
         let mut canvas = Canvas::new(grid, rect);
 
-        let fill = "─".repeat(inner - TITLE.chars().count() - 1);
+        let title = if self.mode == NameMode::EnterName {
+            "Enter Name"
+        } else {
+            TITLE
+        };
+        let fill = "─".repeat(inner - title.chars().count() - 1);
         let title_end = canvas.contour(0, 0, "╭─", style, surface);
-        let title_end = canvas.text(title_end, 0, TITLE, style, surface);
+        let title_end = canvas.text(title_end, 0, title, style, surface);
         canvas.contour(title_end, 0, &format!("{fill}╮"), style, surface);
 
         canvas.contour(0, FIELD_ROW, "│", style, surface);
-        let shown = field_window(&self.draft, self.on_text());
+        let placeholder =
+            self.mode == NameMode::EnterName && self.draft.is_empty() && !self.on_text();
+        let shown = field_window(
+            if placeholder { "none" } else { &self.draft },
+            self.on_text(),
+        );
         canvas.contour(1, FIELD_ROW, "[", style, field);
         let end = canvas.text(2, FIELD_ROW, &shown, style, field);
+        if placeholder {
+            for x in 2..6 {
+                canvas.ink_at(x, FIELD_ROW, crate::InkRole::Placeholder);
+            }
+        }
         canvas.contour(end, FIELD_ROW, "]", style, field);
         canvas.contour(SIZE.0 - 1, FIELD_ROW, "│", style, surface);
 
@@ -415,6 +448,68 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn enter_name_placeholder_is_presentation_only_and_rename_none_is_real() {
+        let mut m = RenameModal::new(BASE);
+        let mut inter = InteractionState::default();
+        inter.set_focused(Some(id(5)));
+        m.open_enter_name(&mut inter);
+        assert_eq!((m.text(), m.draft()), ("", ""));
+        let (g, at) = compose(&m);
+        assert_eq!(lines(&g, at)[1], "│[▏                      ]│");
+        assert!(lines(&g, at)[0].contains("Enter Name"));
+        assert_eq!(
+            g.get(at.col() + 2, at.row() + 1).unwrap().ink,
+            crate::InkRole::Text
+        );
+        m.key(ModalKey::Enter);
+        assert!(m.is_open());
+        m.key(ModalKey::Tab);
+        let (g, at) = compose(&m);
+        assert_eq!(lines(&g, at)[1], "│[none                   ]│");
+        for x in 2..6 {
+            assert_eq!(
+                g.get(at.col() + x, at.row() + 1).unwrap().ink,
+                crate::InkRole::Placeholder
+            );
+        }
+        assert_eq!(
+            g.get(at.col() + 1, at.row() + 1).unwrap().ink,
+            crate::InkRole::Contour
+        );
+        m.key(ModalKey::Enter);
+        assert!(m.is_open());
+        m.activate(m.id(TEXT));
+        assert_eq!(m.draft(), "");
+        typed(&mut m, "none");
+        m.key(ModalKey::Tab);
+        m.activate(m.id(TEXT));
+        assert_eq!(m.draft(), "none");
+        m.key(ModalKey::Enter);
+        assert_eq!(m.text(), "none");
+        m.open(&mut inter, "none");
+        let (g, at) = compose(&m);
+        assert_eq!(lines(&g, at)[1], "│[none▏                  ]│");
+        for x in 2..7 {
+            assert_eq!(
+                g.get(at.col() + x, at.row() + 1).unwrap().ink,
+                crate::InkRole::Text
+            );
+        }
+        for _ in 0..4 {
+            m.key(ModalKey::Backspace);
+        }
+        m.key(ModalKey::Tab);
+        let (g, at) = compose(&m);
+        assert!(!lines(&g, at)[1].contains("none"));
+        m.key(ModalKey::Enter);
+        assert!(m.is_open());
+        m.key(ModalKey::Escape);
+        assert_eq!(m.text(), "none");
+        m.sync_focus(&mut inter);
+        assert_eq!(inter.focused, Some(id(5)));
     }
 
     #[test]

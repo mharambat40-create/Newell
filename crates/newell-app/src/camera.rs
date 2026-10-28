@@ -495,6 +495,91 @@ impl Camera {
         let half = ((self.vertical_fov * 0.5).tan() * aspect.min(1.0)).atan();
         (1.1 * radius.max(MIN_DISTANCE) / half.sin()).max(MIN_DISTANCE)
     }
+    /// Selects a deterministic named view without reframing the focal target.
+    pub fn align_view(&mut self, direction: newell_ui::navigation_widgets::ViewDirection) -> bool {
+        let (r, u, f, heading) = Self::named_view_basis(direction);
+        if length(sub(self.basis().2, f)) < 1e-12
+            && length(sub(self.basis().1, u)) < 1e-12
+            && length(sub(self.last_heading, heading)) < 1e-12
+        {
+            return false;
+        }
+        let target = self.target();
+        self.orientation = Quaternion::from_basis(r, u, f).same_sign(self.orientation);
+        self.last_heading = heading;
+        self.eye = sub(target, scale(f, self.focal_distance));
+        true
+    }
+
+    /// Selects a named view while keeping a contextual world point at its current pixel.
+    /// Perspective depth at the pivot is preserved so the apparent zoom stays constant.
+    pub fn align_view_about(
+        &mut self,
+        direction: newell_ui::navigation_widgets::ViewDirection,
+        pivot: Vec3,
+        screen_point: (f64, f64),
+    ) -> bool {
+        let (right, up, forward, heading) = Self::named_view_basis(direction);
+        if length(sub(self.basis().2, forward)) < 1e-12
+            && length(sub(self.basis().1, up)) < 1e-12
+            && length(sub(self.last_heading, heading)) < 1e-12
+        {
+            return false;
+        }
+        let old_forward = self.basis().2;
+        let depth = dot(sub(pivot, self.eye), old_forward);
+        let viewport = self.viewport;
+        if !finite(pivot)
+            || !screen_point.0.is_finite()
+            || !screen_point.1.is_finite()
+            || viewport.width == 0
+            || viewport.height == 0
+            || !depth.is_finite()
+            || depth <= MIN_DISTANCE
+        {
+            return false;
+        }
+        let x = 2.0 * (screen_point.0 - f64::from(viewport.x)) / f64::from(viewport.width)
+            - 1.0
+            - self.lens_shift[0];
+        let y = 1.0
+            - 2.0 * (screen_point.1 - f64::from(viewport.y)) / f64::from(viewport.height)
+            - self.lens_shift[1];
+        let aspect = f64::from(viewport.width) / f64::from(viewport.height);
+        let (offset_x, offset_y) = if self.perspective {
+            let half_height = (self.vertical_fov * 0.5).tan() * depth;
+            (x * half_height * aspect, y * half_height)
+        } else {
+            let half_height = self.orthographic_height * 0.5;
+            (x * half_height * aspect, y * half_height)
+        };
+        let eye = sub(
+            sub(sub(pivot, scale(forward, depth)), scale(right, offset_x)),
+            scale(up, offset_y),
+        );
+        if !finite(eye) {
+            return false;
+        }
+        self.orientation = Quaternion::from_basis(right, up, forward).same_sign(self.orientation);
+        self.last_heading = heading;
+        self.eye = eye;
+        true
+    }
+
+    fn named_view_basis(
+        direction: newell_ui::navigation_widgets::ViewDirection,
+    ) -> (Vec3, Vec3, Vec3, Vec3) {
+        let f = scale(direction.normal(), -1.);
+        let heading = if f[0].abs() + f[1].abs() < 1e-12 {
+            [0., 1., 0.]
+        } else {
+            unit([f[0], f[1], 0.])
+        };
+        let r = unit(cross(heading, WORLD_UP));
+        let u = cross(r, f);
+        (r, u, f, heading)
+    }
+
     /// Aligns to the closest principal view, preserving the derived focal target.
     pub fn normal_to_axis(&mut self) {
         let target = self.target();

@@ -166,6 +166,49 @@ fn orbit_press_on_hit_or_miss_never_reframes_and_pivot_stays_at_its_pixel() {
 }
 
 #[test]
+fn named_widget_views_keep_the_contextual_model_pivot_at_its_pixel() {
+    let direction = newell_ui::navigation_widgets::ViewDirection::new([1, 1, 1]).unwrap();
+    for perspective in [false, true] {
+        let mut nav = nav();
+        nav.set_perspective(perspective);
+        assert!(nav.begin(DragKind::Pan, (400., 300.), 1., true));
+        assert!(nav.navigate((600., 390.)));
+        let before = nav.camera();
+        let center = (400., 300.);
+        let pivot = nav
+            .pick(center)
+            .map(|hit| hit.point)
+            .or_else(|| nav.scene().visible_bounds(before, &[]).map(|b| b.centre()))
+            .unwrap();
+        let pixel_before = before.project(pivot).unwrap();
+        assert!(
+            (pixel_before.0 - 400.).abs() > 1. || (pixel_before.1 - 300.).abs() > 1.,
+            "the fixture must exercise a panned, off-center model"
+        );
+        let projection = before.perspective;
+        let focal_distance = before.focal_distance;
+        let orthographic_height = before.orthographic_height;
+        let fov = before.vertical_fov;
+        let lens_shift = before.lens_shift;
+
+        assert!(nav.align_view(direction));
+        let after = nav.camera();
+        pixel(after.project(pivot).unwrap(), pixel_before);
+        assert_eq!(after.perspective, projection);
+        assert_eq!(after.focal_distance, focal_distance);
+        assert_eq!(after.orthographic_height, orthographic_height);
+        assert_eq!(after.vertical_fov, fov);
+        assert_eq!(after.lens_shift, lens_shift);
+        assert!(!nav.align_view(direction));
+        assert_eq!(
+            nav.camera(),
+            after,
+            "repeating the same orientation must be stable"
+        );
+    }
+}
+
+#[test]
 fn primary_drag_orbits_only_after_the_click_drag_threshold() {
     let mut nav = nav();
     let start = (400.0, 300.0);
@@ -1291,4 +1334,34 @@ fn secondary_scroll_rejects_ui_starts_and_invalid_deltas() {
         Some(false)
     );
     assert_eq!(nav.camera(), before);
+}
+
+#[test]
+fn origin_references_never_enter_model_bounds_fitting_or_picking() {
+    let mut empty = Navigation::new(camera());
+    empty.set_layout(viewport(), vec![]);
+    for perspective in [false, true] {
+        empty.set_perspective(perspective);
+        assert!(empty.snapshot().is_some());
+        assert!(empty.scene().bounds().is_none());
+        assert!(empty.pick((400., 300.)).is_none());
+        assert!(!empty.fit());
+    }
+    let mut n = nav();
+    let bounds = n.scene().bounds();
+    for perspective in [false, true] {
+        n.set_perspective(perspective);
+        for steps in [-8., 4., 12.] {
+            n.zoom((400., 300.), steps, None, true);
+            let before = n.camera();
+            let revision = n.scene().revision();
+            assert!(n.snapshot().is_some());
+            assert_eq!(n.camera(), before);
+            assert_eq!(n.scene().bounds(), bounds);
+            assert_eq!(n.scene().revision(), revision);
+        }
+        n.fit();
+        close(n.camera().target(), [0.5; 3]);
+        assert_eq!(n.scene().bounds(), bounds);
+    }
 }

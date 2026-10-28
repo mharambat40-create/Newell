@@ -175,16 +175,16 @@ fn viewport_cells_stay_empty_for_the_clear_colour() {
 }
 
 #[test]
-fn nav_cube_is_a_static_unowned_frame() {
+fn navigation_placeholder_cells_are_empty_and_unowned() {
     let mut s = shell();
     // At 82x25 the open panel moves up over the cube's last row; close it first.
     click_text(&mut s, "Cancel");
     let g = s.compose().unwrap();
-    assert_eq!(find(&g, "NavCube"), Some((73, 5)));
-    assert_eq!(glyph(&g, 72, 5), '╭');
-    assert_eq!(glyph(&g, 80, 5), '╮');
-    assert_eq!(glyph(&g, 72, 8), '╰');
-    assert_eq!(glyph(&g, 80, 8), '╯');
+    assert_eq!(find(&g, "NavCube"), None);
+    assert_eq!(glyph(&g, 72, 5), ' ');
+    assert_eq!(glyph(&g, 80, 5), ' ');
+    assert_eq!(glyph(&g, 72, 8), ' ');
+    assert_eq!(glyph(&g, 80, 8), ' ');
     for row in 5..9 {
         for col in 72..81 {
             assert_eq!(g.get(col, row).unwrap().widget_id, None, "({col}, {row})");
@@ -581,7 +581,7 @@ fn navigation_trees_start_as_in_the_reference() {
     assert!(text(&g, 8).contains("│ ├ Extrude_Base"));
     assert!(text(&g, 9).contains("│ ├ ■ Sketch_Hole"));
     assert!(text(&g, 10).contains("│ ╰╴Extrude_Cut_Center║"));
-    assert!(text(&g, 12).contains("│ ────────────────────║"));
+    assert!(text(&g, 12).contains("│ ─────────────────── ║"));
     assert!(text(&g, 20).contains("╰[+]Construct"));
     assert!(!has(&g, "Plane_XY"), "Construct starts collapsed");
 }
@@ -1159,10 +1159,10 @@ fn numeric_field_edits_with_caret_limits_sign_and_commit() {
     let (col, row) = depth_field(&s);
     let g = s.compose().unwrap();
     assert!(has(&g, "[+|0.0 mm       ☰]") && !has(&g, "▏"));
-    // Clicking the field starts the edit; the caret appears in its own cell at the end.
+    // Clicking an initial placeholder starts an empty editor with the caret at zero.
     assert!(click_at(&mut s, col, row));
     assert!(s.editing_field().is_some());
-    assert!(has(&s.compose().unwrap(), "[+|0.0▏ mm      ☰]"));
+    assert!(has(&s.compose().unwrap(), "[+|▏ mm         ☰]"));
     keys(&mut s, &[ShellKey::Edit(EditKey::SelectAll)]);
     type_str(&mut s, "12345678.99");
     assert!(
@@ -1231,8 +1231,8 @@ fn numeric_editing_owns_keys_and_menus_end_it() {
     );
     assert!(s.menu_bar.is_active());
     assert!(
-        has(&s.compose().unwrap(), "[+|0.0 mm       ☰]"),
-        "5 was refused"
+        has(&s.compose().unwrap(), "[+|5.0 mm       ☰]"),
+        "typing replaces the initial placeholder before menu blur"
     );
 }
 
@@ -1388,6 +1388,17 @@ fn focus_and_press_draw_no_marker() {
     for _ in 0..40 {
         s.key(ShellKey::Tab);
         assert!(s.interaction().focused.is_some());
+        if s.numeric_editing() {
+            let edited = s.compose().unwrap();
+            assert!(has(&edited, "▏"), "numeric focus enters an editor (§5.13)");
+            for (a, b) in edited.cells().iter().zip(base.cells()) {
+                assert_eq!(
+                    (a.widget_id, a.shared_border),
+                    (b.widget_id, b.shared_border)
+                );
+            }
+            s.key(ShellKey::Escape);
+        }
         assert_eq!(layer(&s.compose().unwrap()), layer(&base));
     }
     let hit = hit_at(&base, 4, 10);
@@ -1848,7 +1859,10 @@ fn color_mixed_action_box_values_and_guides_keep_roles_and_geometry() {
     let (sign, row) = find(&on, "+|").unwrap();
     assert_eq!(on.get(sign, row).unwrap().ink, Action);
     assert_eq!(on.get(sign + 1, row).unwrap().ink, Contour);
-    assert_eq!(on.get(sign + 2, row).unwrap().ink, Text);
+    assert_eq!(
+        on.get(sign + 2, row).unwrap().ink,
+        crate::InkRole::Placeholder
+    );
     let (p, r) = find(&on, "[Select…").unwrap();
     assert_eq!(on.get(p, r).unwrap().ink, Action);
     assert_eq!(on.get(p + 1, r).unwrap().ink, Text);
@@ -1962,6 +1976,7 @@ fn numeric_projection(s: &ShellState, session: u64) -> crate::NumericProjection 
             .numeric_descriptors()
             .iter()
             .map(|d| crate::NumericFieldView {
+                initial_placeholder: true,
                 field: d.field,
                 magnitude: d.default_magnitude.to_owned(),
                 direction: crate::NumericDirection::Forward,
@@ -2006,6 +2021,7 @@ fn numeric_confirmation_attempts_are_distinct_exact_and_checked() {
 fn numeric_projections_are_qualified_and_do_not_replace_active_raw_or_emit_edits() {
     let mut s = shell();
     let mut p = numeric_projection(&s, 1);
+    p.fields[0].initial_placeholder = false;
     p.fields[0].magnitude = "1.2".into();
     p.fields[0].formula = "wall + 7.5 mm".into();
     s.set_numeric_projection(p.clone()).unwrap();
@@ -2085,4 +2101,72 @@ fn numeric_active_contracts_match_every_extrude_and_revolve_branch() {
             }
         }
     }
+}
+
+#[test]
+fn view_navigator_remembers_kind_and_only_composes_child_when_visible() {
+    use crate::navigation_widgets::NavigatorKind;
+    let mut s = shell();
+    click_text(&mut s, "View");
+    assert_eq!(s.navigator_kind(), NavigatorKind::Gizmo);
+    assert!(has(&s.compose().unwrap(), "╰╴   ◀ Gizmo  ▶"));
+    assert!(s.apply_menu(MenuResult::Cycled(
+        MenuAction::new(data::ACT_VIEW_NAVIGATOR_KIND),
+        crate::CycleStep::Next
+    )));
+    assert_eq!(s.navigator_kind(), NavigatorKind::Cube);
+    assert!(has(&s.compose().unwrap(), "╰╴   ◀  Cube  ▶"));
+    s.apply_menu(MenuResult::Toggled(MenuAction::new(ACT_VIEW_CHECK + 3)));
+    assert!(!has(&s.compose().unwrap(), "◀  Cube  ▶"));
+    assert_eq!(s.navigator_kind(), NavigatorKind::Cube);
+    s.apply_menu(MenuResult::Toggled(MenuAction::new(ACT_VIEW_CHECK + 3)));
+    assert!(has(&s.compose().unwrap(), "╰╴   ◀  Cube  ▶"));
+}
+
+#[test]
+fn keyboard_arrival_and_formula_activation_keep_distinct_placeholder_transitions() {
+    let mut s = shell();
+    s.set_numeric_projection(numeric_projection(&s, 1)).unwrap();
+    let field = WidgetId::new(ACTION_BASE + 4 * crate::action_box::KEY_SLOTS);
+    let grid = s.compose().unwrap();
+    let ring = s.focus_ring(&grid);
+    let index = ring.iter().position(|id| *id == field).unwrap();
+    let previous = ring[(index + ring.len() - 1) % ring.len()];
+    s.interaction.set_focused(Some(previous));
+    s.key(ShellKey::Tab);
+    assert_eq!(s.editing_field(), Some(field));
+    assert!(has(&s.compose().unwrap(), "[+|▏ mm         ☰]"));
+    s.key(ShellKey::Enter);
+    assert!(!s.numeric_editing());
+    assert!(s.take_numeric_requests().is_empty());
+    let formula = WidgetId::new(field.get() + 1);
+    s.activate_widget(formula);
+    let request = s.take_numeric_formula_open().unwrap();
+    assert_eq!(request.through_sequence, 0);
+    assert!(!s.numeric_editing());
+    assert!(s.take_numeric_requests().is_empty());
+}
+
+#[test]
+fn untouched_empty_editor_does_not_add_a_confirmation_barrier() {
+    let mut s = shell();
+    s.set_numeric_projection(numeric_projection(&s, 1)).unwrap();
+    let field = WidgetId::new(ACTION_BASE + 4 * crate::action_box::KEY_SLOTS);
+    s.activate_widget(field);
+    let ok = WidgetId::new(ACTION_BASE + K_ACTIONS * crate::action_box::KEY_SLOTS);
+    let grid = s.compose().unwrap();
+    let hit = (0..grid.rows())
+        .find_map(|row| {
+            (0..grid.cols())
+                .find(|col| grid.get(*col, row).unwrap().widget_id == Some(ok))
+                .map(|col| hit_at(&grid, col, row).unwrap())
+        })
+        .unwrap();
+    s.click(Some(hit));
+    assert!(s.take_numeric_requests().is_empty());
+    let confirm = s.take_numeric_confirm().unwrap();
+    assert_eq!(confirm.through_sequence, 0);
+    assert_eq!(s.extrude.status, ExtrudeStatus::Editing);
+    assert!(s.finish_numeric_confirm(confirm, false).unwrap());
+    assert_eq!(s.extrude.status, ExtrudeStatus::Editing);
 }

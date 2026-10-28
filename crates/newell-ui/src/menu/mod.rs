@@ -156,6 +156,8 @@ pub struct MenuCheckbox<'a> {
 /// (`UI Scale ◀ 100% ▶`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuCycle<'a> {
+    /// Optional compact selector width, in cells; None fills the row as before.
+    pub control_width: Option<u32>,
     pub action: MenuAction,
     pub label: &'a str,
     pub values: &'a [&'a str],

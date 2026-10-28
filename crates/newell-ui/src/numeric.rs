@@ -92,6 +92,8 @@ pub struct NumericRequest {
 /// Rounded presentation of one accepted app-owned value; not a storage representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NumericFieldView {
+    /// True only for an untouched command default, never inferred from its magnitude.
+    pub initial_placeholder: bool,
     /// Semantic destination within its enclosing projection.
     pub field: NumericFieldKey,
     /// Magnitude only, with one fractional digit and no prefix or suffix.
@@ -155,7 +157,7 @@ pub(crate) const fn field(operation: ActionOperation, key: u32) -> NumericFieldD
         _ => NumericUnit::Millimetres,
     };
     let directional = match operation {
-        Extrude => key != 24,
+        Extrude => !matches!(key, 24 | 29),
         Revolve => matches!(key, 6 | 10 | 19),
         Sweep => key == 7,
         Boolean => true,
@@ -176,7 +178,7 @@ pub(crate) const fn field(operation: ActionOperation, key: u32) -> NumericFieldD
 pub(crate) fn descriptors(operation: ActionOperation) -> Vec<NumericFieldDescriptor> {
     use ActionOperation::*;
     let keys: &[u32] = match operation {
-        Extrude => &[4, 11, 15, 20, 24],
+        Extrude => &[4, 11, 15, 20, 24, 29],
         Revolve => &[6, 10, 14, 19, 24],
         Loft => &[5, 9],
         Sweep => &[7, 9],
@@ -194,7 +196,7 @@ pub(crate) fn descriptor(operation: ActionOperation, key: u32) -> Option<Numeric
 mod tests {
     use super::*;
     #[test]
-    fn descriptor_inventory_has_fifteen_unique_fields() {
+    fn descriptor_inventory_preserves_fifteen_fields_and_adds_unsigned_clearance() {
         let ops = [
             ActionOperation::Extrude,
             ActionOperation::Revolve,
@@ -204,11 +206,14 @@ mod tests {
         ];
         let fields: Vec<_> = ops
             .into_iter()
-            .flat_map(|op| (0..=24).filter_map(move |key| descriptor(op, key)))
+            .flat_map(|op| (0..=29).filter_map(move |key| descriptor(op, key)))
             .collect();
-        assert_eq!(fields.len(), 15);
+        assert_eq!(fields.len(), 16);
         let unique: std::collections::BTreeSet<_> = fields.iter().map(|d| d.field).collect();
-        assert_eq!(unique.len(), 15);
+        assert_eq!(unique.len(), 16);
+        let clearance = descriptor(ActionOperation::Extrude, 29).expect("approved clearance");
+        assert!(!clearance.directional);
+        assert_eq!(clearance.unit, NumericUnit::Millimetres);
     }
 }
 

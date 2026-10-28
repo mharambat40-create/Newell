@@ -223,7 +223,10 @@ fn live_empty_and_single_operation_have_end_cursor_and_empty_groups() {
         assert!(has_text(&s, "Construct"));
         assert!(!has_text(&s, "Solid Bodies"));
         assert!(!has_text(&s, "Hub_Features"));
-        assert_eq!(has_children(&s.nodes[0], 0), count != 0);
+        assert!(
+            has_children(&s.nodes[0], 0),
+            "Origin is always the first child"
+        );
         assert!(!has_children(&s.nodes[1], 1));
         s.drag_separator(Separator::Playhead, 5, 5);
         assert_eq!(
@@ -254,6 +257,7 @@ fn live_grouping_filters_output_stream_without_sorting_or_hiding_entities() {
         |(id, source, ordinal, group, name, visible)| ElementTreeItem {
             id: OpaqueTreeId::new(id),
             source_feature: OpaqueTreeId::new(source),
+            seeded: false,
             output_ordinal: ordinal,
             group,
             name: name.into(),
@@ -471,6 +475,7 @@ fn invalid_projection_is_rejected_without_changing_any_state() {
             p.elements.push(ElementTreeItem {
                 id: OpaqueTreeId::new(1),
                 source_feature: OpaqueTreeId::new(999),
+                seeded: false,
                 output_ordinal: 0,
                 group: ElementGroup::Bodies,
                 name: "bad".into(),
@@ -519,7 +524,10 @@ fn nested_separator_uses_ancestor_guides_and_collapse_retains_internal_anchor() 
     assert!(!has_text(&s, "operation_0"));
     assert!(!s.tree_lines(Tree::Features).contains(&Line::Playhead));
     // The current content-based width cap leaves six label cells in this fixture.
-    assert!(has_text(&s, "last_… ───║"));
+    assert!(
+        has_text(&s, " ─── "),
+        "the inline stroke keeps three cells and a trailing blank"
+    );
 }
 
 #[test]
@@ -577,11 +585,140 @@ fn collapse_distinguishes_internal_last_child_gap_from_external_folder_boundary(
 }
 
 #[test]
+fn collapsed_inline_playhead_keeps_trailing_blank_at_narrow_and_wide_widths() {
+    let mut projection = live_projection(1);
+    projection.features[0].depth = 2;
+    projection.features.insert(
+        0,
+        FeatureTreeItem {
+            id: FeatureNodeId::Folder(OpaqueTreeId::new(10)),
+            name: "Hub_Features".into(),
+            depth: 1,
+            visibility: None,
+        },
+    );
+    projection.features.insert(
+        0,
+        FeatureTreeItem {
+            id: FeatureNodeId::Operation(OpaqueTreeId::new(1)),
+            name: "Sketch_Profile_Main_Long".into(),
+            depth: 1,
+            visibility: None,
+        },
+    );
+    let gap = projection
+        .placed_gap(GapDisplayLocation::AfterSubtree(FeatureNodeId::Operation(
+            OpaqueTreeId::new(0),
+        )))
+        .unwrap();
+    let mut shell = live_shell(projection);
+    let folder = shell
+        .projection
+        .target(TreeTargetKind::Folder(OpaqueTreeId::new(10)));
+    shell.expanded.insert(folder);
+    shell.set_playhead(gap).unwrap();
+    shell.rebuild_tree_slots();
+    assert!(click_tree_marker(&mut shell, folder));
+    assert_eq!(shell.inline_playhead_host(), Some(folder));
+
+    for (width, expected_strokes) in [(14, 3), (30, 8)] {
+        shell.set_nav_width(width);
+        let grid = shell.compose().unwrap();
+        let frame = shell.layout().features;
+        assert_eq!(
+            frame.width(),
+            width,
+            "requested width should fit the projected tree cap"
+        );
+        let y = (frame.row()..frame.bottom() as u32)
+            .find(|row| {
+                (frame.col()..frame.right() as u32).any(|col| {
+                    grid.get(col, *row).unwrap().widget_id == Some(WidgetId::new(PLAYHEAD_ID))
+                })
+            })
+            .expect("inline stroke is present on the collapsed folder row");
+        let row: Vec<_> = (frame.col()..frame.col() + width)
+            .map(|col| grid.get(col, y).unwrap())
+            .collect();
+        assert_eq!(
+            row.len(),
+            width as usize,
+            "cols={} frame={frame:?}",
+            grid.cols()
+        );
+        let glyph = |cell: &&crate::Cell| match cell.content {
+            CellContent::Glyph(ch) => ch,
+            CellContent::Empty => ' ',
+        };
+        let text: String = row.iter().map(glyph).collect();
+        assert_eq!(row[0].content, CellContent::Glyph('║'));
+        assert_eq!(
+            row[usize::try_from(width - 1).unwrap()].content,
+            CellContent::Glyph('║')
+        );
+        assert!(
+            matches!(
+                row[usize::try_from(width - 2).unwrap()].content,
+                CellContent::Empty | CellContent::Glyph(' ')
+            ),
+            "row={text:?} width={width}"
+        );
+        assert_ne!(
+            row[usize::try_from(width - 2).unwrap()].widget_id,
+            Some(WidgetId::new(PLAYHEAD_ID))
+        );
+        let trailing_hit = hit_test(
+            UiPoint {
+                x: (frame.col() + width - 2) * 6 + 3,
+                y: y * 10 + 5,
+            },
+            metrics(),
+            &grid,
+        )
+        .unwrap();
+        assert_ne!(shell.drag_at(&trailing_hit), Some(Separator::Playhead));
+        assert!(
+            text.ends_with(&format!("{} ║", "─".repeat(expected_strokes))),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(if width == 14 {
+                "… ─── "
+            } else {
+                "Hub_Features ──────── "
+            }),
+            "{text:?}"
+        );
+        let stroke_start = text.chars().position(|ch| ch == '─').unwrap();
+        assert!(
+            stroke_start + expected_strokes <= row.len(),
+            "width={width} strokes={expected_strokes} text={text:?} start={stroke_start} row={}",
+            row.len()
+        );
+        for offset in 0..expected_strokes {
+            assert_eq!(
+                row[stroke_start + offset].widget_id,
+                Some(WidgetId::new(PLAYHEAD_ID)),
+                "stroke cells alone are draggable"
+            );
+        }
+    }
+}
+
+#[test]
 fn refresh_scroll_anchor_skips_surviving_rows_hidden_by_new_folders() {
     for case in 0..3 {
         let mut shell = live_shell(live_projection(45));
         let anchor = if case == 2 { 40 } else { 12 };
-        shell.tree_scroll[Tree::Features.slot()] = anchor + 1; // Features root precedes operations.
+        shell.tree_scroll[Tree::Features.slot()] = shell
+            .tree_lines(Tree::Features)
+            .iter()
+            .position(|line| {
+                matches!(line, Line::Node(row)
+                if shell.nodes[Tree::Features.slot()][row.index].target.kind
+                    == TreeTargetKind::Operation(OpaqueTreeId::new(anchor as u64)))
+            })
+            .unwrap();
         assert!(shell.tree_focus.is_none());
         let mut projection = shell.projection.clone();
         let folder_index = if case == 1 {
@@ -697,7 +834,7 @@ fn every_state_keeps_the_reference_vocabulary_of_glyphs() {
     let line = |s: &str| format!("║{s:<23}║");
     assert_eq!(rows[3], line(" ├[+] Hub_Features"));
     assert_eq!(rows[4], line(" ├ Fillet_Inner"));
-    assert_eq!(rows[5], line(" │ ────────────────────"));
+    assert_eq!(rows[5], line(" │ ─────────────────── "));
     assert_eq!(rows[17], line(" ├ Surfaces(0)"));
     assert_eq!(rows[18], line(" ╰[-]Construct"));
     assert_eq!(rows[19], line("   ╰╴□ Plane_XY"));
@@ -901,13 +1038,33 @@ fn rows_of(s: &ShellState, from: u32, to: u32) -> Vec<String> {
     (from..=to).map(|r| panel(&g, r)).collect()
 }
 
-const PLAYHEAD_ROW: &str = "║ │ ────────────────────║";
+const PLAYHEAD_ROW: &str = "║ │ ─────────────────── ║";
 
 #[test]
 fn the_playhead_is_a_line_between_two_features_and_not_a_node() {
     let s = ref_shell();
     let g = s.compose().unwrap();
     assert_eq!(panel(&g, 12), PLAYHEAD_ROW);
+    let row: Vec<_> = panel(&g, 12).chars().collect();
+    assert_eq!(
+        row[23], ' ',
+        "one interior cell remains blank before border"
+    );
+    assert_eq!(row[24], '║', "the pane retains its border glyph");
+    assert_ne!(
+        g.get(23, 12).unwrap().widget_id,
+        Some(WidgetId::new(PLAYHEAD_ID))
+    );
+    assert_ne!(
+        g.get(24, 12).unwrap().widget_id,
+        Some(WidgetId::new(PLAYHEAD_ID))
+    );
+    for col in 4..23 {
+        assert_eq!(
+            g.get(col, 12).unwrap().widget_id,
+            Some(WidgetId::new(PLAYHEAD_ID))
+        );
+    }
     let hit = hit_at(&g, 10, 12).unwrap();
     assert_eq!(hit.widget_id, Some(WidgetId::new(PLAYHEAD_ID)));
     assert_eq!(
@@ -1347,6 +1504,7 @@ fn color_live_projection_guides_names_scrolling_and_replacement_keep_semantics()
         projection.elements.push(ElementTreeItem {
             id: OpaqueTreeId::new(index as u64),
             source_feature: OpaqueTreeId::new(0),
+            seeded: false,
             output_ordinal: index,
             group,
             name: format!("output_{index}"),
