@@ -6,6 +6,9 @@
 // (at your option) any later version.
 //! Geometric kernel boundary over BrepKIT (Model layer, `ARCHITECTURE.md` §1, §5.1).
 
+#[cfg(test)]
+mod sketch;
+
 mod boolean;
 mod extrude;
 pub use boolean::NewellSurfaceResult;
@@ -454,5 +457,252 @@ impl NewellMesh {
             });
         }
         Ok((mesh, ranges))
+    }
+}
+
+#[cfg(test)]
+mod sketch_feasibility {
+    use super::*;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::{
+        Topology,
+        builder::{make_circle_edge, make_polygon_wire},
+        face::{Face, FaceSurface},
+        wire::{OrientedEdge, Wire},
+    };
+    /// Uses the very same face-copy/transform/extrude/validate arena method as
+    /// M4's worker. The source is exact native topology, including a circular hole.
+    #[test]
+    fn m50_real_m4_extrusion_preserves_oriented_holed_profiles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for shift in [0., 1e9] {
+            for normal in [Vec3::new(0., 0., 1.), Vec3::new(0., 0., -1.)] {
+                let mut topology = Topology::new();
+                let wire = make_polygon_wire(
+                    &mut topology,
+                    &[
+                        Point3::new(shift, shift, 0.),
+                        Point3::new(shift + 10., shift, 0.),
+                        Point3::new(shift + 10., shift + 10., 0.),
+                        Point3::new(shift, shift + 10., 0.),
+                    ],
+                    1e-7,
+                )?;
+                let circle = make_circle_edge(
+                    &mut topology,
+                    Point3::new(shift + 5., shift + 5., 0.),
+                    Vec3::new(0., 0., 1.),
+                    0.1,
+                    1e-7,
+                )?;
+                let hole =
+                    topology.add_wire(Wire::new(vec![OrientedEdge::new(circle, false)], true)?);
+                let face = topology.add_face(Face::new(
+                    wire,
+                    vec![hole],
+                    FaceSurface::Plane { normal, d: 0. },
+                ));
+                let solid = brepkit_operations::extrude::extrude(
+                    &mut topology,
+                    face,
+                    Vec3::new(0., 0., 1.),
+                    1.,
+                )?;
+                let mut arena = NewellGeometry::new();
+                arena.topology = topology;
+                let source = arena.insert(solid)?;
+                let profile = arena
+                    .profile_faces(source)?
+                    .into_iter()
+                    .find(|f| f.wires.len() == 2)
+                    .ok_or("lost hole")?;
+                let began = std::time::Instant::now();
+                let output = arena.extrude_face(source, profile.face, None, 0., 2.)?;
+                let expected = (100. - std::f64::consts::PI * 0.01) * 2.;
+                assert!((arena.volume(output)? - expected).abs() < 1e-5);
+                println!(
+                    "M4_HOLE,shift={shift:e},normal={normal:?},volume={:e},arena_extrude_us={:.3}",
+                    arena.volume(output)?,
+                    began.elapsed().as_secs_f64() * 1e6
+                );
+                let caps = arena.profile_faces(output)?;
+                assert!(caps.iter().filter(|f| f.wires.len() == 2).count() >= 2);
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn m50_real_m4_arena_preserves_cubic_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let profile = NewellProfile::closed_cubic([[0., 0.], [2., 3.], [4., 2.], [6., 0.]])?;
+        let seed = profile.extrude([0., 0., 1.], 1.)?;
+        let mut arena = NewellGeometry::new();
+        arena.topology = seed.topology;
+        let source = arena.insert(seed.solid)?;
+        let face = arena
+            .profile_faces(source)?
+            .into_iter()
+            .find(|f| f.frame.normal[2].abs() > 0.9)
+            .ok_or("missing cubic cap")?;
+        let result = arena.extrude_face(source, face.face, None, 0., 2.)?;
+        assert!((arena.volume(result)? - 15.).abs() < 1e-6);
+        Ok(())
+    }
+    /// The font outlines remain exact polynomial edges. Known O/B/8 contours
+    /// provide independent hole counts; this is not a general region extractor.
+    #[test]
+    fn m50_exact_font_contours_survive_real_m4_extrusion() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use ab_glyph::{Font, FontRef, OutlineCurve};
+        use brepkit_math::{nurbs::curve::NurbsCurve, quadrature::gauss_legendre_points};
+        use brepkit_topology::{
+            edge::{Edge, EdgeCurve},
+            vertex::Vertex,
+        };
+        let font = FontRef::try_from_slice(include_bytes!("../../../assets/FiraCode-Regular.ttf"))?;
+        let scale = 10. / f64::from(font.units_per_em().ok_or("missing font units")?);
+        // Independent fontTools 4.60.1 AreaPen integration of the bundled glyf data.
+        for (character, expected_holes, raw_area) in [
+            ('O', 1, 563343.5416666667),
+            ('B', 2, 637555.),
+            ('8', 2, 589791.541666667),
+        ] {
+            let outline = font
+                .outline(font.glyph_id(character))
+                .ok_or("missing glyph")?;
+            let mut contours: Vec<Vec<Vec<ab_glyph::Point>>> = Vec::new();
+            let mut active = Vec::new();
+            let mut synthetic_closures = 0;
+            for c in outline.curves {
+                // ab_glyph appends a closing line even when the final segment
+                // already reaches its start. Keep this parser artifact out of topology.
+                if matches!(c, OutlineCurve::Line(a,b) if a==b) {
+                    synthetic_closures += 1;
+                    continue;
+                }
+                let points = match c {
+                    OutlineCurve::Line(a, b) => vec![a, b],
+                    OutlineCurve::Quad(a, b, c) => vec![a, b, c],
+                    OutlineCurve::Cubic(a, b, c, d) => vec![a, b, c, d],
+                };
+                for point in &points {
+                    assert!((point.x * 2.).fract() == 0. && (point.y * 2.).fract() == 0.);
+                }
+                if let Some(previous) = active.last().and_then(|p: &Vec<ab_glyph::Point>| p.last())
+                {
+                    assert_eq!(*previous, points[0]);
+                }
+                active.push(points);
+                if active.first().and_then(|p| p.first()) == active.last().and_then(|p| p.last()) {
+                    contours.push(std::mem::take(&mut active));
+                }
+            }
+            println!(
+                "FONT_OUTLINE,{character},contours={},synthetic_zero_length_closures={synthetic_closures}",
+                contours.len()
+            );
+            assert!(active.is_empty());
+            assert_eq!(contours.len(), expected_holes + 1);
+            let mut topology = Topology::new();
+            let mut loops = Vec::new();
+            for contour in contours {
+                let start = contour[0][0];
+                let anchor = topology.add_vertex(Vertex::new(
+                    Point3::new(f64::from(start.x) * scale, f64::from(start.y) * scale, 0.),
+                    1e-7,
+                ));
+                let mut previous = anchor;
+                let mut edges = Vec::new();
+                let mut twice_area = 0.;
+                let count = contour.len();
+                for (i, points) in contour.into_iter().enumerate() {
+                    let degree = points.len() - 1;
+                    let controls: Vec<_> = points
+                        .iter()
+                        .map(|p| Point3::new(f64::from(p.x) * scale, f64::from(p.y) * scale, 0.))
+                        .collect();
+                    let end = if i + 1 == count {
+                        anchor
+                    } else {
+                        topology
+                            .add_vertex(Vertex::new(*controls.last().ok_or("empty control")?, 1e-7))
+                    };
+                    let curve = NurbsCurve::new(
+                        degree,
+                        std::iter::repeat_n(0., degree + 1)
+                            .chain(std::iter::repeat_n(1., degree + 1))
+                            .collect(),
+                        controls,
+                        vec![1.; degree + 1],
+                    )?;
+                    for q in gauss_legendre_points(8) {
+                        let t = (q.x + 1.) / 2.;
+                        let p = curve.evaluate(t);
+                        let derivative = curve.derivatives(t, 1)[1];
+                        twice_area += q.w * (p.x() * derivative.y() - p.y() * derivative.x()) / 2.;
+                    }
+                    let edge =
+                        topology.add_edge(Edge::new(previous, end, EdgeCurve::NurbsCurve(curve)));
+                    edges.push(OrientedEdge::new(edge, true));
+                    previous = end;
+                }
+                loops.push((twice_area / 2., edges));
+            }
+            loops.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+            let area = loops[0].0.abs() - loops.iter().skip(1).map(|p| p.0.abs()).sum::<f64>();
+            assert!(area > 0.);
+            assert!((area - raw_area * scale * scale).abs() < 1e-10);
+            let mut wires = Vec::new();
+            for (i, (signed_area, mut edges)) in loops.into_iter().enumerate() {
+                if (signed_area > 0.) != (i == 0) {
+                    edges = edges
+                        .into_iter()
+                        .rev()
+                        .map(|e| OrientedEdge::new(e.edge(), false))
+                        .collect();
+                }
+                wires.push(topology.add_wire(Wire::new(edges, true)?));
+            }
+            let face = topology.add_face(Face::new(
+                wires[0],
+                wires[1..].to_vec(),
+                FaceSurface::Plane {
+                    normal: Vec3::new(0., 0., 1.),
+                    d: 0.,
+                },
+            ));
+            let seed = brepkit_operations::extrude::extrude(
+                &mut topology,
+                face,
+                Vec3::new(0., 0., 1.),
+                1.,
+            )?;
+            let mut arena = NewellGeometry::new();
+            arena.topology = topology;
+            let source = arena.insert(seed)?;
+            let profile = arena
+                .profile_faces(source)?
+                .into_iter()
+                .find(|f| f.wires.len() == expected_holes + 1)
+                .ok_or("missing font cap holes")?;
+            let began = std::time::Instant::now();
+            let output = arena.extrude_face(source, profile.face, None, 0., 2.)?;
+            let duration = began.elapsed();
+            let volume = arena.volume(output)?;
+            assert!((volume - area * 2.).abs() < 1e-6);
+            assert_eq!(
+                arena
+                    .profile_faces(output)?
+                    .iter()
+                    .filter(|f| f.wires.len() == expected_holes + 1)
+                    .count(),
+                2
+            );
+            println!(
+                "M4_FONT,{character},holes={expected_holes},area={area:e},volume={volume:e},expected_volume={:e},arena_extrude_us={:.3},coordinates=exact_half_font_units_promoted_before_scaling",
+                area * 2.,
+                duration.as_secs_f64() * 1e6
+            );
+        }
+        Ok(())
     }
 }

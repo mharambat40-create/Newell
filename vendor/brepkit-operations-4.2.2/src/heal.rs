@@ -1,0 +1,1955 @@
+//! Topology healing: repair common defects in B-Rep models.
+//!
+//! Provides repair operations for common geometry issues encountered
+//! in imported CAD files and boolean results.
+
+use std::collections::{HashMap, HashSet};
+
+use brepkit_math::tolerance::Tolerance;
+use brepkit_math::vec::{Point3, Vec3};
+use brepkit_topology::Topology;
+use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
+use brepkit_topology::face::{Face, FaceId, FaceSurface};
+use brepkit_topology::shell::Shell;
+use brepkit_topology::solid::SolidId;
+use brepkit_topology::vertex::VertexId;
+use brepkit_topology::wire::{OrientedEdge, Wire};
+
+/// Combined result of [`repair_solid`]: validation before, healing, validation after.
+#[derive(Debug, Clone)]
+pub struct RepairReport {
+    /// Validation issues found before healing.
+    pub before: crate::validate::ValidationReport,
+    /// Healing actions performed.
+    pub healing: HealingReport,
+    /// Validation issues remaining after healing.
+    pub after: crate::validate::ValidationReport,
+}
+
+impl RepairReport {
+    /// Whether the solid is valid after repair (no remaining errors).
+    #[must_use]
+    pub fn is_valid_after(&self) -> bool {
+        self.after.is_valid()
+    }
+
+    /// Total number of repairs performed.
+    #[must_use]
+    pub fn total_repairs(&self) -> usize {
+        self.healing.vertices_merged
+            + self.healing.degenerate_edges_removed
+            + self.healing.orientations_fixed
+            + self.healing.wire_gaps_closed
+            + self.healing.small_faces_removed
+            + self.healing.duplicate_faces_removed
+    }
+}
+
+/// Validate, heal, and re-validate a solid in one pass.
+///
+/// This is the top-level convenience function for repairing imported models.
+/// It chains: `validate_solid` → `heal_solid` → `validate_solid`, returning
+/// all three reports so the caller can see what was found, what was fixed,
+/// and what remains.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn repair_solid(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<RepairReport, crate::OperationsError> {
+    let before = crate::validate::validate_solid(topo, solid)?;
+    let healing = heal_solid(topo, solid, tolerance)?;
+    let after = crate::validate::validate_solid(topo, solid)?;
+
+    Ok(RepairReport {
+        before,
+        healing,
+        after,
+    })
+}
+
+/// Summary of repairs performed by [`heal_solid`].
+#[derive(Debug, Default, Clone)]
+pub struct HealingReport {
+    /// Number of coincident vertices merged.
+    pub vertices_merged: usize,
+    /// Number of degenerate edges removed.
+    pub degenerate_edges_removed: usize,
+    /// Number of face orientations fixed.
+    pub orientations_fixed: usize,
+    /// Number of wire gaps closed.
+    pub wire_gaps_closed: usize,
+    /// Number of small faces removed.
+    pub small_faces_removed: usize,
+    /// Number of duplicate faces removed.
+    pub duplicate_faces_removed: usize,
+}
+
+/// Run all healing operations on a solid.
+///
+/// This is the top-level repair function. It runs:
+/// 1. Merge coincident vertices (close gaps)
+/// 2. Remove degenerate edges (shorter than tolerance)
+/// 3. Fix face orientations (ensure outward normals)
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn heal_solid(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<HealingReport, crate::OperationsError> {
+    // Must run before vertex merging.
+    let wire_gaps_closed = close_wire_gaps(topo, solid, tolerance)?;
+    let vertices_merged = merge_coincident_vertices(topo, solid, tolerance)?;
+    let degenerate_edges_removed = remove_degenerate_edges(topo, solid, tolerance)?;
+    let small_faces_removed = remove_small_faces(topo, solid, tolerance)?;
+    let duplicate_faces_removed = remove_duplicate_faces(topo, solid, tolerance)?;
+    // Run last, after topology is clean.
+    let orientations_fixed = fix_face_orientations(topo, solid)?;
+
+    Ok(HealingReport {
+        vertices_merged,
+        degenerate_edges_removed,
+        orientations_fixed,
+        wire_gaps_closed,
+        small_faces_removed,
+        duplicate_faces_removed,
+    })
+}
+
+/// Merge near-coincident vertices in a solid.
+///
+/// Finds vertex pairs that are within `tolerance` of each other and
+/// merges them by updating all edge references to point to a single
+/// canonical vertex. This fixes small gaps caused by floating-point
+/// imprecision during modeling operations.
+///
+/// Returns the number of vertices merged.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn merge_coincident_vertices(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = if tolerance > 0.0 {
+        tolerance
+    } else {
+        Tolerance::new().linear
+    };
+    let tol_sq = tol * tol;
+
+    let solid_data = topo.solid(solid)?;
+    let shell = topo.shell(solid_data.outer_shell())?;
+    let face_ids: Vec<_> = shell.faces().to_vec();
+
+    let mut vertex_ids: Vec<VertexId> = Vec::new();
+    let mut positions: Vec<Point3> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let wire = topo.wire(face.outer_wire())?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            for &vid in &[edge.start(), edge.end()] {
+                if seen.insert(vid.index()) {
+                    let point = topo.vertex(vid)?.point();
+                    vertex_ids.push(vid);
+                    positions.push(point);
+                }
+            }
+        }
+    }
+
+    // Build merge map: for each vertex, find the canonical (lowest-index)
+    // vertex it should merge into.
+    let num_verts = vertex_ids.len();
+    let mut merge_to: HashMap<usize, VertexId> = HashMap::new();
+    let mut merged_count = 0;
+
+    for i in 0..num_verts {
+        if merge_to.contains_key(&vertex_ids[i].index()) {
+            continue;
+        }
+        for j in (i + 1)..num_verts {
+            if merge_to.contains_key(&vertex_ids[j].index()) {
+                continue;
+            }
+            let dist_sq = (positions[i] - positions[j]).length_squared();
+            if dist_sq < tol_sq {
+                merge_to.insert(vertex_ids[j].index(), vertex_ids[i]);
+                merged_count += 1;
+            }
+        }
+    }
+
+    if merged_count == 0 {
+        return Ok(0);
+    }
+
+    let mut edge_ids = Vec::new();
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let wire = topo.wire(face.outer_wire())?;
+        for oe in wire.edges() {
+            edge_ids.push(oe.edge());
+        }
+    }
+    edge_ids.sort_by_key(|e| e.index());
+    edge_ids.dedup_by_key(|e| e.index());
+
+    let updates: Vec<_> = edge_ids
+        .iter()
+        .filter_map(|&eid| {
+            let edge = topo.edge(eid).ok()?;
+            let new_start = merge_to
+                .get(&edge.start().index())
+                .copied()
+                .unwrap_or_else(|| edge.start());
+            let new_end = merge_to
+                .get(&edge.end().index())
+                .copied()
+                .unwrap_or_else(|| edge.end());
+            if new_start != edge.start() || new_end != edge.end() {
+                Some((eid, new_start, new_end))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (eid, new_start, new_end) in updates {
+        let edge = topo.edge_mut(eid)?;
+        *edge = brepkit_topology::edge::Edge::new(new_start, new_end, edge.curve().clone());
+    }
+
+    Ok(merged_count)
+}
+
+/// Remove degenerate edges (shorter than tolerance) from a solid.
+///
+/// An edge whose start and end vertices are within `tolerance` of each
+/// other is considered degenerate. Such edges are collapsed: their
+/// references in wires are removed, and the wire is rebuilt without them.
+///
+/// Returns the number of degenerate edges removed.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn remove_degenerate_edges(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = if tolerance > 0.0 {
+        tolerance
+    } else {
+        Tolerance::new().linear
+    };
+    let tol_sq = tol * tol;
+
+    let solid_data = topo.solid(solid)?;
+    let shell = topo.shell(solid_data.outer_shell())?;
+    let face_ids: Vec<_> = shell.faces().to_vec();
+
+    let mut removed_count = 0;
+
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let wire_id = face.outer_wire();
+        let wire = topo.wire(wire_id)?;
+
+        let mut new_edges = Vec::new();
+        let mut any_removed = false;
+
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start_pos = topo.vertex(edge.start())?.point();
+            let end_pos = topo.vertex(edge.end())?.point();
+            let len_sq = (end_pos - start_pos).length_squared();
+
+            if len_sq < tol_sq && edge.start() != edge.end() {
+                any_removed = true;
+                removed_count += 1;
+            } else {
+                new_edges.push(*oe);
+            }
+        }
+
+        if any_removed && !new_edges.is_empty() {
+            // Create a NEW wire instead of modifying in-place. In-place
+            // modification via wire_mut corrupts other solids that share
+            // the same wire ID (analytic_boolean shares edges/wires across
+            // faces via edge_map dedup in a single topology arena).
+            let new_wire = brepkit_topology::wire::Wire::new(new_edges, wire.is_closed())?;
+            let new_wire_id = topo.add_wire(new_wire);
+            let face = topo.face_mut(fid)?;
+            if face.outer_wire() == wire_id {
+                face.set_outer_wire(new_wire_id);
+            } else {
+                let iw = face.inner_wires().to_vec();
+                for (i, &iw_id) in iw.iter().enumerate() {
+                    if iw_id == wire_id {
+                        face.inner_wires_mut()[i] = new_wire_id;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(removed_count)
+}
+
+/// Remove out-and-back spurs from face wires.
+///
+/// A *spur* is a consecutive pair of oriented edges in a wire that reference the
+/// SAME edge with opposite orientations: the wire walks out along the edge and
+/// immediately walks back. It encloses zero area (it never changes the face's
+/// region) but it over-connects that edge — counting it twice for the face.
+///
+/// GFA's wire builder can emit a spur for a U-shaped face: when a notch opens
+/// onto a single boundary edge (e.g. `(a−b) ∪ (a∩b)` where `b` meets `a` on two
+/// faces, issue #801), the notched face's wire traverses the opening edge
+/// out-and-back instead of leaving it as the clean boundary shared with the
+/// filler face. The spur makes that edge non-manifold (3+ faces) and inflates
+/// the measured volume. Stripping it is always sound — the face region is
+/// unchanged and the edge drops to its correct neighbours. A pointed cone's
+/// seam, which runs up to the apex and straight back, is the cut the cone is
+/// opened along and stays.
+///
+/// Returns the number of oriented-edge occurrences removed (two per spur).
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn remove_wire_spurs(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<usize, crate::OperationsError> {
+    let face_ids = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let mut removed = 0;
+
+    for fid in face_ids {
+        let wire_ids: Vec<_> = {
+            let face = topo.face(fid)?;
+            std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .collect()
+        };
+        let seam = pointed_cone_seam(topo, fid)?;
+
+        for wid in wire_ids {
+            let (mut oes, closed) = {
+                let wire = topo.wire(wid)?;
+                (wire.edges().to_vec(), wire.is_closed())
+            };
+
+            let n_removed = strip_wire_spurs(&mut oes, seam);
+            if n_removed == 0 {
+                continue;
+            }
+            // Always write the stripped wire back when it still has an edge, so
+            // the over-connected spur edge is never left behind. If stripping
+            // takes the wire below three edges the face was already degenerate
+            // (a spur wrapping a bigon or self-loop); the residual bigon is then
+            // rejected by `validate_boolean_result` and the op drops to the mesh
+            // fallback — strictly better than letting the spur survive into the
+            // result. `Wire::new` only rejects an empty edge list.
+            if oes.is_empty() {
+                continue;
+            }
+
+            let new_wire = Wire::new(oes, closed)?;
+            let new_wid = topo.add_wire(new_wire);
+            let face = topo.face_mut(fid)?;
+            if face.outer_wire() == wid {
+                face.set_outer_wire(new_wid);
+            } else {
+                let inner = face.inner_wires().to_vec();
+                for (i, &iwid) in inner.iter().enumerate() {
+                    if iwid == wid {
+                        face.inner_wires_mut()[i] = new_wid;
+                    }
+                }
+            }
+            removed += n_removed;
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Strip consecutive same-edge opposite-orientation pairs (out-and-back spurs)
+/// from an oriented-edge loop, including the wrap-around pair. Iterates because
+/// removing one spur can expose another. Returns the count removed.
+fn strip_wire_spurs(
+    oes: &mut Vec<OrientedEdge>,
+    seam: Option<brepkit_topology::edge::EdgeId>,
+) -> usize {
+    let mut removed = 0;
+    loop {
+        let n = oes.len();
+        if n < 2 {
+            break;
+        }
+        let spur = (0..n).find_map(|i| {
+            let j = (i + 1) % n;
+            (oes[i].edge() == oes[j].edge()
+                && oes[i].is_forward() != oes[j].is_forward()
+                && Some(oes[i].edge()) != seam)
+                .then_some((i, j))
+        });
+        match spur {
+            Some((i, j)) => {
+                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                oes.remove(hi);
+                oes.remove(lo);
+                removed += 2;
+            }
+            None => break,
+        }
+    }
+    removed
+}
+
+/// A pointed cone face's seam: a line of its outer wire ending at the apex.
+fn pointed_cone_seam(
+    topo: &Topology,
+    fid: FaceId,
+) -> Result<Option<brepkit_topology::edge::EdgeId>, crate::OperationsError> {
+    let face = topo.face(fid)?;
+    let FaceSurface::Cone(cone) = face.surface() else {
+        return Ok(None);
+    };
+    let apex = cone.apex();
+    for oe in topo.wire(face.outer_wire())?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            continue;
+        }
+        for vid in [edge.start(), edge.end()] {
+            if (topo.vertex(vid)?.point() - apex).length() < 1e-7 {
+                return Ok(Some(oe.edge()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Fix plane faces whose normal disagrees with their outer wire.
+///
+/// A shell's faces wind their stored outer wires one way about their surface
+/// normals, counterclockwise by convention, reversed flag or not. Each
+/// shell's planes vote on which way it winds, and a plane winding the other
+/// way carries a flipped normal, which is negated. The winding is read
+/// arc-true. Where the material lies is not consulted: a cavity's floor faces
+/// toward the solid's middle. Curved faces and planes bounded by a NURBS edge
+/// are left alone.
+///
+/// Returns the number of faces whose orientation was fixed.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn fix_face_orientations(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<usize, crate::OperationsError> {
+    let solid_data = topo.solid(solid)?;
+    let shells: Vec<_> = std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect();
+    let mut fixed = 0;
+    for shell in shells {
+        let faces = topo.shell(shell)?.faces().to_vec();
+        fixed += fix_shell_plane_orientations(topo, &faces)?;
+    }
+    Ok(fixed)
+}
+
+/// [`fix_face_orientations`] over one shell's faces.
+fn fix_shell_plane_orientations(
+    topo: &mut Topology,
+    faces: &[FaceId],
+) -> Result<usize, crate::OperationsError> {
+    let lin = Tolerance::new().linear;
+    let mut planes = Vec::new();
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        let FaceSurface::Plane { normal, d } = face.surface() else {
+            continue;
+        };
+        let (normal, d) = (*normal, *d);
+        let Ok(frame) =
+            brepkit_math::frame::Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), normal)
+        else {
+            continue;
+        };
+        let Some((area2, _)) = crate::measure::helpers::planar_wire_signed_area2(
+            topo,
+            face.outer_wire(),
+            frame.x,
+            frame.y,
+        )?
+        else {
+            continue;
+        };
+        if area2.abs() > lin * lin {
+            planes.push((fid, normal, d, area2 > 0.0));
+        }
+    }
+
+    let counterclockwise = planes.iter().filter(|p| p.3).count();
+    let winds_counterclockwise = 2 * counterclockwise >= planes.len();
+    let mut fixed = 0;
+    for &(fid, normal, d, ccw) in &planes {
+        if ccw != winds_counterclockwise {
+            topo.face_mut(fid)?.set_surface(FaceSurface::Plane {
+                normal: -normal,
+                d: -d,
+            });
+            fixed += 1;
+        }
+    }
+    Ok(fixed)
+}
+
+/// Close gaps between consecutive edges in face wires.
+///
+/// When two consecutive edges in a wire don't share an endpoint (the end
+/// of edge N doesn't match the start of edge N+1), this function closes
+/// the gap by merging the mismatched vertices. This is common when
+/// importing models from other CAD systems with different tolerances.
+///
+/// Returns the number of gaps closed.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn close_wire_gaps(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = if tolerance > 0.0 {
+        tolerance
+    } else {
+        Tolerance::new().linear
+    };
+    let tol_sq = tol * tol;
+
+    let solid_data = topo.solid(solid)?;
+    let shell = topo.shell(solid_data.outer_shell())?;
+    let face_ids: Vec<_> = shell.faces().to_vec();
+
+    let mut gaps_closed = 0;
+
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+
+        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .collect();
+
+        for wire_id in wire_ids {
+            let wire = topo.wire(wire_id)?;
+            let edges_list: Vec<_> = wire.edges().to_vec();
+            let n_edges = edges_list.len();
+
+            if n_edges < 2 {
+                continue;
+            }
+
+            let mut merge_pairs: Vec<(VertexId, VertexId)> = Vec::new();
+
+            for i in 0..n_edges {
+                let next_i = (i + 1) % n_edges;
+
+                let edge_i = topo.edge(edges_list[i].edge())?;
+                let edge_next = topo.edge(edges_list[next_i].edge())?;
+
+                let end_vid = if edges_list[i].is_forward() {
+                    edge_i.end()
+                } else {
+                    edge_i.start()
+                };
+
+                let start_vid = if edges_list[next_i].is_forward() {
+                    edge_next.start()
+                } else {
+                    edge_next.end()
+                };
+
+                if end_vid == start_vid {
+                    continue; // Already connected
+                }
+
+                let end_pos = topo.vertex(end_vid)?.point();
+                let start_pos = topo.vertex(start_vid)?.point();
+                let dist_sq = (end_pos - start_pos).length_squared();
+
+                if dist_sq < tol_sq {
+                    // Close the gap by merging the vertices.
+                    merge_pairs.push((start_vid, end_vid)); // merge start into end
+                }
+            }
+
+            // Apply merges using "snapshot then allocate" pattern.
+            for (merge_from, merge_to) in &merge_pairs {
+                // Snapshot: collect all edges that need updating.
+                let solid_d = topo.solid(solid)?;
+                let sh = topo.shell(solid_d.outer_shell())?;
+                let fids: Vec<_> = sh.faces().to_vec();
+
+                let mut updates = Vec::new();
+                for &fid2 in &fids {
+                    let f = topo.face(fid2)?;
+                    let w = topo.wire(f.outer_wire())?;
+                    for oe in w.edges() {
+                        let edge = topo.edge(oe.edge())?;
+                        let cur_start = edge.start();
+                        let cur_end = edge.end();
+                        let new_start = if cur_start == *merge_from {
+                            *merge_to
+                        } else {
+                            cur_start
+                        };
+                        let new_end = if cur_end == *merge_from {
+                            *merge_to
+                        } else {
+                            cur_end
+                        };
+                        if new_start != cur_start || new_end != cur_end {
+                            let curve = edge.curve().clone();
+                            updates.push((oe.edge(), new_start, new_end, curve));
+                        }
+                    }
+                }
+
+                // Allocate: apply the updates.
+                for (eid, new_start, new_end, curve) in updates {
+                    let em = topo.edge_mut(eid)?;
+                    *em = brepkit_topology::edge::Edge::new(new_start, new_end, curve);
+                }
+                gaps_closed += 1;
+            }
+        }
+    }
+
+    Ok(gaps_closed)
+}
+
+/// The control hull of a NURBS curve over `[t0, t1]` alone: the curve is
+/// split to that span, and the span lies inside its control points.
+fn nurbs_span_hull(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    t0: f64,
+    t1: f64,
+) -> brepkit_math::aabb::Aabb3 {
+    use brepkit_math::nurbs::knot_ops::curve_split;
+    let (d0, d1) = curve.domain();
+    let eps = 1e-9 * (d1 - d0).abs();
+    let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+    let mut span = curve.clone();
+    if lo > d0 + eps
+        && lo < d1 - eps
+        && let Ok((_, right)) = curve_split(&span, lo)
+    {
+        span = right;
+    }
+    if hi > d0 + eps
+        && hi < d1 - eps
+        && let Ok((left, _)) = curve_split(&span, hi)
+    {
+        span = left;
+    }
+    span.aabb()
+}
+
+/// Remove faces smaller than a minimum area threshold.
+///
+/// Faces with a bounding-box diagonal smaller than `tolerance` are
+/// considered degenerate slivers and are removed from the shell.
+/// This is common after boolean operations that produce micro-faces
+/// at near-tangent intersections. The box bounds each boundary edge's curve,
+/// not only its ends: a disc bounded by one closed circle has a single
+/// vertex.
+///
+/// Returns the number of faces removed.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn remove_small_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = if tolerance > 0.0 {
+        tolerance
+    } else {
+        Tolerance::new().linear
+    };
+
+    let solid_data = topo.solid(solid)?;
+    let shell_id = solid_data.outer_shell();
+    let shell = topo.shell(shell_id)?;
+    let face_ids: Vec<_> = shell.faces().to_vec();
+
+    let mut small_faces: Vec<FaceId> = Vec::new();
+
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let wire = topo.wire(face.outer_wire())?;
+
+        // Compute bounding box of the face's outer wire.
+        let mut min_pt = Vec3::new(f64::MAX, f64::MAX, f64::MAX);
+        let mut max_pt = Vec3::new(f64::MIN, f64::MIN, f64::MIN);
+
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let (start, end) = (
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+            );
+            let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+            let bounds = match edge.curve() {
+                EdgeCurve::Line => brepkit_math::aabb::Aabb3::from_points([start, end]),
+                EdgeCurve::Circle(c) => c.arc_aabb(t0, t1),
+                EdgeCurve::Ellipse(e) => e.arc_aabb(t0, t1),
+                EdgeCurve::NurbsCurve(n) => nurbs_span_hull(n, t0, t1),
+            };
+            for pos in [bounds.min, bounds.max] {
+                min_pt = Vec3::new(
+                    min_pt.x().min(pos.x()),
+                    min_pt.y().min(pos.y()),
+                    min_pt.z().min(pos.z()),
+                );
+                max_pt = Vec3::new(
+                    max_pt.x().max(pos.x()),
+                    max_pt.y().max(pos.y()),
+                    max_pt.z().max(pos.z()),
+                );
+            }
+        }
+
+        let diagonal = (max_pt - min_pt).length();
+        if diagonal < tol {
+            small_faces.push(fid);
+        }
+    }
+
+    if small_faces.is_empty() {
+        return Ok(0);
+    }
+
+    let removed_count = small_faces.len();
+    let small_set: std::collections::HashSet<usize> =
+        small_faces.iter().map(|f| f.index()).collect();
+
+    // Rebuild the shell without the small faces.
+    let remaining: Vec<FaceId> = face_ids
+        .into_iter()
+        .filter(|f| !small_set.contains(&f.index()))
+        .collect();
+
+    if remaining.is_empty() {
+        return Ok(0); // Don't remove ALL faces
+    }
+
+    let new_shell =
+        brepkit_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
+    *topo.shell_mut(shell_id)? = new_shell;
+
+    Ok(removed_count)
+}
+
+/// Remove duplicate (coincident) faces from a solid.
+///
+/// Two faces are considered duplicates if their outward normals are
+/// parallel (or anti-parallel) and their outer wires and holes have the same
+/// corners within `tolerance`. This happens when boolean
+/// operations create overlapping fragments.
+///
+/// Returns the number of duplicate faces removed.
+///
+/// # Errors
+/// Returns an error if topology lookups fail.
+pub fn remove_duplicate_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = if tolerance > 0.0 {
+        tolerance
+    } else {
+        Tolerance::new().linear
+    };
+
+    let solid_data = topo.solid(solid)?;
+    let shell_id = solid_data.outer_shell();
+    let shell = topo.shell(shell_id)?;
+    let face_ids: Vec<_> = shell.faces().to_vec();
+
+    // Collect face data for comparison: centroid, normal, outer corners and
+    // hole count.
+    #[allow(clippy::type_complexity)]
+    let mut face_data: Vec<(FaceId, Point3, Vec3, Vec<Point3>, Vec<Vec<Point3>>)> = Vec::new();
+
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let normal = match face.surface() {
+            FaceSurface::Plane { normal, .. } => *normal,
+            FaceSurface::Cylinder(cyl) => cyl.axis(),
+            FaceSurface::Cone(cone) => cone.axis(),
+            FaceSurface::Sphere(_) => Vec3::new(0.0, 0.0, 1.0), // placeholder for comparison
+            FaceSurface::Torus(tor) => tor.z_axis(),
+            FaceSurface::Nurbs(_) => continue, // NURBS dedup needs parameter-space comparison
+        };
+
+        let wire = topo.wire(face.outer_wire())?;
+        let mut centroid = Vec3::new(0.0, 0.0, 0.0);
+        let mut count = 0;
+        let mut corners = Vec::new();
+
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let pos = topo.vertex(edge.start())?.point();
+            centroid += Vec3::new(pos.x(), pos.y(), pos.z());
+            corners.push(pos);
+            count += 1;
+        }
+
+        if count > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let inv = 1.0 / count as f64;
+            centroid = centroid * inv;
+        }
+
+        let centroid_pt = Point3::new(centroid.x(), centroid.y(), centroid.z());
+        let mut holes = Vec::with_capacity(face.inner_wires().len());
+        for &hole in face.inner_wires() {
+            let mut hole_corners = Vec::new();
+            for oe in topo.wire(hole)?.edges() {
+                hole_corners.push(topo.vertex(topo.edge(oe.edge())?.start())?.point());
+            }
+            holes.push(hole_corners);
+        }
+        face_data.push((fid, centroid_pt, normal, corners, holes));
+    }
+
+    // Find duplicate pairs: same vertex count, parallel normals, close centroids.
+    let mut duplicates: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for i in 0..face_data.len() {
+        if duplicates.contains(&face_data[i].0.index()) {
+            continue;
+        }
+        for j in (i + 1)..face_data.len() {
+            if duplicates.contains(&face_data[j].0.index()) {
+                continue;
+            }
+
+            let (_, centroid_a, normal_a, corners_a, holes_a) = &face_data[i];
+            let (fid_j, centroid_b, normal_b, corners_b, holes_b) = &face_data[j];
+
+            // Same corners, outer and hole by hole: a ring and the face
+            // filling its hole can share a plane, a corner count and a
+            // centroid.
+            let same_corners = |a: &[Point3], b: &[Point3]| {
+                a.len() == b.len() && a.iter().all(|p| b.iter().any(|q| (*p - *q).length() < tol))
+            };
+            if !same_corners(corners_a, corners_b)
+                || holes_a.len() != holes_b.len()
+                || !holes_a
+                    .iter()
+                    .all(|ha| holes_b.iter().any(|hb| same_corners(ha, hb)))
+            {
+                continue;
+            }
+
+            // Normals parallel or anti-parallel.
+            let dot = normal_a.dot(*normal_b).abs();
+            if dot < 1.0 - tol {
+                continue;
+            }
+
+            // Centroids close.
+            let centroid_dist = (*centroid_a - *centroid_b).length();
+            if centroid_dist < tol {
+                duplicates.insert(fid_j.index());
+            }
+        }
+    }
+
+    if duplicates.is_empty() {
+        return Ok(0);
+    }
+
+    let removed_count = duplicates.len();
+
+    // Rebuild shell without duplicates.
+    let remaining: Vec<FaceId> = face_ids
+        .into_iter()
+        .filter(|f| !duplicates.contains(&f.index()))
+        .collect();
+
+    if remaining.is_empty() {
+        return Ok(0);
+    }
+
+    let new_shell =
+        brepkit_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
+    *topo.shell_mut(shell_id)? = new_shell;
+
+    Ok(removed_count)
+}
+
+// ── Face Unification ──────────────────────────────────────────────
+
+/// Compare two face surfaces for geometric equivalence.
+///
+/// Two surfaces are equivalent if they represent the same infinite surface
+/// (e.g., same plane, same cylinder axis/radius). This is the same logic
+/// used by wireframe edge filtering in `tessellate.rs`.
+/// Check if two surfaces are geometrically equivalent.
+#[must_use]
+pub fn surfaces_equivalent_pub(a: &FaceSurface, b: &FaceSurface) -> bool {
+    surfaces_equivalent(a, b)
+}
+
+fn surfaces_equivalent(a: &FaceSurface, b: &FaceSurface) -> bool {
+    let tol = Tolerance::new();
+    let lin = tol.linear;
+    let ang = tol.angular;
+
+    match (a, b) {
+        (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
+            // Relaxed tolerance for plane comparison. Mesh boolean and face
+            // splitting create coplanar triangles whose normals differ by
+            // varying amounts from floating-point cross-product computation.
+            // 1e-4 radians (~0.006°) and 1e-3 mm are tight enough to avoid
+            // false merges while allowing mesh-derived coplanar faces to unify.
+            let plane_ang = 1e-4_f64;
+            let plane_lin = 1e-3_f64;
+            let dot = na.dot(*nb);
+            (dot.abs() - 1.0).abs() < plane_ang && (da - db * dot.signum()).abs() < plane_lin
+        }
+        (FaceSurface::Cylinder(ca), FaceSurface::Cylinder(cb)) => {
+            (ca.radius() - cb.radius()).abs() < lin
+                && ca.axis().dot(cb.axis()).abs() > 1.0 - ang
+                && {
+                    let d = cb.origin() - ca.origin();
+                    d.cross(ca.axis()).length_squared() < lin * lin
+                }
+        }
+        (FaceSurface::Cone(ca), FaceSurface::Cone(cb)) => {
+            (ca.half_angle() - cb.half_angle()).abs() < ang
+                && ca.axis().dot(cb.axis()).abs() > 1.0 - ang
+                && {
+                    let d = cb.apex() - ca.apex();
+                    d.dot(d) < lin * lin
+                }
+        }
+        (FaceSurface::Sphere(sa), FaceSurface::Sphere(sb)) => {
+            (sa.radius() - sb.radius()).abs() < lin && {
+                let d = sb.center() - sa.center();
+                d.dot(d) < lin * lin
+            }
+        }
+        (FaceSurface::Torus(ta), FaceSurface::Torus(tb)) => {
+            (ta.major_radius() - tb.major_radius()).abs() < lin
+                && (ta.minor_radius() - tb.minor_radius()).abs() < lin
+                && ta.z_axis().dot(tb.z_axis()).abs() > 1.0 - ang
+                && {
+                    let d = tb.center() - ta.center();
+                    d.dot(d) < lin * lin
+                }
+        }
+        // Different surface types are never equivalent.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_),
+            _,
+        ) => false,
+    }
+}
+
+/// Check that two faces' normals point in the same direction at their shared edge.
+///
+/// Evaluates the surface normal on both faces at a shared boundary vertex.
+/// Returns `false` if normals point in opposite directions (dot product < 0),
+/// preventing merging of faces on opposite sides of the same surface.
+/// Also returns `false` when the check cannot be evaluated (no shared vertex
+/// found, projection failure) — safe default that prevents silent bypass.
+fn normals_compatible_at_edge(
+    topo: &Topology,
+    face_a: FaceId,
+    face_b: FaceId,
+    surface: &FaceSurface,
+) -> bool {
+    // For plane faces, compare plane normals directly.
+    if let FaceSurface::Plane { normal: na, .. } = surface {
+        let Ok(fb) = topo.face(face_b) else {
+            return false;
+        };
+        let nb = match fb.surface() {
+            FaceSurface::Plane { normal, .. } => *normal,
+            _ => return false,
+        };
+        let Ok(fa) = topo.face(face_a) else {
+            return false;
+        };
+        let eff_na = if fa.is_reversed() { -*na } else { *na };
+        let eff_nb = if fb.is_reversed() { -nb } else { nb };
+        return eff_na.dot(eff_nb) > 0.0;
+    }
+
+    // For curved surfaces, sample the normal at a shared vertex.
+    let sample_pt = find_shared_vertex(topo, face_a, face_b);
+    let Some(pt) = sample_pt else {
+        return false; // Can't verify — skip merge to be safe
+    };
+    let Ok(fa) = topo.face(face_a) else {
+        return false;
+    };
+    let Ok(fb) = topo.face(face_b) else {
+        return false;
+    };
+    let uv_a = fa.surface().project_point(pt);
+    let uv_b = fb.surface().project_point(pt);
+    let (Some((ua, va)), Some((ub, vb))) = (uv_a, uv_b) else {
+        return false;
+    };
+    let mut na = fa.surface().normal(ua, va);
+    let mut nb = fb.surface().normal(ub, vb);
+    if fa.is_reversed() {
+        na = -na;
+    }
+    if fb.is_reversed() {
+        nb = -nb;
+    }
+    na.dot(nb) > 0.0
+}
+
+/// Find a vertex shared between two faces' outer and inner wires.
+fn find_shared_vertex(
+    topo: &Topology,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Option<brepkit_math::vec::Point3> {
+    let fa = topo.face(face_a).ok()?;
+    let fb = topo.face(face_b).ok()?;
+
+    // Collect vertex indices AND quantized positions from face B.
+    let mut b_verts: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut b_positions: std::collections::HashSet<QVPos> = std::collections::HashSet::new();
+    for wid in std::iter::once(fb.outer_wire()).chain(fb.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else { continue };
+        for oe in wire.edges() {
+            let Ok(e) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            for &vid in &[e.start(), e.end()] {
+                b_verts.insert(vid.index());
+                if let Ok(v) = topo.vertex(vid) {
+                    b_positions.insert(quantize_vertex(v.point()));
+                }
+            }
+        }
+    }
+
+    // Find first matching vertex in face A.
+    // Try VertexId matching first, then fall back to position matching
+    // for GFA faces with different VertexIds at the same position.
+    // Position fallback uses quantize_vertex (1e7 scale = 1/tolerance).
+    // Only reliably matches vertices from the same computation path
+    // (bit-identical or within one grid cell). Vertices that straddle
+    // a grid-cell boundary may not match — this is a safe false negative
+    // (normals_compatible_at_edge returns false, preventing merge).
+    for wid in std::iter::once(fa.outer_wire()).chain(fa.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else { continue };
+        for oe in wire.edges() {
+            let Ok(e) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            for &vid in &[e.start(), e.end()] {
+                if b_verts.contains(&vid.index()) {
+                    return topo
+                        .vertex(vid)
+                        .ok()
+                        .map(brepkit_topology::vertex::Vertex::point);
+                }
+                if let Ok(v) = topo.vertex(vid) {
+                    let qp = quantize_vertex(v.point());
+                    if b_positions.contains(&qp) {
+                        return Some(v.point());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Union-Find: find root with path compression.
+fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
+}
+
+/// Union-Find: merge two sets.
+fn uf_union(parent: &mut [usize], a: usize, b: usize) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb {
+        parent[rb] = ra;
+    }
+}
+
+/// Unify adjacent faces that lie on the same geometric surface.
+///
+/// This merges co-surface face fragments produced by boolean operations
+/// back into single faces, reducing face count and improving topology
+/// quality.
+///
+/// The algorithm:
+/// 1. Build an edge→face adjacency map
+/// 2. Group faces by surface equivalence using connected-component analysis
+/// 3. For each group of ≥2 faces, merge their outer wires by removing
+///    internal shared edges and splicing the remaining edge chains
+/// 4. Rebuild the shell with unified faces
+///
+/// Returns the number of faces removed by unification.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+#[allow(clippy::too_many_lines)]
+pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::OperationsError> {
+    /// Maximum boundary edges for a merged face. Groups whose boundary
+    /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
+    /// boolean intersection computations. 200 edges is generous for any
+    /// practical merged face (a merged rectangle has 4-20 edges).
+    const MAX_BOUNDARY_EDGES: usize = 200;
+
+    let solid_data = topo.solid(solid)?;
+    let shell_id = solid_data.outer_shell();
+    let shell = topo.shell(shell_id)?;
+    let all_face_ids: Vec<FaceId> = shell.faces().to_vec();
+    let original_count = all_face_ids.len();
+
+    if original_count < 2 {
+        return Ok(0);
+    }
+
+    // Step 1: Build edge→face map (topology-shared edges).
+    let edge_face_map = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+
+    // Step 1b: Build geometric edge→face map for unshared curved edges.
+    // Groups edges by (vertex_pair, curve_geometry) so that Circle edges with
+    // the same center/radius/normal connecting the same vertices are treated
+    // as the same edge for face adjacency purposes.
+    #[allow(clippy::type_complexity)]
+    let mut geom_edge_faces: HashMap<(usize, usize, u8, i64, i64, i64, i64), Vec<FaceId>> =
+        HashMap::new();
+    let q = |v: f64| -> i64 { (v * 1e5).round() as i64 };
+    for &fid in &all_face_ids {
+        let face = topo.face(fid)?;
+        // Check outer wire + inner wires for geometric edge adjacency.
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                let si = edge.start().index();
+                let ei = edge.end().index();
+                let (kmin, kmax) = if si <= ei { (si, ei) } else { (ei, si) };
+                #[allow(clippy::type_complexity)]
+                let key: Option<(usize, usize, u8, i64, i64, i64, i64)> = match edge.curve() {
+                    brepkit_topology::edge::EdgeCurve::Circle(c) => {
+                        let center = c.center();
+                        Some((
+                            kmin,
+                            kmax,
+                            1, // Circle type tag.
+                            q(center.x()),
+                            q(center.y()),
+                            q(center.z()),
+                            q(c.radius()),
+                        ))
+                    }
+                    brepkit_topology::edge::EdgeCurve::Ellipse(e) => {
+                        let center = e.center();
+                        Some((
+                            kmin,
+                            kmax,
+                            2, // Ellipse type tag.
+                            q(center.x()),
+                            q(center.y()),
+                            q(center.z()),
+                            q(e.semi_major()),
+                        ))
+                    }
+                    brepkit_topology::edge::EdgeCurve::Line
+                    | brepkit_topology::edge::EdgeCurve::NurbsCurve(_) => None,
+                };
+                if let Some(k) = key {
+                    geom_edge_faces.entry(k).or_default().push(fid);
+                }
+            }
+        }
+    }
+
+    // Step 1c: Position-based edge adjacency for GFA results with duplicate vertices.
+    // GFA sub-faces from different original faces have different EdgeIds at the
+    // same position. Group faces by quantized vertex-pair position to catch
+    // adjacencies that the topology-based edge_face_map misses.
+    let pos_scale = 1e7_f64; // 1.0 / default linear tolerance
+    #[allow(clippy::type_complexity)]
+    let mut pos_edge_faces: HashMap<((i64, i64, i64), (i64, i64, i64)), Vec<FaceId>> =
+        HashMap::new();
+    for &fid in &all_face_ids {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let qs = (
+                    (sp.x() * pos_scale).round() as i64,
+                    (sp.y() * pos_scale).round() as i64,
+                    (sp.z() * pos_scale).round() as i64,
+                );
+                let qe = (
+                    (ep.x() * pos_scale).round() as i64,
+                    (ep.y() * pos_scale).round() as i64,
+                    (ep.z() * pos_scale).round() as i64,
+                );
+                let key = if qs <= qe { (qs, qe) } else { (qe, qs) };
+                pos_edge_faces.entry(key).or_default().push(fid);
+            }
+        }
+    }
+
+    // Step 2: Find connected components of faces sharing edges on the same surface.
+    let face_index_map: HashMap<usize, usize> = all_face_ids
+        .iter()
+        .enumerate()
+        .map(|(i, fid)| (fid.index(), i))
+        .collect();
+
+    let n = all_face_ids.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    // Union faces sharing topology edges on the same surface.
+    // Before merging, check that face normals at a shared vertex point in
+    // the same direction. This prevents merging faces on opposite sides of
+    // the same surface (e.g., opposite cylinder walls, or coplanar faces
+    // with opposite normals from a shelled solid).
+    for faces in edge_face_map.values() {
+        if faces.len() < 2 {
+            continue;
+        }
+        for i in 0..faces.len() {
+            for j in (i + 1)..faces.len() {
+                let fa_idx = match face_index_map.get(&faces[i].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let fb_idx = match face_index_map.get(&faces[j].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let surface_a = topo.face(faces[i])?.surface().clone();
+                let surface_b = topo.face(faces[j])?.surface().clone();
+                if !surfaces_equivalent(&surface_a, &surface_b) {
+                    continue;
+                }
+                // Normal direction pre-check: evaluate normals at a shared
+                // vertex on both faces. If normals point in opposite
+                // directions, the faces are on opposite sides of the surface
+                // and must NOT be merged.
+                if !normals_compatible_at_edge(topo, faces[i], faces[j], &surface_a) {
+                    continue;
+                }
+                uf_union(&mut parent, fa_idx, fb_idx);
+            }
+        }
+    }
+
+    // Union faces sharing geometrically-equivalent curved edges on the same surface.
+    for faces in geom_edge_faces.values() {
+        if faces.len() < 2 {
+            continue;
+        }
+        for i in 0..faces.len() {
+            for j in (i + 1)..faces.len() {
+                let fa_idx = match face_index_map.get(&faces[i].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let fb_idx = match face_index_map.get(&faces[j].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let surface_a = topo.face(faces[i])?.surface().clone();
+                let surface_b = topo.face(faces[j])?.surface().clone();
+                if surfaces_equivalent(&surface_a, &surface_b)
+                    && normals_compatible_at_edge(topo, faces[i], faces[j], &surface_a)
+                {
+                    uf_union(&mut parent, fa_idx, fb_idx);
+                }
+            }
+        }
+    }
+
+    // Union faces sharing edges at the same position (different EdgeIds).
+    // This catches GFA sub-faces from different original faces that have
+    // different EdgeIds at the same geometric position.
+    for faces in pos_edge_faces.values() {
+        if faces.len() < 2 {
+            continue;
+        }
+        // Deduplicate face IDs (same face can appear multiple times)
+        let mut unique: Vec<FaceId> = faces.clone();
+        unique.sort_by_key(|f| f.index());
+        unique.dedup();
+        if unique.len() < 2 {
+            continue;
+        }
+        for i in 0..unique.len() {
+            for j in (i + 1)..unique.len() {
+                let fa_idx = match face_index_map.get(&unique[i].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let fb_idx = match face_index_map.get(&unique[j].index()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let surface_a = topo.face(unique[i])?.surface().clone();
+                let surface_b = topo.face(unique[j])?.surface().clone();
+                if surfaces_equivalent(&surface_a, &surface_b)
+                    && normals_compatible_at_edge(topo, unique[i], unique[j], &surface_a)
+                {
+                    uf_union(&mut parent, fa_idx, fb_idx);
+                }
+            }
+        }
+    }
+
+    // Step 3: Group faces by their root.
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let root = uf_find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+
+    // Only process groups with ≥2 faces.
+    // Sort groups by their lowest face index so downstream processing
+    // (especially `canonical_vtx` first-seen-wins) is deterministic.
+    // Without the sort, `groups.into_values()` returns groups in HashMap
+    // iteration order, and the first group to insert a vertex into
+    // `canonical_vtx` "wins" the canonical mapping — which then drives
+    // different edge re-allocations between runs.
+    let mut merge_groups: Vec<Vec<usize>> = groups.into_values().filter(|g| g.len() >= 2).collect();
+    for g in &mut merge_groups {
+        g.sort_unstable();
+    }
+    merge_groups.sort_unstable_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
+
+    if merge_groups.is_empty() {
+        return Ok(0);
+    }
+
+    // Step 4: Pre-compute boundary edges for all merge groups and build
+    // a global edge replacement map. This ensures all merged faces share
+    // canonical vertices at junction points where edges from different
+    // input solids meet at the same position.
+
+    #[allow(clippy::items_after_statements)]
+    struct MergeGroupData {
+        face_ids: Vec<FaceId>,
+        boundary_edges: Vec<OrientedEdge>,
+        inner_wires: Vec<brepkit_topology::wire::WireId>,
+        surface: FaceSurface,
+        reversed: bool,
+    }
+
+    let mut group_data: Vec<MergeGroupData> = Vec::new();
+
+    for group in &merge_groups {
+        let group_face_ids: Vec<FaceId> = group.iter().map(|&i| all_face_ids[i]).collect();
+
+        let group_set: HashSet<usize> = group_face_ids.iter().map(|f| f.index()).collect();
+        let mut internal_edges: HashSet<usize> = HashSet::new();
+
+        for (edge_idx, faces) in &edge_face_map {
+            if faces.len() == 2
+                && group_set.contains(&faces[0].index())
+                && group_set.contains(&faces[1].index())
+            {
+                internal_edges.insert(*edge_idx);
+            }
+        }
+
+        let mut boundary_edges: Vec<OrientedEdge> = Vec::new();
+        let mut all_inner_wires: Vec<brepkit_topology::wire::WireId> = Vec::new();
+        let mut representative_surface: Option<FaceSurface> = None;
+        let mut representative_reversed = false;
+
+        // Which faces of the group run along each edge position: faces can be
+        // grouped across coincident edges that are different entities.
+        let mut faces_at: HashMap<(QVPos, QVPos, QVPos), HashSet<usize>> = HashMap::new();
+        for &fid in &group_face_ids {
+            let face = topo.face(fid)?;
+            for w in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+                for oe in topo.wire(w)?.edges() {
+                    faces_at
+                        .entry(edge_position_key(topo, oe.edge())?)
+                        .or_default()
+                        .insert(fid.index());
+                }
+            }
+        }
+        let mut filled: HashSet<(QVPos, QVPos, QVPos)> = HashSet::new();
+
+        for &fid in &group_face_ids {
+            let face = topo.face(fid)?;
+            if representative_surface.is_none() {
+                representative_surface = Some(face.surface().clone());
+                representative_reversed = face.is_reversed();
+            }
+            // A hole another face of the group fills (a ring and the floor
+            // in its opening) is no longer a hole: its shared edges go, and
+            // any others join the boundary loops.
+            for &hole in face.inner_wires() {
+                let mut shared = Vec::new();
+                let mut rest = Vec::new();
+                for oe in topo.wire(hole)?.edges() {
+                    let key = edge_position_key(topo, oe.edge())?;
+                    if internal_edges.contains(&oe.edge().index())
+                        || faces_at.get(&key).is_some_and(|f| f.len() > 1)
+                    {
+                        shared.push(key);
+                    } else {
+                        rest.push(*oe);
+                    }
+                }
+                if shared.is_empty() {
+                    all_inner_wires.push(hole);
+                } else {
+                    filled.extend(shared);
+                    boundary_edges.extend(rest);
+                }
+            }
+        }
+        for &fid in &group_face_ids {
+            let face = topo.face(fid)?;
+            let wire = topo.wire(face.outer_wire())?;
+            for oe in wire.edges() {
+                if !internal_edges.contains(&oe.edge().index())
+                    && !filled.contains(&edge_position_key(topo, oe.edge())?)
+                {
+                    boundary_edges.push(*oe);
+                }
+            }
+        }
+
+        // Skip groups whose merged boundary would be too complex.
+        // A face with hundreds of boundary edges can cause O(N²) or worse
+        // performance in subsequent boolean intersection computations.
+        if boundary_edges.len() > MAX_BOUNDARY_EDGES {
+            log::debug!(
+                "unify_faces: skipping merge group with {} boundary edges (limit {})",
+                boundary_edges.len(),
+                MAX_BOUNDARY_EDGES
+            );
+            continue;
+        }
+
+        let Some(surface) = representative_surface else {
+            continue;
+        };
+
+        // A merged face whose boundary goes once around a revolved surface's
+        // axis would be a band with no seam, which the mesher cannot cover.
+        if !matches!(surface, FaceSurface::Plane { .. }) {
+            let mut loops = order_edges_into_loops(topo, &boundary_edges)?;
+            for &hole in &all_inner_wires {
+                loops.push(topo.wire(hole)?.edges().to_vec());
+            }
+            if loops.len() > 1 && seamless_band(topo, &surface, &loops)? {
+                log::debug!("unify_faces: skipping merge group that would close a band");
+                continue;
+            }
+        }
+
+        group_data.push(MergeGroupData {
+            face_ids: group_face_ids,
+            boundary_edges,
+            inner_wires: all_inner_wires,
+            surface,
+            reversed: representative_reversed,
+        });
+    }
+
+    // Build global canonical vertex map from ALL boundary edges across
+    // ALL merge groups. First-seen VertexId at each quantized position
+    // becomes canonical.
+    let quantize_vtx = quantize_vertex;
+    let mut canonical_vtx: HashMap<QVPos, VertexId> = HashMap::new();
+    for gd in &group_data {
+        for oe in &gd.boundary_edges {
+            let edge = topo.edge(oe.edge())?;
+            for &vid in &[edge.start(), edge.end()] {
+                let pos = topo.vertex(vid)?.point();
+                canonical_vtx.entry(quantize_vtx(pos)).or_insert(vid);
+            }
+        }
+    }
+
+    // Build edge replacement map: old EdgeId → new EdgeId with canonical vertices.
+    let mut edge_replace: HashMap<usize, EdgeId> = HashMap::new();
+    for gd in &group_data {
+        for oe in &gd.boundary_edges {
+            let eid = oe.edge();
+            if edge_replace.contains_key(&eid.index()) {
+                continue;
+            }
+            let edge = topo.edge(eid)?;
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let canon_start = canonical_vtx
+                .get(&quantize_vtx(sp))
+                .copied()
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "canonical vertex not found for edge start".to_string(),
+                })?;
+            let canon_end = canonical_vtx
+                .get(&quantize_vtx(ep))
+                .copied()
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "canonical vertex not found for edge end".to_string(),
+                })?;
+            if canon_start != edge.start() || canon_end != edge.end() {
+                let new_edge = Edge::new(canon_start, canon_end, edge.curve().clone());
+                let new_eid = topo.add_edge(new_edge);
+                edge_replace.insert(eid.index(), new_eid);
+            }
+        }
+    }
+
+    // Step 5: For each merge group, form loops and build merged faces.
+    let mut merged_face_ids: Vec<FaceId> = Vec::new();
+    let mut consumed: HashSet<usize> = HashSet::new();
+
+    for gd in group_data {
+        // Apply edge replacements to boundary edges.
+        let replaced_edges: Vec<OrientedEdge> = gd
+            .boundary_edges
+            .iter()
+            .map(|oe| {
+                if let Some(&new_eid) = edge_replace.get(&oe.edge().index()) {
+                    OrientedEdge::new(new_eid, oe.is_forward())
+                } else {
+                    *oe
+                }
+            })
+            .collect();
+
+        let mut loops = order_edges_into_loops(topo, &replaced_edges)?;
+
+        if loops.is_empty() {
+            continue;
+        }
+
+        let mut all_inner_wires = gd.inner_wires;
+
+        // Select the outer wire by enclosed 3D area (Newell normal magnitude).
+        // Edge count is unreliable — a hole tessellated into many short edges
+        // would be misclassified as the outer boundary.
+        let outer_idx = if loops.len() > 1 {
+            loops
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    let area_a = loop_area_3d(topo, a);
+                    let area_b = loop_area_3d(topo, b);
+                    area_a
+                        .partial_cmp(&area_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map_or(0, |(i, _)| i)
+        } else {
+            0
+        };
+        let outer_loop = loops.remove(outer_idx);
+
+        let new_wire = Wire::new(outer_loop, true).map_err(crate::OperationsError::Topology)?;
+        let new_wire_id = topo.add_wire(new_wire);
+
+        // Convert remaining loops to inner wires.
+        for inner_loop in loops {
+            if let Ok(iw) = Wire::new(inner_loop, true) {
+                all_inner_wires.push(topo.add_wire(iw));
+            }
+        }
+
+        let new_face = if gd.reversed {
+            Face::new_reversed(new_wire_id, all_inner_wires, gd.surface)
+        } else {
+            Face::new(new_wire_id, all_inner_wires, gd.surface)
+        };
+        let new_face_id = topo.add_face(new_face);
+        merged_face_ids.push(new_face_id);
+
+        for &fid in &gd.face_ids {
+            consumed.insert(fid.index());
+        }
+    }
+
+    if consumed.is_empty() {
+        return Ok(0);
+    }
+
+    // Step 6: Rebuild the shell with unmerged faces + new merged faces.
+    let mut new_faces: Vec<FaceId> = all_face_ids
+        .into_iter()
+        .filter(|f| !consumed.contains(&f.index()))
+        .collect();
+    new_faces.extend(merged_face_ids);
+
+    let new_shell = Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
+    *topo.shell_mut(shell_id)? = new_shell;
+
+    let final_count = topo.shell(shell_id)?.faces().len();
+    Ok(original_count - final_count)
+}
+
+/// Compute the enclosed 3D area of a loop of oriented edges using Newell's method.
+///
+/// Returns 0.0 if any vertex lookup fails (defensive fallback).
+fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
+    let mut positions: Vec<Point3> = Vec::with_capacity(loop_edges.len());
+    for oe in loop_edges {
+        let edge = match topo.edge(oe.edge()) {
+            Ok(e) => e,
+            Err(_) => return 0.0,
+        };
+        let vid = if oe.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        };
+        match topo.vertex(vid) {
+            Ok(v) => positions.push(v.point()),
+            Err(_) => return 0.0,
+        }
+    }
+    if positions.len() < 3 {
+        return 0.0;
+    }
+    // Newell normal magnitude = 2× enclosed area.
+    crate::winding::newell_normal(&positions).length() * 0.5
+}
+
+/// Quantized 3D position key for vertex matching in edge chaining.
+type QVPos = (i64, i64, i64);
+
+/// Quantize a vertex position for position-based edge chaining.
+fn quantize_vertex(p: Point3) -> QVPos {
+    let scale = 1e7; // 1 / linear tolerance (1e-7)
+    (
+        (p.x() * scale).round() as i64,
+        (p.y() * scale).round() as i64,
+        (p.z() * scale).round() as i64,
+    )
+}
+
+/// Edge info for wire ordering: oriented edge with quantized vertex positions.
+///
+/// Uses quantized 3D positions instead of vertex indices so that edges
+/// from different input solids at the same geometric location can chain
+/// correctly even when they reference different vertex entities.
+struct EdgeInfo {
+    oe: OrientedEdge,
+    start_pos: QVPos,
+    end_pos: QVPos,
+}
+
+/// An edge's end positions, in either order, and its midpoint, as a key that
+/// coincident edges which are different entities share. The midpoint keeps a
+/// chord and an arc between the same ends apart.
+fn edge_position_key(
+    topo: &Topology,
+    edge: EdgeId,
+) -> Result<(QVPos, QVPos, QVPos), crate::OperationsError> {
+    let e = topo.edge(edge)?;
+    let (start, end) = (
+        topo.vertex(e.start())?.point(),
+        topo.vertex(e.end())?.point(),
+    );
+    let (t0, t1) = if e.start() == e.end()
+        && matches!(e.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+    {
+        (0.0, std::f64::consts::TAU)
+    } else {
+        e.curve().domain_with_endpoints(start, end)
+    };
+    let mid = quantize_vertex(
+        e.curve()
+            .evaluate_with_endpoints(0.5 * (t0 + t1), start, end),
+    );
+    let (a, b) = (quantize_vertex(start), quantize_vertex(end));
+    Ok(if a <= b { (a, b, mid) } else { (b, a, mid) })
+}
+
+/// Whether boundary loops on a curved surface leave a band with no seam the
+/// mesher cannot cover: a loop goes once around a cylinder's or cone's axis.
+/// On a torus or NURBS surface any face with several loops counts, which errs
+/// toward keeping faces apart.
+fn seamless_band(
+    topo: &Topology,
+    surface: &FaceSurface,
+    loops: &[Vec<OrientedEdge>],
+) -> Result<bool, crate::OperationsError> {
+    let (origin, axis) = match surface {
+        FaceSurface::Cylinder(c) => (c.origin(), c.axis()),
+        FaceSurface::Cone(c) => (c.apex(), c.axis()),
+        // The mesher covers a merged sphere face, latitude bands included.
+        FaceSurface::Plane { .. } | FaceSurface::Sphere(_) => return Ok(false),
+        FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => return Ok(true),
+    };
+    let Ok(frame) = brepkit_math::frame::Frame3::from_normal(origin, axis) else {
+        return Ok(true);
+    };
+    let angle = |p: Point3| {
+        let d = p - origin;
+        d.dot(frame.y).atan2(d.dot(frame.x))
+    };
+    for lp in loops {
+        let mut points = Vec::new();
+        for oe in lp {
+            let e = topo.edge(oe.edge())?;
+            let (a, b) = (
+                topo.vertex(e.start())?.point(),
+                topo.vertex(e.end())?.point(),
+            );
+            // A closed circle or ellipse runs its whole turn.
+            let (t0, t1) = if e.start() == e.end()
+                && matches!(e.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+            {
+                (0.0, std::f64::consts::TAU)
+            } else {
+                e.curve().domain_with_endpoints(a, b)
+            };
+            let mut samples: Vec<Point3> = (0..8)
+                .map(|k| {
+                    let t = (t1 - t0).mul_add(f64::from(k) / 8.0, t0);
+                    e.curve().evaluate_with_endpoints(t, a, b)
+                })
+                .collect();
+            if !oe.is_forward() {
+                samples.push(e.curve().evaluate_with_endpoints(t1, a, b));
+                samples.reverse();
+                samples.pop();
+            }
+            points.extend(samples);
+        }
+        let mut turn = 0.0;
+        for (i, &p) in points.iter().enumerate() {
+            let q = points[(i + 1) % points.len()];
+            let mut step = angle(q) - angle(p);
+            if step > std::f64::consts::PI {
+                step -= std::f64::consts::TAU;
+            } else if step < -std::f64::consts::PI {
+                step += std::f64::consts::TAU;
+            }
+            turn += step;
+        }
+        if turn.abs() > std::f64::consts::PI {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Order boundary edges into one or more closed loops.
+///
+/// Returns a `Vec<Vec<OrientedEdge>>` where each inner vec is a closed
+/// loop with edges chained end-to-start. Empty if edges can't form any
+/// valid loop.
+fn order_edges_into_loops(
+    topo: &Topology,
+    edges: &[OrientedEdge],
+) -> Result<Vec<Vec<OrientedEdge>>, crate::OperationsError> {
+    if edges.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut infos: Vec<EdgeInfo> = Vec::with_capacity(edges.len());
+    for oe in edges {
+        let edge = topo.edge(oe.edge())?;
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let (start_pos, end_pos) = if oe.is_forward() {
+            (quantize_vertex(sp), quantize_vertex(ep))
+        } else {
+            (quantize_vertex(ep), quantize_vertex(sp))
+        };
+        infos.push(EdgeInfo {
+            oe: *oe,
+            start_pos,
+            end_pos,
+        });
+    }
+
+    // Build a map from start_position → edge index for quick lookup.
+    let mut start_map: HashMap<QVPos, Vec<usize>> = HashMap::new();
+    for (i, info) in infos.iter().enumerate() {
+        start_map.entry(info.start_pos).or_default().push(i);
+    }
+
+    let mut used = vec![false; edges.len()];
+    let mut loops: Vec<Vec<OrientedEdge>> = Vec::new();
+
+    // Walk chains starting from each unused edge.
+    while let Some(start_idx) = used.iter().position(|&u| !u) {
+        let mut chain = Vec::new();
+        chain.push(infos[start_idx].oe);
+        used[start_idx] = true;
+        let chain_start = infos[start_idx].start_pos;
+        let mut current_end = infos[start_idx].end_pos;
+
+        let max_steps = edges.len();
+        for _ in 1..=max_steps {
+            if current_end == chain_start {
+                break; // loop closed
+            }
+            let candidates = match start_map.get(&current_end) {
+                Some(c) => c,
+                None => break, // broken chain
+            };
+            let mut found = false;
+            for &idx in candidates {
+                if !used[idx] {
+                    used[idx] = true;
+                    chain.push(infos[idx].oe);
+                    current_end = infos[idx].end_pos;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                break; // dead end
+            }
+        }
+
+        // Only keep the chain if it forms a closed loop.
+        if current_end == chain_start && !chain.is_empty() {
+            loops.push(chain);
+        }
+    }
+
+    Ok(loops)
+}
+
+/// Convert all analytic geometry in a solid to NURBS (B-Spline) representation.
+///
+/// Replaces every analytic surface (Plane, Cylinder, Cone, Sphere, Torus) with
+/// its NURBS equivalent and every analytic curve (Line, Circle, Ellipse) with
+/// a NURBS curve. NURBS surfaces and curves already in the model are left
+/// untouched.
+///
+/// Returns the number of faces and edges that were converted.
+///
+/// Converts every analytic surface and curve to a NURBS representation.
+/// Stored pcurves are dropped on conversion — see
+/// `brepkit_heal::custom::convert_to_bspline` for the full rationale.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup or NURBS construction fails.
+pub fn convert_to_bspline(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<usize, crate::OperationsError> {
+    brepkit_heal::custom::convert_to_bspline::convert_solid_to_bspline(topo, solid).map_err(|e| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("convert_to_bspline failed: {e}"),
+        }
+    })
+}
+
+/// Recognize and replace NURBS surfaces and edges with their analytic
+/// (elementary) forms wherever possible.
+///
+/// Runs both face-surface recognition (Plane, Cylinder, Sphere, Cone,
+/// Torus) and edge-curve recognition (Line, Circle, Ellipse) in
+/// sequence. Returns the combined number of replacements.
+///
+/// This is the inverse of [`convert_to_bspline`]: STEP/IGES imports
+/// that came in as NURBS (e.g., from CAD systems that export
+/// everything as B-splines) can be normalized back into the analytic
+/// forms that brepkit's intersection / blend / boolean operators
+/// handle most efficiently.
+///
+/// Hyperbola and Parabola curve types are recognized but cannot yet
+/// be stored as analytic `EdgeCurve` variants (no
+/// `EdgeCurve::Hyperbola`/`Parabola` exists in topology); they keep
+/// their NURBS representation.
+///
+/// # Atomicity
+///
+/// Recognition runs in two passes (surfaces, then edges). Each pass
+/// snapshots its inputs before mutating, and individual mutations
+/// can't fail on valid topology — the only failure path is the
+/// initial topology lookup at the start of each pass. A pass that
+/// gets past its snapshot will run to completion.
+///
+/// As a result, an error from the *edge* pass means the surface
+/// pass already committed its mutations: the topology is in a
+/// partially converted state (analytic surfaces, NURBS edges).
+/// In practice the edge-pass failure mode requires malformed
+/// topology — a cleanly-loaded solid won't hit it. Callers that
+/// need transactional semantics should checkpoint the topology
+/// first and restore on error.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup fails. See the
+/// "Atomicity" section above for partial-mutation semantics.
+pub fn convert_to_elementary(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: f64,
+) -> Result<usize, crate::OperationsError> {
+    let tol = brepkit_math::tolerance::Tolerance {
+        linear: tolerance,
+        ..brepkit_math::tolerance::Tolerance::new()
+    };
+    let surfaces =
+        brepkit_heal::custom::convert_to_elementary::convert_to_elementary(topo, solid, &tol)
+            .map_err(|e| crate::OperationsError::InvalidInput {
+                reason: format!("convert_to_elementary (surfaces) failed: {e}"),
+            })?;
+    let edges =
+        brepkit_heal::custom::convert_to_elementary::convert_edges_to_elementary(topo, solid, &tol)
+            .map_err(|e| crate::OperationsError::InvalidInput {
+                reason: format!("convert_to_elementary (edges) failed: {e}"),
+            })?;
+    Ok(surfaces + edges)
+}
+
+#[cfg(test)]
+mod tests;

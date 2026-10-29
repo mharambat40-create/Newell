@@ -522,7 +522,9 @@ elements instead of trying to display all names.
 [1 Element    ☰]
 ```
 
-`☰` opens management of the current selected entities.
+`☰` opens management of the current selected entities using the semantic
+variant in §19.2. It is an ordered-item manager only for an ordered input;
+single-reference and unordered inputs reopen their candidate chooser.
 
 ### Profile-selection row
 
@@ -2178,8 +2180,12 @@ The dimensions of the fields remain fixed.
 
 # 19. Generic Selection box
 
-**Reference alignment, 2026-10-27.** Empty Selection has exactly one blank
-content row. The reference is:
+**Binding selection layout, clarified 2026-10-28.** Sections 19–21 apply to
+every production selection popup: standalone, command-field, geometry-qualified
+and Action Box presentations, in both Themes with Color off or on. Modal input
+blocking does not prescribe a double border or a separate body title. All these
+paths use the shared geometry in §19.1; variant content alone differs. Empty
+Selection has exactly one blank content row. The reference is:
 
 ```text
 ╭─Selection───────────────────╮
@@ -2246,9 +2252,8 @@ Column 14 is OK padding, not a shared cell. OK hover substitutes the boundaries
 at x=0 and x=15; Cancel hover substitutes x=15 and x=30. Glyph substitutions
 retain the same ownership, shared-border routing and Contour ink.
 
-**Proposed placement policy for approval with the alignment plan:** keep the
-existing distinction: candidate/membership modals are centered in shell overlay
-bounds; ordered-item management replaces the originating Action Box at its
+**Placement:** retain the existing presentation distinction: candidate/membership
+modals are centered in shell overlay bounds; ordered-item management replaces the originating Action Box at its
 usual top/right anchor, using this compact height. Formula stays centered.
 Never derive placement from the incorrect screenshot. For a centered modal,
 use the existing `center_modal` position/available allocation; draw the logical
@@ -2266,20 +2271,35 @@ their existing candidate chooser, cardinality and filters. In that chooser
 checkboxes describe candidate admission; they do not redefine every profile as
 a merge scope or an ordered selected-item row.
 
-For an input with selected-item management (Loft Profile, Sweep Profile and
-Sweep Path), the field body opens its candidate chooser; its populated `☰`
-opens the ordered-item manager (§20). Empty fields still open the chooser.
-Both existing field parts retain keyboard activation; no shortcut or glyph is
-added. This explicit distinction preserves a way to add/replace eligible items
-without mixing unchecked candidates into an ordered selected list.
+The explicit current-purpose mapping is:
 
-These presentation rules do not raise existing cardinality limits or implement
-new topology/commands. In particular, current Sweep Profile/Path and Loft
-Profile limits remain as supplied by their descriptors; a one-item manager has
-a remove control and an inert reorder handle. Truly multi-item ordered requests
-use their supplied order. Unsupported inputs show zero actual candidates,
-never illustrative profiles. The field's eligible candidate universe and its
-selected ordered vector are separate data even when one is empty.
+| Semantic input | Field body / empty field | Populated `☰` | Cardinality / ordering |
+|---|---|---|---|
+| Extrude Profile, Along, Up to and all start/end/nested targets | Candidate chooser | Candidate chooser | Existing typed single-reference policy; no handles/removal rows |
+| Revolve Profile, Axis and all termination targets | Candidate chooser | Candidate chooser | Existing single-reference policy; no ordered management |
+| Loft Profile | Candidate chooser | Ordered selected-profile manager (`Profils`, §20) | Semantically ordered under §12.1; preserve current max1 implementation limit |
+| Loft start/end Match entities, Guide, Path and Connection Start/End | Candidate chooser | Candidate chooser | Existing single-reference filters and limits |
+| Sweep Profile and Path | Candidate chooser | Candidate chooser | Single section/trajectory under §§14.1–14.2; no inferred reorder semantics |
+| Merge targets in Extrude, Revolve, Loft and Sweep | Membership chooser | Membership chooser | Existing unordered membership and geometry-kind filters |
+| Boolean Target, Tools, Faces | Candidate/membership chooser | Candidate/membership chooser | Target single; Tools unordered multi; Faces currently unsupported and empty |
+| Standalone window-membership API | Membership chooser | Not a command-field control | Existing window membership; no invented user entry point |
+
+All candidate choosers use the checkbox admission rows of §19, including
+single-reference replacement according to the existing max-count policy.
+Only Loft Profile has a current documented ordered-set purpose. Do not treat a
+label containing Profile, a numeric key reused by another command, or an
+illustrative Sweep mention in the artwork as an ordering contract. The source
+Loft max1 limit is retained: its singleton manager can remove the item, but its
+handle cannot move it. Multi-item ordered-editor coverage uses explicit runtime
+requests; it does not establish a multi-profile CAD pipeline or raise limits.
+
+The field body always permits candidate admission/replacement. A populated
+ordered field's `☰` opens only its selected identities in stored order. Empty
+fields open only candidates. Both field parts retain keyboard activation; no
+shortcut or glyph is added. Unsupported inputs show zero actual candidates,
+never illustrative profiles. The eligible universe and selected vector remain
+separate even when one is empty. Assign handles and removal controls only to
+the ordered presentation, never to a single-reference chooser.
 
 Edits remain a window-local modal draft. Only OK emits the ordered identity
 vector for the exact document/modal/command-field lifetime. Cancel/Escape
@@ -2295,7 +2315,8 @@ membership and restores the surviving original control. If the originating
 field or command lifetime no longer exists, clear its stale focus rather than
 transferring it to another field or session.
 
-An empty field cannot issue or accept a new ManageSelected request. The shell
+An empty field cannot issue or accept a new ManageSelected request.
+Nonordered fields cannot issue or accept ManageSelected at any count. The shell
 rejects activation of an absent `☰`, and the application rechecks nonempty
 accepted membership before opening management. Reject a stale request without
 allocating/opening a modal or changing the destination. This does not prevent
@@ -2908,14 +2929,26 @@ expansion is per-window presentation state. Stable tagged `OriginFolder` and
 remain stable across history publication. The fixed historical artwork fixture
 above remains unchanged; it is not live startup content.
 
-Origin and its children are immutable reference rows: no geometric selection,
-visibility, rename, delete, reorder, insertion boundary or playhead host. They
-never enter `ModelTreeProjection.features` history or Elements/counts. Existing
-operation order and selection remain unchanged. Presentation maps history rows
-by semantic identity, never by an offset from the Features header. A playhead
-drag over any Origin row leaves the cursor unchanged. The first operation gap
-is displayed after the entire visible Origin subtree; an empty history's End
-is likewise after that subtree. Collapse/expand retains the same history gap.
+Origin and its children are immutable built-in references. They are selectable
+in the viewport and tree using the stable `OriginReference` identity shared by
+both routes; labels, row positions and model entity IDs are never used to link
+them. Viewport hit priority is origin point, then axes, then planes; ties within
+axes or planes resolve by nearest camera depth and then the fixed order
+`X/Y/Z` or `XY/XZ/YZ`. Thin axes admit a 5-pixel screen-space tolerance. A
+reference click consumes input before model picking or camera navigation.
+The existing selection modifiers apply, and the existing tree row selection
+visual is used; reference geometry receives no new selection effect. Selecting
+a reference expands Origin and scrolls only enough to reveal its selected row.
+Faint depth-occluded fragments remain selectable; clipped or otherwise
+undrawn references do not. References have no visibility, rename, delete,
+reorder, insertion boundary or playhead-host actions. They never enter
+`ModelTreeProjection.features` history, Elements/counts, modeling inputs or
+camera-fitting bounds. Existing operation order and selection remain unchanged.
+Presentation maps history rows by semantic identity, never by an offset from the
+Features header. A playhead drag over any Origin row leaves the cursor unchanged.
+The first operation gap is displayed after the entire visible Origin subtree;
+an empty history's End is likewise after that subtree. Collapse/expand retains
+the same history gap.
 
 **Live insertion cursor (M4.2).** The playhead identifies where a new operation
 will enter history. In a live document it may be placed before the first
@@ -4222,8 +4255,8 @@ occlusions, never the widget tile. The scene viewport rectangle is unchanged.
 
 **World-origin scene references (focused Executor amendment).** These graphics
 remain anchored at `(0,0,0)` and use the main viewport camera, independently of
-the corner navigator. Freeze their camera-relative axis length at **96 physical
-pixels** (the reference baseline, not a UI-scale multiplier). The neutral matte
+the corner navigator. Freeze their camera-relative axis length at **192 physical
+pixels**, twice the former 96-pixel length (not a UI-scale multiplier). The neutral matte
 #C9CDD2 origin sphere has diameter **3.84 pixels**, half its former 7.68-pixel
 baseline; diffuse shading remains 0.80…1.00, with no specular or cast shadow.
 
@@ -4233,17 +4266,21 @@ Retain a one-physical-pixel line width. Use screen-space **6-pixel dashes and
 4-pixel gaps**, beginning at the projected origin; alpha 0.85. Orbit naturally
 foreshortens directions; do not normalize individual projected axis lengths.
 
-The three planes occupy only positive quadrants. For each non-normal coordinate
-use the interval **[0.05,0.70]** times the reference axis length: the 5% inset
-applies to both bordering axes, including outlines. All three planes and their
-outlines use the same neutral gray #C9CDD2; they are not colored by their
-normal axes. Fills have alpha 0.10 and borders alpha 0.20; no internal
+The three planes occupy only positive quadrants. Each plane has an outer extent
+of **156 physical pixels** along each of its two in-plane coordinates, with an
+inset of **20% of that coordinate's outer extent** from both bordering axes.
+Thus each interval from the origin is **[31.2,156] pixels** (local reference
+coordinates [0.1625,0.8125]), giving each plane a width and height of 124.8
+pixels: twice the former 62.4 pixels. Apply the inset to both bordering axes,
+including outlines. All three planes and their outlines use the same neutral
+gray #C9CDD2; they are not colored by their normal axes. Fills have alpha 0.10
+and borders alpha 0.20; no internal
 grid, texture, animation or document-plane meaning. Omit the collapsed outline
 of an exactly edge-on plane so it cannot fill an axis's dash gaps. They need not share centers
 with the sphere: the assembly's anchor is world origin, not each plane's center.
 
 Derive world units per pixel as `2 * origin_clip_w / (abs(projection_yy) *
-viewport_height)`, valid in both supported camera projections; multiply by 96
+viewport_height)`, valid in both supported camera projections; multiply by 192
 for the uniform reference scale. Scale only local geometry around world origin,
 never the main camera or origin translation. Perspective depth and orthographic
 zoom therefore preserve camera-relative scale; pan follows projected world
@@ -4361,9 +4398,17 @@ orientation around that pivot while keeping its projected position fixed.
 Preserve focal distance, projection mode, FOV, orthographic height and lens
 shift, so orientation changes do not fit, recenter or move the model's screen
 anchor. If no model is visible, use the existing camera-target fallback.
-Commands are instant, with no animation, pole clamp on named views or added
-drag control. Existing orbit pole-clamp and Normal to semantics remain
-unchanged.
+Named view commands use a 250 ms smooth ease-in/ease-out camera transition.
+Interpolate orientation along the shortest quaternion path and continuously
+keep the captured contextual pivot on its original projected pixel at its
+original camera depth. Preserve projection and apparent zoom. Repeated view
+requests start from the currently displayed pose; direct orbit, pan or zoom
+interrupts immediately and continues from that pose. Focus loss or invalidated
+camera/window context cancels the transition. Rendering remains event-driven:
+request frames only while a transition is active. Direct navigation remains
+immediate, and pointer tracking has no animation or inertia. Do not clamp named
+view poles or add drag control. Existing orbit pole-clamp and Normal to
+semantics remain unchanged.
 
 Only an independent primary press/release on the same visible component
 activates it. Use existing 4 logical-pixel click/drag slop (multiply by the

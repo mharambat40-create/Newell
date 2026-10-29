@@ -477,7 +477,10 @@ Cancellation retains the current camera pose.
 
 Preserve the existing projection behavior that prevents Action Box toggles or viewport resize from recentering the scene. In the new ownership model, the controller computes projection changes; the renderer only consumes them.
 
-Request redraw only when camera, geometry, or UI state changes. Add no continuous animation loop.
+Request redraw only when camera, geometry, or UI state changes. Automatic named-view
+changes use the separately specified 250 ms event-driven camera transition; request
+frames only until that transition completes. Add no continuous rendering loop or
+animation for direct pointer navigation.
 
 ## 10. Exact file changes
 

@@ -486,6 +486,9 @@ impl super::ShellState {
     pub fn entity_selection(&self) -> &crate::EntitySelectionView {
         &self.entity_selection
     }
+    pub fn origin_selection(&self) -> &[OriginReference] {
+        &self.origin_selection
+    }
     pub fn selection_field_count(&self, field: crate::SelectionFieldKey) -> usize {
         self.selection_field_counts
             .get(&field)
@@ -499,6 +502,51 @@ impl super::ShellState {
         view.validate(&self.projection)?;
         let changed = self.entity_selection != view;
         self.entity_selection = view;
+        Ok(changed)
+    }
+    pub fn set_origin_selection(
+        &mut self,
+        references: Vec<OriginReference>,
+    ) -> Result<bool, UiError> {
+        let unique: BTreeSet<_> = references.iter().copied().collect();
+        if unique.len() != references.len() {
+            return Err(UiError::InvalidSelection);
+        }
+        let mut changed = self.origin_selection != references;
+        self.origin_selection = references;
+        if !self.origin_selection.is_empty() {
+            let expanded_before = self.expanded.clone();
+            let scroll_before = self.tree_scroll[0];
+            let folder = self.projection.target(TreeTargetKind::OriginFolder);
+            self.expanded.insert(folder);
+            self.rebuild_tree_slots();
+            let inner = self.layout().features.inset(1);
+            let height = inner.height() as usize;
+            for reference in &self.origin_selection {
+                let target = self
+                    .projection
+                    .target(TreeTargetKind::OriginReference(*reference));
+                let Some(index) = self.nodes[0].iter().position(|node| node.target == target)
+                else {
+                    continue;
+                };
+                let Some(line) = self.tree_lines(super::Tree::Features).iter().position(
+                    |line| matches!(line, super::data::Line::Node(row) if row.index == index),
+                ) else {
+                    continue;
+                };
+                let offset = &mut self.tree_scroll[0];
+                if line < *offset {
+                    *offset = line;
+                } else if height > 0 && line >= offset.saturating_add(height) {
+                    *offset = line.saturating_add(1).saturating_sub(height);
+                }
+            }
+            changed |= self.expanded != expanded_before || self.tree_scroll[0] != scroll_before;
+        }
+        if changed {
+            self.sync();
+        }
         Ok(changed)
     }
     pub fn operation_selection(&self, id: OpaqueTreeId) -> (usize, usize) {
@@ -526,6 +574,9 @@ impl super::ShellState {
                 let (selected, total) = self.operation_selection(id);
                 total > 0 && selected == total
             }
+            TreeTargetKind::OriginReference(reference) => {
+                self.origin_selection.contains(&reference)
+            }
             _ => false,
         }
     }
@@ -535,7 +586,9 @@ impl super::ShellState {
     pub(super) fn request_entity_selection(&mut self, target: TreeTarget) {
         if !matches!(
             target.kind,
-            TreeTargetKind::Entity(_) | TreeTargetKind::Operation(_)
+            TreeTargetKind::Entity(_)
+                | TreeTargetKind::Operation(_)
+                | TreeTargetKind::OriginReference(_)
         ) {
             return;
         }
@@ -545,6 +598,30 @@ impl super::ShellState {
                 edit: self.selection_edit,
             },
         ));
+        if let TreeTargetKind::OriginReference(reference) = target.kind
+            && self.reference_fixture
+        {
+            let mut selected = self.origin_selection.clone();
+            match self.selection_edit {
+                crate::SelectionEdit::Replace => selected = vec![reference],
+                crate::SelectionEdit::Add => {
+                    if !selected.contains(&reference) {
+                        selected.push(reference);
+                    }
+                }
+                crate::SelectionEdit::Toggle => {
+                    if let Some(index) = selected.iter().position(|value| *value == reference) {
+                        selected.remove(index);
+                    } else {
+                        selected.push(reference);
+                    }
+                }
+                crate::SelectionEdit::Remove => selected.retain(|value| *value != reference),
+                crate::SelectionEdit::Clear => selected.clear(),
+            }
+            let _ = self.set_origin_selection(selected);
+            return;
+        }
         // The explicit artwork fixture has its own fake document responder. Live windows
         // only receive a copy from their application owner after consuming this intent.
         if self.reference_fixture {
@@ -771,6 +848,7 @@ impl super::ShellState {
             document: self.projection.document,
             entities: Vec::new(),
         };
+        self.origin_selection.clear();
         if !self.reference_fixture && self.panel().showing() {
             let cancel = crate::WidgetId::new(
                 super::ACTION_BASE
@@ -1273,9 +1351,21 @@ mod origin_reference_tests {
         }
         for i in 1..9 {
             s.activate_tree(Tree::Features, i, TreePart::Row);
+            let target = s.nodes[0][i].target;
+            if let TreeTargetKind::OriginReference(reference) = target.kind {
+                assert!(matches!(
+                    s.take_tree_edit(),
+                    Some((same, TreeIntentKind::Select { .. })) if same == target
+                ));
+                s.set_origin_selection(vec![reference]).unwrap();
+                assert!(s.is_entity_target_selected(target));
+                s.set_origin_selection(Vec::new()).unwrap();
+            } else {
+                assert!(s.take_tree_edit().is_none());
+                assert!(!s.is_entity_target_selected(target));
+            }
             s.activate_tree(Tree::Features, i, TreePart::Check);
             assert!(s.take_tree_edit().is_none());
-            assert!(!s.is_entity_target_selected(s.nodes[0][i].target));
         }
         assert_eq!(s.playhead, gap);
         assert_eq!(s.projection, p);
@@ -1293,6 +1383,35 @@ mod origin_reference_tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(s.projection.elements, p.elements);
+    }
+
+    #[test]
+    fn origin_selection_expands_and_minimally_scrolls_the_selected_reference_into_view() {
+        let mut s = ShellState::new_application(54, 15);
+        s.set_tree_projection(ModelTreeProjection::empty(TreeDocumentId::new(9)))
+            .unwrap();
+        s.set_origin_selection(vec![OriginReference::YZ]).unwrap();
+        let target = s
+            .projection
+            .target(TreeTargetKind::OriginReference(OriginReference::YZ));
+        assert!(
+            s.expanded
+                .contains(&s.projection.target(TreeTargetKind::OriginFolder))
+        );
+        assert!(s.is_entity_target_selected(target));
+        let row_index = s.nodes[0]
+            .iter()
+            .position(|node| node.target == target)
+            .unwrap();
+        let row_line = s
+            .tree_lines(Tree::Features)
+            .iter()
+            .position(|line| matches!(line, Line::Node(row) if row.index == row_index))
+            .unwrap();
+        let height = s.layout().features.inset(1).height() as usize;
+        assert!(row_line >= s.tree_scroll[Tree::Features.slot()]);
+        assert!(row_line < s.tree_scroll[Tree::Features.slot()] + height);
+        assert_eq!(s.origin_selection(), &[OriginReference::YZ]);
     }
     #[test]
     fn origin_reference_rows_never_host_or_move_operation_insertion() {

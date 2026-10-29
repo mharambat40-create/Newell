@@ -514,8 +514,8 @@ pub(crate) fn build_extrude_spec(
         },
         symmetric: ui.symmetric,
         invert: ui.invert,
-        merge_with_all: ui.merge_with_all,
-        merge_scope: if ui.merge_with_all {
+        merge_with_all: ui.merge_with_all || ui.result == newell_ui::ExtrudeResultMode::New,
+        merge_scope: if ui.merge_with_all || ui.result == newell_ui::ExtrudeResultMode::New {
             Vec::new()
         } else {
             selection(27)

@@ -68,7 +68,22 @@ impl ExtrudeTargets {
 /// Exact startup geometry recipe. Metadata-only bases do not acquire fabricated geometry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BaseGeometryRecipe {
-    Box { size: [Length; 3] },
+    Box {
+        size: [Length; 3],
+    },
+    /// Headless regression fixture; never admitted by the production application.
+    #[cfg(feature = "test-support")]
+    TestBox {
+        size: [Length; 3],
+        transform: [[f64; 4]; 4],
+    },
+    /// Exact curved source for worker/replay tests, not an interactive profile producer.
+    #[cfg(feature = "test-support")]
+    TestCubic {
+        control: [[f64; 2]; 4],
+        depth: Length,
+        transform: [[f64; 4]; 4],
+    },
 }
 /// Kernel-derived supporting plane frame, represented only by owned Newell data.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,6 +128,9 @@ pub struct ProfileFace {
 /// Immutable geometry description used by model preflight and candidate row projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityGeometry {
+    /// Source-wire construction key when proven by exact sweep/domain construction.
+    /// Split Boolean components may share a key; uniqueness is checked before remapping.
+    pub source_wire: Option<u32>,
     pub entity: EntityId,
     pub generation: GeometryGeneration,
     pub kind: EntityKind,
@@ -286,6 +304,7 @@ impl DocumentEdit {
 /// One exact connected output, measured and described by the geometry worker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeometryComponent {
+    pub source_wire: Option<u32>,
     pub kind: EntityKind,
     pub faces: Vec<ProfileFace>,
     pub measure: f64,
@@ -587,7 +606,7 @@ impl Document {
                         consumed: Vec::new(),
                         name: "Extrude".into(),
                         outputs: Vec::new(),
-                        spec: spec.clone(),
+                        spec: spec.active_recipe(),
                     })),
                 );
                 if Some(id) != feature {
@@ -609,7 +628,7 @@ impl Document {
                 let Feature::Extrude(extrude) = value else {
                     return Err(ModelError::InvalidGeometryManifest);
                 };
-                extrude.spec = spec.clone();
+                extrude.spec = spec.active_recipe();
             }
             DocumentEdit::ParameterDefinitions => {}
         }
@@ -699,23 +718,82 @@ fn remap_face(
 /// Cap boundaries copy the input face's ordered wire/edge construction keys.
 /// Follow that construction chain to the Box seed; coordinate changes do not
 /// erase a proven key, and unrelated/boolean/ambiguous constructions never match.
-fn boundary_construction_survives(mut old:FaceRef,mut new:FaceRef,source:&Document,candidate:&Document)->bool {
+fn boundary_construction_survives(
+    mut old: FaceRef,
+    mut new: FaceRef,
+    source: &Document,
+    candidate: &Document,
+) -> bool {
     for _ in 0..=source.features().len() {
-        let Some(old_face)=source.entity_geometry(old.entity).and_then(|geometry|geometry.faces.iter().find(|face|face.face==old.face)) else {return false;};
-        let Some(new_face)=candidate.entity_geometry(new.entity).and_then(|geometry|geometry.faces.iter().find(|face|face.face==new.face)) else {return false;};
-        if old_face.wires==new_face.wires {return true;}
-        if old_face.provenance!=new_face.provenance || old_face.wires.len()!=new_face.wires.len() || old_face.wires.iter().zip(&new_face.wires).any(|(a,b)|a.wire!=b.wire || a.closed!=b.closed || a.edges.len()!=b.edges.len() || a.edges.iter().zip(&b.edges).any(|(a,b)|a.edge!=b.edge || a.straight!=b.straight)) {return false;}
+        let Some(old_face) = source
+            .entity_geometry(old.entity)
+            .and_then(|geometry| geometry.faces.iter().find(|face| face.face == old.face))
+        else {
+            return false;
+        };
+        let Some(new_face) = candidate
+            .entity_geometry(new.entity)
+            .and_then(|geometry| geometry.faces.iter().find(|face| face.face == new.face))
+        else {
+            return false;
+        };
+        if old_face.wires == new_face.wires {
+            return true;
+        }
+        if old_face.provenance != new_face.provenance
+            || old_face.wires.len() != new_face.wires.len()
+            || old_face.wires.iter().zip(&new_face.wires).any(|(a, b)| {
+                a.wire != b.wire
+                    || a.closed != b.closed
+                    || a.edges.len() != b.edges.len()
+                    || a.edges
+                        .iter()
+                        .zip(&b.edges)
+                        .any(|(a, b)| a.edge != b.edge || a.straight != b.straight)
+            })
+        {
+            return false;
+        }
         match old_face.provenance {
-            FaceProvenance::Base(_) => return old.entity==new.entity && matches!((source.base_geometry_recipe(old.entity),candidate.base_geometry_recipe(new.entity)),(Some(BaseGeometryRecipe::Box{..}),Some(BaseGeometryRecipe::Box{..}))),
-            FaceProvenance::StartCap | FaceProvenance::EndCap => {},
+            FaceProvenance::Base(_) => {
+                return old.entity == new.entity
+                    && matches!(
+                        (
+                            source.base_geometry_recipe(old.entity),
+                            candidate.base_geometry_recipe(new.entity)
+                        ),
+                        (
+                            Some(BaseGeometryRecipe::Box { .. }),
+                            Some(BaseGeometryRecipe::Box { .. })
+                        )
+                    );
+            }
+            FaceProvenance::StartCap | FaceProvenance::EndCap => {}
             _ => return false,
         }
-        let Some((feature,Feature::Extrude(previous)))=source.features().iter().find(|(_,feature)|feature.outputs().contains(&old.entity)) else {return false;};
-        let Some(Feature::Extrude(current))=candidate.feature(*feature) else {return false;};
-        if previous.spec.result!=ExtrudeResult::New || current.spec.result!=ExtrudeResult::New {return false;}
-        let (Some(ProfileRef::Face(a)),Some(ProfileRef::Face(b)))=(previous.spec.profile,current.spec.profile) else {return false;};
-        if !remap_face(a,source,candidate).is_ok_and(|reference|reference==b) {return false;}
-        old=a;new=b;
+        let Some((feature, Feature::Extrude(previous))) = source
+            .features()
+            .iter()
+            .find(|(_, feature)| feature.outputs().contains(&old.entity))
+        else {
+            return false;
+        };
+        let Some(Feature::Extrude(current)) = candidate.feature(*feature) else {
+            return false;
+        };
+        if previous.spec.result != ExtrudeResult::New || current.spec.result != ExtrudeResult::New {
+            return false;
+        }
+        let (Some(ProfileRef::Face(a)), Some(ProfileRef::Face(b))) =
+            (previous.spec.profile, current.spec.profile)
+        else {
+            return false;
+        };
+        if !remap_face(a, source, candidate).is_ok_and(|reference| reference == b) {
+            return false;
+        }
+        old = a;
+        new = b;
     }
     false
 }
@@ -738,7 +816,9 @@ fn remap_spec(
                 .entity_geometry(remapped.entity)
                 .and_then(|entity| entity.faces.iter().find(|face| face.face == remapped.face))
                 .ok_or(ModelError::InvalidGeometryReference)?;
-            if old.wires != new.wires && !boundary_construction_survives(support,remapped,source,candidate) {
+            if old.wires != new.wires
+                && !boundary_construction_survives(support, remapped, source, candidate)
+            {
                 return Err(ModelError::InvalidGeometryReference);
             }
         }
@@ -782,7 +862,9 @@ fn remap_spec(
                     wire: reference.wire,
                     edge: reference.edge,
                 })?;
-            if old != new && !boundary_construction_survives(reference.support,remapped,source,candidate) {
+            if old != new
+                && !boundary_construction_survives(reference.support, remapped, source, candidate)
+            {
                 return Err(ModelError::InvalidGeometryReference);
             }
         }
@@ -803,13 +885,29 @@ fn same_profile_construction(
     if old == new {
         return true;
     }
-    let same_boundary = match (old,new) {
-        (ProfileRef::Face(_),ProfileRef::Face(_))=>true,
-        (ProfileRef::Wire{wire:a,..},ProfileRef::Wire{wire:b,..})=>a==b && boundary_construction_survives(old.support(),new.support(),source,candidate),
-        (ProfileRef::Edge{wire:a,edge:x,..},ProfileRef::Edge{wire:b,edge:y,..})=>a==b && x==y && boundary_construction_survives(old.support(),new.support(),source,candidate),
-        _=>false,
+    let same_boundary = match (old, new) {
+        (ProfileRef::Face(_), ProfileRef::Face(_)) => true,
+        (ProfileRef::Wire { wire: a, .. }, ProfileRef::Wire { wire: b, .. }) => {
+            a == b
+                && boundary_construction_survives(old.support(), new.support(), source, candidate)
+        }
+        (
+            ProfileRef::Edge {
+                wire: a, edge: x, ..
+            },
+            ProfileRef::Edge {
+                wire: b, edge: y, ..
+            },
+        ) => {
+            a == b
+                && x == y
+                && boundary_construction_survives(old.support(), new.support(), source, candidate)
+        }
+        _ => false,
     };
-    same_boundary && remap_face(old.support(),source,candidate).is_ok_and(|reference|reference==new.support())
+    same_boundary
+        && remap_face(old.support(), source, candidate)
+            .is_ok_and(|reference| reference == new.support())
 }
 impl DocumentCandidate {
     /// Read-only validated recipes for deterministic worker replay.
@@ -907,6 +1005,36 @@ impl DocumentCandidate {
                         .ok_or(ModelError::InvalidGeometryReference)?
                         .resolve_profile(ProfileRef::Face(target), true)?;
                 }
+                if extrude.spec.result == ExtrudeResult::New
+                    && extrude.spec.geometry == ExtrudeGeometry::Surface
+                {
+                    let profile = extrude
+                        .spec
+                        .profile
+                        .ok_or(ModelError::InvalidGeometryReference)?;
+                    let support = profile.support();
+                    let face = self
+                        .candidate
+                        .entity_geometry(support.entity)
+                        .and_then(|geometry| {
+                            geometry.faces.iter().find(|face| face.face == support.face)
+                        })
+                        .ok_or(ModelError::InvalidGeometryReference)?;
+                    let expected: BTreeSet<_> = match profile {
+                        ProfileRef::Face(_) => face.wires.iter().map(|wire| wire.wire).collect(),
+                        ProfileRef::Wire { wire, .. } | ProfileRef::Edge { wire, .. } => {
+                            BTreeSet::from([wire])
+                        }
+                    };
+                    let actual: BTreeSet<_> = geometry
+                        .components
+                        .iter()
+                        .filter_map(|component| component.source_wire)
+                        .collect();
+                    if actual != expected || actual.len() != geometry.components.len() {
+                        return Err(ModelError::InvalidGeometryManifest);
+                    }
+                }
                 if geometry.components.is_empty() && extrude.spec.result != ExtrudeResult::Remove {
                     return Err(ModelError::InvalidGeometryManifest);
                 }
@@ -944,7 +1072,8 @@ impl DocumentCandidate {
                 if !component.measure.is_finite()
                     || component.measure <= 0.
                     || component.face_count == 0
-                    || (component.kind == EntityKind::Body && component.face_count < 3)
+                    || (component.kind == EntityKind::Body
+                        && (component.face_count < 3 || component.source_wire.is_some()))
                 {
                     return Err(ModelError::InvalidGeometryManifest);
                 }
@@ -981,25 +1110,39 @@ impl DocumentCandidate {
                                     &self.candidate,
                                 ) =>
                         {
-                            old.outputs
-                                .get(component_index)
-                                .copied()
-                                .and_then(|entity| {
-                                    self.source.entity_geometry(entity).map(|old| {
-                                        let unchanged = old.faces == component.faces
-                                            && old.kind == component.kind
-                                            && old.measure == component.measure
-                                            && old.face_count == component.face_count;
-                                        (
-                                            entity,
-                                            if unchanged {
-                                                old.generation
-                                            } else {
-                                                result.generation
-                                            },
+                            let retained = if component_count == 1 {
+                                old.outputs.first().copied()
+                            } else if let Some(wire) = component.source_wire {
+                                let matching: Vec<_> = old
+                                    .outputs
+                                    .iter()
+                                    .copied()
+                                    .filter(|entity| {
+                                        self.source.entity_geometry(*entity).is_some_and(
+                                            |geometry| geometry.source_wire == Some(wire),
                                         )
                                     })
+                                    .collect();
+                                (matching.len() == 1).then(|| matching[0])
+                            } else {
+                                None
+                            };
+                            retained.and_then(|entity| {
+                                self.source.entity_geometry(entity).map(|old| {
+                                    let unchanged = old.faces == component.faces
+                                        && old.kind == component.kind
+                                        && old.measure == component.measure
+                                        && old.face_count == component.face_count;
+                                    (
+                                        entity,
+                                        if unchanged {
+                                            old.generation
+                                        } else {
+                                            result.generation
+                                        },
+                                    )
                                 })
+                            })
                         }
                         _ => None,
                     };
@@ -1058,6 +1201,7 @@ impl DocumentCandidate {
                 self.candidate.entity_geometry.insert(
                     entity,
                     EntityGeometry {
+                        source_wire: component.source_wire,
                         entity,
                         generation,
                         kind: component.kind,

@@ -9,3 +9,8 @@ mod harness;
 mod kernel;
 
 mod extrude_feasibility;
+
+mod sketch_curves;
+mod sketch_solver;
+
+mod sketch_regions;

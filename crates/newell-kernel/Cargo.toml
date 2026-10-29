@@ -10,6 +10,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-support = []
+m50-feasibility = ["brepkit-math/newell-m50", "brepkit-operations/newell-m50", "faer/newell-m50"]
+
 [dependencies]
 brepkit-math = "=4.2.2"
 brepkit-operations = "=4.2.2"
@@ -19,3 +23,10 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
+faer = { version = "=0.22.6", default-features = false, features = ["std", "sparse-linalg"] }
+rstar = "=0.12.2"
+ab_glyph = "=0.2.32"
+
+[[bench]]
+name = "sketch"
+harness = false

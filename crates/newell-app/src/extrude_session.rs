@@ -155,6 +155,8 @@ impl ExtrudeGeometrySession {
             insertion: self.insertion,
             parameters: parameters.clone(),
             cancelled: Arc::clone(&self.cancellation),
+            #[cfg(test)]
+            kernel_probe: None,
         })
     }
     fn eligible(&self, id: GeometryJobId, current: DocumentVersion) -> bool {
@@ -257,6 +259,110 @@ impl ExtrudeGeometrySession {
 mod tests {
     use super::*;
     use crate::{DocumentSession, geometry_worker::GeometryFailure};
+    #[test]
+    fn every_job_identity_field_rejects_stale_errors_and_transport_failure_consumes_ok_once()
+    -> Result<(), AppError> {
+        let document = DocumentSession::default();
+        let mut other = DocumentSession::default();
+        other.replace(Document::default())?;
+        let parameters = document
+            .document()
+            .begin_parameter_draft(newell_model::parameters::ParameterDraftOwner::Document)?;
+        let mut session = ExtrudeGeometrySession::new(
+            document.version(),
+            CommandInputSessionId(1),
+            1,
+            document.document().geometry_generation(),
+            None,
+            parameters.registry().epoch(),
+        );
+        let confirm = NumericConfirmRequest {
+            document: document.identity().tree(),
+            session: CommandInputSessionId(1),
+            operation: newell_ui::ActionOperation::Extrude,
+            attempt: newell_ui::NumericConfirmAttemptId(1),
+            through_sequence: 0,
+        };
+        let request = session.freeze(
+            document.version(),
+            document.document(),
+            DocumentEdit::ParameterDefinitions,
+            &parameters,
+            PreparationPurpose::Confirm(confirm),
+        )?;
+        for field in 0..8 {
+            let mut wrong = request.id;
+            match field {
+                0 => wrong.worker_epoch += 1,
+                1 => wrong.document = other.identity(),
+                2 => wrong.session = CommandInputSessionId(2),
+                3 => wrong.base_revision += 1,
+                4 => wrong.draft_revision += 1,
+                5 => wrong.serial += 1,
+                6 => wrong.parameter_epoch += 1,
+                _ => wrong.source_generation = GeometryGeneration(wrong.source_generation.0 + 1),
+            }
+            assert!(
+                matches!(
+                    session.receive(
+                        WorkerReply::Failed {
+                            id: wrong,
+                            error: GeometryFailure::Cancelled,
+                        },
+                        document.version()
+                    ),
+                    PreparationEvent::Ignored
+                ),
+                "identity field {field}"
+            );
+            assert!(session.confirm_pending());
+            assert!(!request.cancelled.load(Ordering::Acquire));
+        }
+        assert_eq!(session.transport_failed(), Some(confirm));
+        assert!(request.cancelled.load(Ordering::Acquire));
+        assert!(!session.computing());
+        assert_eq!(session.transport_failed(), None);
+        assert!(matches!(
+            session.receive(
+                WorkerReply::Failed {
+                    id: request.id,
+                    error: GeometryFailure::Cancelled,
+                },
+                document.version()
+            ),
+            PreparationEvent::Ignored
+        ));
+        // Explicit retry owns a fresh cancellation flag and attempt, while a
+        // late failure from the dead transport cannot acknowledge that retry.
+        session.advance_draft(parameters.registry().epoch())?;
+        let retry_confirm = NumericConfirmRequest {
+            attempt: newell_ui::NumericConfirmAttemptId(2),
+            ..confirm
+        };
+        let retry = session.freeze(
+            document.version(),
+            document.document(),
+            DocumentEdit::ParameterDefinitions,
+            &parameters,
+            PreparationPurpose::Confirm(retry_confirm),
+        )?;
+        assert!(!retry.cancelled.load(Ordering::Acquire));
+        assert!(matches!(
+            session.receive(
+                WorkerReply::Failed {
+                    id: request.id,
+                    error: GeometryFailure::Cancelled,
+                },
+                document.version()
+            ),
+            PreparationEvent::Ignored
+        ));
+        assert!(matches!(session.receive(WorkerReply::Failed {
+            id:retry.id,error:GeometryFailure::Cancelled,
+        },document.version()),PreparationEvent::Rejected {request:Some(value),..} if value==retry_confirm));
+        assert_eq!(document.revision(), 0);
+        Ok(())
+    }
     #[test]
     fn newer_ready_wins_and_late_ready_is_released_without_replacing_the_preview()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -414,7 +520,8 @@ impl ExtrudeGeometrySession {
         self.cancellation.store(true, Ordering::Release);
         self.ready = None;
         self.pending.take().and_then(|(_, purpose)| match purpose {
-            PreparationPurpose::Confirm(request) => Some(request), PreparationPurpose::Preview => None,
+            PreparationPurpose::Confirm(request) => Some(request),
+            PreparationPurpose::Preview => None,
         })
     }
     pub(crate) fn computing(&self) -> bool {

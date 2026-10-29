@@ -1,0 +1,1066 @@
+//! NURBS adaptive quadtree tessellation.
+
+use brepkit_math::det_hash::DetHashMap;
+use brepkit_math::vec::{Point3, Vec3};
+use brepkit_topology::Topology;
+
+use super::{TriangleMesh, TriangleMeshUV};
+
+/// A cell in the adaptive quadtree for NURBS tessellation.
+pub(super) struct AdaptiveCell {
+    u_min: f64,
+    u_max: f64,
+    v_min: f64,
+    v_max: f64,
+    depth: u8,
+    /// Indices into the cell vec; `None` means this is a leaf cell.
+    children: Option<[usize; 4]>,
+}
+
+/// Maximum recursion depth for adaptive subdivision.
+const MAX_DEPTH: u8 = 6;
+
+/// Initial grid resolution (cells per direction).
+const INITIAL_CELLS: usize = 4;
+
+/// Compute the v-parameter range for a surface by projecting boundary vertices.
+///
+/// `project_v` maps a 3D point to its v-parameter on the surface.
+/// Falls back to (-1.0, 1.0) if the face has no usable vertices.
+pub(super) fn compute_v_param_range(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    project_v: impl Fn(Point3) -> f64,
+) -> (f64, f64) {
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
+
+    if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        for oe in wire.edges() {
+            if let Ok(edge) = topo.edge(oe.edge()) {
+                for &vid in &[edge.start(), edge.end()] {
+                    if let Ok(vertex) = topo.vertex(vid) {
+                        let v = project_v(vertex.point());
+                        v_min = v_min.min(v);
+                        v_max = v_max.max(v);
+                    }
+                }
+            }
+        }
+    }
+
+    if v_min < v_max {
+        (v_min, v_max)
+    } else {
+        (-1.0, 1.0) // fallback
+    }
+}
+
+/// Compute the tube-angle (v) range for a toroidal face from its wire boundary.
+///
+/// A full torus has no boundary constraint on v, so the default is the full
+/// tube `(0, TAU)`. A toroidal *band* (e.g. a rim-fillet quarter-torus) is
+/// bounded by two closed circle edges sitting at distinct constant v; the band
+/// fills the arc between them. v is periodic, so two arcs are possible — the
+/// fillet band is the shorter one (a 90° rim corner spans π/2; we accept up to
+/// just under π). Returns `(0, TAU)` whenever the boundary doesn't clearly
+/// describe such a band (preserving full-tube tessellation for every other
+/// toroidal face).
+pub(super) fn compute_torus_v_range(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    torus: &brepkit_math::surfaces::ToroidalSurface,
+) -> (f64, f64) {
+    use brepkit_topology::edge::EdgeCurve;
+    use std::f64::consts::{PI, TAU};
+
+    // Collect the (constant) v of each closed circular boundary edge.
+    let mut circle_vs: Vec<f64> = Vec::new();
+    if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        for oe in wire.edges() {
+            if let Ok(edge) = topo.edge(oe.edge())
+                && matches!(edge.curve(), EdgeCurve::Circle(_))
+                && edge.start() == edge.end()
+                && let Ok(vertex) = topo.vertex(edge.start())
+            {
+                circle_vs.push(torus.project_point(vertex.point()).1.rem_euclid(TAU));
+            }
+        }
+    }
+
+    if circle_vs.len() != 2 {
+        return (0.0, TAU);
+    }
+    let (va, vb) = (circle_vs[0], circle_vs[1]);
+
+    // Two candidate arcs between the circles; the band is the shorter one.
+    let (lo, hi) = if va <= vb { (va, vb) } else { (vb, va) };
+    let forward_span = hi - lo; // arc lo -> hi without wrap
+    if forward_span <= PI {
+        (lo, hi)
+    } else {
+        // The wrapped arc hi -> lo + TAU is the shorter one.
+        (hi, lo + TAU)
+    }
+}
+
+/// Compute the v-range (axial extent) for an analytic surface from its face
+/// wire boundary vertices.
+///
+/// Projects all wire vertices onto the surface axis and returns (v_min, v_max).
+/// Falls back to (-1.0, 1.0) if the face has no usable vertices.
+pub(super) fn compute_axial_range(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    origin: Point3,
+    axis: Vec3,
+) -> (f64, f64) {
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
+
+    if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        for oe in wire.edges() {
+            if let Ok(edge) = topo.edge(oe.edge()) {
+                for &vid in &[edge.start(), edge.end()] {
+                    if let Ok(vertex) = topo.vertex(vid) {
+                        let pt = vertex.point();
+                        let to_pt = Vec3::new(
+                            pt.x() - origin.x(),
+                            pt.y() - origin.y(),
+                            pt.z() - origin.z(),
+                        );
+                        let v = axis.dot(to_pt);
+                        v_min = v_min.min(v);
+                        v_max = v_max.max(v);
+                    }
+                }
+            }
+        }
+    }
+
+    if v_min < v_max {
+        (v_min, v_max)
+    } else {
+        (-1.0, 1.0) // fallback
+    }
+}
+
+/// Compute the angular (u) range for an analytic face from its wire boundary.
+///
+/// Each edge of the outer wire is walked along its own span, just inside its
+/// ends (a pole or apex vertex has no `u` of its own), unwrapped so the walk
+/// never jumps a period, and contributes the interval of `u` it covers; the
+/// largest gap the intervals leave is the face's opening. Returns `(0, 2*pi)`
+/// for a face whose edges cover the full revolution.
+pub(super) fn compute_angular_range<F>(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    project: F,
+) -> (f64, f64)
+where
+    F: Fn(Point3) -> (f64, f64),
+{
+    use brepkit_topology::edge::EdgeCurve;
+    use std::f64::consts::{PI, TAU};
+    // Samples sit this fraction of a span inside its ends, which leaves
+    // slivers of `u` uncovered where edges meet; gaps narrower than
+    // `SLIVER` are covered.
+    const INSET: f64 = 1e-9;
+    const SLIVER: f64 = 1e-7;
+
+    let Ok(wire) = topo.wire(face_data.outer_wire()) else {
+        return (0.0, TAU);
+    };
+    // The walk reads a closed loop; a wire that does not close on itself
+    // bounds nothing to read, and keeps the full turn.
+    let ends = |oe: &brepkit_topology::wire::OrientedEdge| {
+        topo.edge(oe.edge())
+            .ok()
+            .map(|e| (oe.oriented_start(e), oe.oriented_end(e)))
+    };
+    let closes = match (
+        wire.edges().first().and_then(ends),
+        wire.edges().last().and_then(ends),
+    ) {
+        (Some((start, _)), Some((_, end))) => start == end,
+        _ => false,
+    };
+    if !closes {
+        return (0.0, TAU);
+    }
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
+    for oe in wire.edges() {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            continue;
+        };
+        let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            continue;
+        };
+        let (sp, ep) = (sv.point(), ev.point());
+        let curve = edge.curve();
+        if matches!(curve, EdgeCurve::Line) && (ep - sp).length() < 1e-12 {
+            continue;
+        }
+        let (t0, t1) = curve.domain_with_endpoints(sp, ep);
+        let pieces: u32 = match curve {
+            EdgeCurve::Line => 1,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                ((t1 - t0).abs() / (PI / 16.0)).ceil().max(1.0) as u32
+            }
+            EdgeCurve::NurbsCurve(_) => 32,
+        };
+        let points: Vec<Point3> = (0..=pieces)
+            .map(|k| {
+                let f = (1.0 - 2.0 * INSET).mul_add(f64::from(k) / f64::from(pieces), INSET);
+                curve.evaluate_with_endpoints((t1 - t0).mul_add(f, t0), sp, ep)
+            })
+            .collect();
+        // An edge collapsed to one point has no `u` of its own.
+        let reach = points
+            .iter()
+            .fold(0.0_f64, |m, p| m.max((*p - points[0]).length()));
+        if reach <= 1e-9 * (sp - Point3::new(0.0, 0.0, 0.0)).length().max(1.0) {
+            continue;
+        }
+        let mut prev: Option<f64> = None;
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in points {
+            let (mut u, _) = project(p);
+            if let Some(p) = prev {
+                u -= ((u - p) / TAU).round() * TAU;
+            }
+            prev = Some(u);
+            lo = lo.min(u);
+            hi = hi.max(u);
+        }
+        if hi - lo >= TAU - SLIVER {
+            return (0.0, TAU);
+        }
+        let shift = lo.rem_euclid(TAU) - lo;
+        intervals.push((lo + shift, hi + shift));
+    }
+    if intervals.is_empty() {
+        return (0.0, TAU);
+    }
+
+    // Union on the circle: split intervals crossing the period end, sort,
+    // merge, then find the widest uncovered gap.
+    let mut pieces: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in intervals {
+        if b > TAU {
+            pieces.push((a, TAU));
+            pieces.push((0.0, b - TAU));
+        } else {
+            pieces.push((a, b));
+        }
+    }
+    pieces.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in pieces {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 + SLIVER => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let mut best = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (i, &(_, b)) in merged.iter().enumerate() {
+        let next = if i + 1 < merged.len() {
+            merged[i + 1].0
+        } else {
+            merged[0].0 + TAU
+        };
+        if next - b > best.0 {
+            best = (next - b, b, next);
+        }
+    }
+    if best.0 <= SLIVER {
+        return (0.0, TAU);
+    }
+    let u_start = best.2.rem_euclid(TAU);
+    let u_end = u_start + (TAU - best.0);
+    (u_start, u_end)
+}
+
+/// Compute the latitude (v) range for a sphere face from its wire boundary.
+#[must_use]
+pub fn compute_sphere_v_range(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    sphere: &brepkit_math::surfaces::SphericalSurface,
+) -> (f64, f64) {
+    use std::f64::consts::FRAC_PI_2;
+
+    let mut wire_pts = Vec::new();
+    if let Ok(wire) = topo.wire(face_data.outer_wire()) {
+        for oe in wire.edges() {
+            if let Ok(edge) = topo.edge(oe.edge())
+                && let Ok(vertex) = topo.vertex(edge.start())
+            {
+                wire_pts.push(vertex.point());
+            }
+        }
+    }
+
+    if wire_pts.len() < 3 {
+        return (-FRAC_PI_2, FRAC_PI_2);
+    }
+
+    let avg_v: f64 = wire_pts
+        .iter()
+        .map(|pt| sphere.project_point(*pt).1)
+        .sum::<f64>()
+        / wire_pts.len() as f64;
+
+    let signed_area = projected_signed_area(&wire_pts);
+    if signed_area > 0.0 {
+        (avg_v, FRAC_PI_2)
+    } else {
+        (-FRAC_PI_2, avg_v)
+    }
+}
+
+/// Signed area of a polygon projected onto the XY plane.
+/// Positive = CCW winding from +Z, negative = CW.
+#[must_use]
+pub fn projected_signed_area(pts: &[Point3]) -> f64 {
+    let n = pts.len();
+    let mut area = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += pts[i].x() * pts[j].y() - pts[j].x() * pts[i].y();
+    }
+    area * 0.5
+}
+
+/// Determine the [`AnalyticKind`] for sphere tessellation based on v-range.
+pub(super) fn sphere_analytic_kind(v_range: (f64, f64)) -> super::AnalyticKind {
+    use super::AnalyticKind;
+    use std::f64::consts::FRAC_PI_2;
+    let eps = 1e-6;
+    let has_south_pole = (v_range.0 + FRAC_PI_2).abs() < eps;
+    let has_north_pole = (v_range.1 - FRAC_PI_2).abs() < eps;
+    match (has_south_pole, has_north_pole) {
+        (true, true) => AnalyticKind::SpherePole,
+        (true, false) => AnalyticKind::ConeApex,
+        (false, true) => AnalyticKind::VMaxPole,
+        (false, false) => AnalyticKind::General,
+    }
+}
+
+/// Evaluate the surface normal at `(u, v)`, returning a fallback for degenerate points.
+fn safe_normal(surface: &brepkit_math::nurbs::surface::NurbsSurface, u: f64, v: f64) -> Vec3 {
+    surface.normal(u, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0))
+}
+
+/// Whether a quad cell's normals turn by more than `angular_tol` across any
+/// pair of its sampled corners/center.
+///
+/// `angular_tol <= 0` disables the angular criterion.
+#[allow(clippy::similar_names)]
+fn cell_exceeds_angular(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    u_min: f64,
+    u_max: f64,
+    v_min: f64,
+    v_max: f64,
+    angular_tol: f64,
+) -> bool {
+    if angular_tol <= 0.0 {
+        return false;
+    }
+    let u_mid = 0.5 * (u_min + u_max);
+    let v_mid = 0.5 * (v_min + v_max);
+    let normals = [
+        safe_normal(surface, u_min, v_min),
+        safe_normal(surface, u_max, v_min),
+        safe_normal(surface, u_max, v_max),
+        safe_normal(surface, u_min, v_max),
+        safe_normal(surface, u_mid, v_mid),
+    ];
+    let mut min_dot = 1.0_f64;
+    for i in 0..normals.len() {
+        for j in (i + 1)..normals.len() {
+            min_dot = min_dot.min(normals[i].dot(normals[j]));
+        }
+    }
+    min_dot.clamp(-1.0, 1.0).acos() > angular_tol
+}
+
+/// Compute the refinement error for a quad cell using combined metrics.
+#[allow(clippy::similar_names)]
+fn cell_refinement_error(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    u_min: f64,
+    u_max: f64,
+    v_min: f64,
+    v_max: f64,
+) -> f64 {
+    let u_mid = 0.5 * (u_min + u_max);
+    let v_mid = 0.5 * (v_min + v_max);
+
+    let p00 = surface.evaluate(u_min, v_min);
+    let p10 = surface.evaluate(u_max, v_min);
+    let p11 = surface.evaluate(u_max, v_max);
+    let p01 = surface.evaluate(u_min, v_max);
+    let p_mid = surface.evaluate(u_mid, v_mid);
+
+    let bilinear_mid = Point3::new(
+        0.25 * (p00.x() + p10.x() + p11.x() + p01.x()),
+        0.25 * (p00.y() + p10.y() + p11.y() + p01.y()),
+        0.25 * (p00.z() + p10.z() + p11.z() + p01.z()),
+    );
+    let sag = (p_mid - bilinear_mid).length();
+
+    let normals = [
+        safe_normal(surface, u_min, v_min),
+        safe_normal(surface, u_max, v_min),
+        safe_normal(surface, u_max, v_max),
+        safe_normal(surface, u_min, v_max),
+        safe_normal(surface, u_mid, v_mid),
+    ];
+
+    let mut max_normal_dev = 0.0_f64;
+    for i in 0..normals.len() {
+        for j in (i + 1)..normals.len() {
+            let dev = 1.0 - normals[i].dot(normals[j]);
+            max_normal_dev = max_normal_dev.max(dev);
+        }
+    }
+
+    let edge_mids = [
+        surface.evaluate(u_mid, v_min),
+        surface.evaluate(u_mid, v_max),
+        surface.evaluate(u_min, v_mid),
+        surface.evaluate(u_max, v_mid),
+    ];
+
+    let edge_linear_mids = [
+        lerp_point(p00, p10),
+        lerp_point(p01, p11),
+        lerp_point(p00, p01),
+        lerp_point(p10, p11),
+    ];
+
+    let mut max_edge_sag = 0.0_f64;
+    for i in 0..4 {
+        let edge_sag = (edge_mids[i] - edge_linear_mids[i]).length();
+        max_edge_sag = max_edge_sag.max(edge_sag);
+    }
+
+    let diag = (p11 - p00).length().max((p10 - p01).length());
+    let normal_sag = max_normal_dev * diag * 0.5;
+
+    sag.max(max_edge_sag).max(normal_sag)
+}
+
+/// Linear interpolation (midpoint) of two points.
+fn lerp_point(a: Point3, b: Point3) -> Point3 {
+    Point3::new(
+        0.5 * (a.x() + b.x()),
+        0.5 * (a.y() + b.y()),
+        0.5 * (a.z() + b.z()),
+    )
+}
+
+/// Build the adaptive quadtree by recursive subdivision.
+#[allow(clippy::similar_names)]
+fn build_quadtree(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    cells: &mut Vec<AdaptiveCell>,
+    cell_idx: usize,
+    threshold: f64,
+    angular_tol: f64,
+) {
+    let cell = &cells[cell_idx];
+    if cell.depth >= MAX_DEPTH {
+        return;
+    }
+
+    let u_min = cell.u_min;
+    let u_max = cell.u_max;
+    let v_min = cell.v_min;
+    let v_max = cell.v_max;
+    let depth = cell.depth;
+
+    let error = cell_refinement_error(surface, u_min, u_max, v_min, v_max);
+    let angular_exceeded = cell_exceeds_angular(surface, u_min, u_max, v_min, v_max, angular_tol);
+    if error <= threshold && !angular_exceeded {
+        return;
+    }
+
+    let u_mid = 0.5 * (u_min + u_max);
+    let v_mid = 0.5 * (v_min + v_max);
+    let child_depth = depth + 1;
+
+    let c0 = cells.len();
+    cells.push(AdaptiveCell {
+        u_min,
+        u_max: u_mid,
+        v_min,
+        v_max: v_mid,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min: u_mid,
+        u_max,
+        v_min,
+        v_max: v_mid,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min,
+        u_max: u_mid,
+        v_min: v_mid,
+        v_max,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min: u_mid,
+        u_max,
+        v_min: v_mid,
+        v_max,
+        depth: child_depth,
+        children: None,
+    });
+
+    cells[cell_idx].children = Some([c0, c0 + 1, c0 + 2, c0 + 3]);
+
+    for i in 0..4 {
+        build_quadtree(surface, cells, c0 + i, threshold, angular_tol);
+    }
+}
+
+/// Conforming pass: ensure no more than 1 level difference between adjacent leaf cells.
+fn conforming_pass(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    cells: &mut Vec<AdaptiveCell>,
+) {
+    for _pass in 0..MAX_DEPTH {
+        let mut to_subdivide = Vec::new();
+
+        let len = cells.len();
+        for i in 0..len {
+            if cells[i].children.is_some() {
+                continue;
+            }
+
+            let depth = cells[i].depth;
+            let u_min = cells[i].u_min;
+            let u_max = cells[i].u_max;
+            let v_min = cells[i].v_min;
+            let v_max = cells[i].v_max;
+
+            if needs_conforming_subdivision(cells, i, depth, u_min, u_max, v_min, v_max) {
+                to_subdivide.push(i);
+            }
+        }
+
+        if to_subdivide.is_empty() {
+            break;
+        }
+
+        for &cell_idx in &to_subdivide {
+            if cells[cell_idx].children.is_some() {
+                continue;
+            }
+            force_subdivide(surface, cells, cell_idx);
+        }
+    }
+}
+
+/// Check if a leaf cell needs conforming subdivision (neighbor is 2+ levels deeper).
+#[allow(clippy::similar_names)]
+fn needs_conforming_subdivision(
+    cells: &[AdaptiveCell],
+    _cell_idx: usize,
+    depth: u8,
+    u_min: f64,
+    u_max: f64,
+    v_min: f64,
+    v_max: f64,
+) -> bool {
+    let eps = (u_max - u_min) * 0.01;
+    let u_mid = 0.5 * (u_min + u_max);
+    let v_mid = 0.5 * (v_min + v_max);
+
+    let probes = [
+        (u_mid, v_min - eps),
+        (u_mid, v_max + eps),
+        (u_min - eps, v_mid),
+        (u_max + eps, v_mid),
+    ];
+
+    for &(pu, pv) in &probes {
+        if let Some(neighbor_depth) = find_leaf_depth_at(cells, pu, pv)
+            && neighbor_depth > depth + 1
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Find the depth of the leaf cell containing the given parameter point.
+fn find_leaf_depth_at(cells: &[AdaptiveCell], u: f64, v: f64) -> Option<u8> {
+    let n_roots = INITIAL_CELLS * INITIAL_CELLS;
+    for root_idx in 0..n_roots.min(cells.len()) {
+        if let Some(depth) = find_leaf_depth_recursive(cells, root_idx, u, v) {
+            return Some(depth);
+        }
+    }
+    None
+}
+
+/// Recursively find the leaf depth at a given point within a cell subtree.
+fn find_leaf_depth_recursive(cells: &[AdaptiveCell], idx: usize, u: f64, v: f64) -> Option<u8> {
+    let cell = &cells[idx];
+    if u < cell.u_min || u > cell.u_max || v < cell.v_min || v > cell.v_max {
+        return None;
+    }
+
+    match cell.children {
+        None => Some(cell.depth),
+        Some(children) => {
+            for &child in &children {
+                if let Some(d) = find_leaf_depth_recursive(cells, child, u, v) {
+                    return Some(d);
+                }
+            }
+            Some(cell.depth + 1)
+        }
+    }
+}
+
+/// Force-subdivide a leaf cell (for conforming pass, no curvature check).
+#[allow(clippy::similar_names)]
+fn force_subdivide(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    cells: &mut Vec<AdaptiveCell>,
+    cell_idx: usize,
+) {
+    let cell = &cells[cell_idx];
+    if cell.depth >= MAX_DEPTH + 2 {
+        return;
+    }
+    let u_min = cell.u_min;
+    let u_max = cell.u_max;
+    let v_min = cell.v_min;
+    let v_max = cell.v_max;
+    let child_depth = cell.depth + 1;
+
+    let u_mid = 0.5 * (u_min + u_max);
+    let v_mid = 0.5 * (v_min + v_max);
+
+    let c0 = cells.len();
+    cells.push(AdaptiveCell {
+        u_min,
+        u_max: u_mid,
+        v_min,
+        v_max: v_mid,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min: u_mid,
+        u_max,
+        v_min,
+        v_max: v_mid,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min,
+        u_max: u_mid,
+        v_min: v_mid,
+        v_max,
+        depth: child_depth,
+        children: None,
+    });
+    cells.push(AdaptiveCell {
+        u_min: u_mid,
+        u_max,
+        v_min: v_mid,
+        v_max,
+        depth: child_depth,
+        children: None,
+    });
+
+    cells[cell_idx].children = Some([c0, c0 + 1, c0 + 2, c0 + 3]);
+
+    let _ = surface;
+}
+
+/// Mesh a NURBS surface that closes on itself in both directions (a torus
+/// image) as a structured grid over its whole domain. The adaptive quadtree
+/// keeps one-level steps between neighbouring cells, which leave T-junction
+/// cracks, and cannot see that the domain's opposite edges meet. Here every
+/// row is sampled alike, and the far seam rows copy the near rows' positions,
+/// so a caller that welds by position closes both seams exactly.
+pub(super) fn tessellate_periodic_nurbs_grid(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    deflection: f64,
+    angular_tol: f64,
+) -> TriangleMeshUV {
+    let (u_lo, u_hi) = surface.domain_u();
+    let (v_lo, v_hi) = surface.domain_v();
+    // Fewer than three divisions of a closed direction collapse its seam
+    // copies onto the cells' other side.
+    let (n_u, n_v) = cap_grid(
+        iso_divisions(surface, true, deflection, angular_tol).max(3),
+        iso_divisions(surface, false, deflection, angular_tol).max(3),
+        GRID_MAX_CELLS,
+    );
+    let (n_u, n_v) = (n_u.max(3), n_v.max(3));
+    let (um, vm) = (0.5 * (u_lo + u_hi), 0.5 * (v_lo + v_hi));
+    let duv = surface.derivatives(um, vm, 1);
+    let right_handed = duv[1][0].cross(duv[0][1]).dot(safe_normal(surface, um, vm)) >= 0.0;
+
+    let mut positions = Vec::with_capacity((n_u + 1) * (n_v + 1));
+    let mut normals = Vec::with_capacity(positions.capacity());
+    let mut uvs = Vec::with_capacity(positions.capacity());
+    for i in 0..=n_u {
+        for j in 0..=n_v {
+            #[allow(clippy::cast_precision_loss)]
+            let (u, v) = (
+                u_lo + (u_hi - u_lo) * i as f64 / n_u as f64,
+                v_lo + (v_hi - v_lo) * j as f64 / n_v as f64,
+            );
+            let (pos, nrm) = if i == n_u || j == n_v {
+                let k = (i % n_u) * (n_v + 1) + j % n_v;
+                (positions[k], normals[k])
+            } else {
+                (surface.evaluate(u, v), safe_normal(surface, u, v))
+            };
+            positions.push(pos);
+            normals.push(nrm);
+            uvs.push([u, v]);
+        }
+    }
+    let mut indices = Vec::with_capacity(n_u * n_v * 6);
+    for i in 0..n_u {
+        for j in 0..n_v {
+            #[allow(clippy::cast_possible_truncation)]
+            let at = |a: usize, b: usize| (a * (n_v + 1) + b) as u32;
+            let (i00, i10, i11, i01) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            if right_handed {
+                indices.extend([i00, i10, i11, i00, i11, i01]);
+            } else {
+                indices.extend([i00, i11, i10, i00, i01, i11]);
+            }
+        }
+    }
+    TriangleMeshUV {
+        mesh: TriangleMesh {
+            positions,
+            normals,
+            indices,
+        },
+        uvs,
+    }
+}
+
+/// The most cells a structured NURBS grid may hold; past it the deflection
+/// gives way to a bounded mesh.
+pub(super) const GRID_MAX_CELLS: usize = 1 << 16;
+
+/// Shrinks a grid's two division counts together, keeping their ratio, until
+/// it holds at most `max_cells` cells. The shrunk grid no longer meets the
+/// deflection it was sized for, so this says so.
+pub(super) fn cap_grid(n_u: usize, n_v: usize, max_cells: usize) -> (usize, usize) {
+    let cells = n_u.saturating_mul(n_v);
+    if cells <= max_cells {
+        return (n_u, n_v);
+    }
+    log::warn!(
+        "NURBS grid of {n_u} x {n_v} cells exceeds {max_cells}; meshing it coarser than the requested deflection"
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let scale = (max_cells as f64 / cells as f64).sqrt();
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let shrink = |n: usize| ((n as f64 * scale).floor() as usize).max(1);
+    (shrink(n_u), shrink(n_v))
+}
+
+/// Divisions of one parameter direction that keep every iso-line chord of a
+/// few sampled rows within half the deflection (a grid cell's diagonal sags
+/// further than its sides) and within the angular tolerance.
+fn iso_divisions(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    along_u: bool,
+    deflection: f64,
+    angular_tol: f64,
+) -> usize {
+    let ranges = if along_u {
+        (surface.domain_u(), surface.domain_v())
+    } else {
+        (surface.domain_v(), surface.domain_u())
+    };
+    iso_divisions_over(
+        &|u, v| surface.evaluate(u, v),
+        &|u, v| safe_normal(surface, u, v),
+        along_u,
+        ranges,
+        deflection,
+        angular_tol,
+        4096,
+    )
+}
+
+/// [`iso_divisions`] over a parameter box: `ranges` is the span divided and
+/// the span its sampled rows sit across, and `at` / `normal_at` take
+/// `(u, v)` (a caller on a periodic surface wraps them). A straight direction
+/// (a ruling) needs one division. The normals' turn is weighed across every
+/// chord but one that ends on a pole.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn iso_divisions_over(
+    at: &dyn Fn(f64, f64) -> Point3,
+    normal_at: &dyn Fn(f64, f64) -> Vec3,
+    along_u: bool,
+    ((lo, hi), (o_lo, o_hi)): ((f64, f64), (f64, f64)),
+    deflection: f64,
+    angular_tol: f64,
+    max_divisions: usize,
+) -> usize {
+    const ROWS: usize = 8;
+    let point = |t: f64, o: f64| if along_u { at(t, o) } else { at(o, t) };
+    let normal = |t: f64, o: f64| {
+        if along_u {
+            normal_at(t, o)
+        } else {
+            normal_at(o, t)
+        }
+    };
+    // An end of the span whose cross iso-line collapses to a point is a
+    // pole: the surface has no normal there, and the one it reports can
+    // point either way.
+    let pole = |t: f64| {
+        let (a, b, c) = (
+            point(t, o_lo),
+            point(t, 0.5 * (o_lo + o_hi)),
+            point(t, o_hi),
+        );
+        let reach = a.x().abs().max(a.y().abs()).max(a.z().abs());
+        (b - a).length().max((c - a).length()) <= 1e3 * f64::EPSILON * (1.0 + reach)
+    };
+    let (pole_lo, pole_hi) = (pole(lo), pole(hi));
+    let off_chord = |p: Point3, a: Point3, b: Point3| {
+        let chord = b - a;
+        let len2 = chord.dot(chord);
+        let f = if len2 > 0.0 {
+            ((p - a).dot(chord) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p - (a + chord * f)).length()
+    };
+    let fits = |n: usize| {
+        (0..ROWS).all(|row| {
+            #[allow(clippy::cast_precision_loss)]
+            let o = o_lo + (o_hi - o_lo) * (row as f64 + 0.5) / ROWS as f64;
+            (0..n).all(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let (t0, t1) = (
+                    lo + (hi - lo) * k as f64 / n as f64,
+                    lo + (hi - lo) * (k + 1) as f64 / n as f64,
+                );
+                let (p0, p1) = (point(t0, o), point(t1, o));
+                let chord_mid = Point3::new(
+                    0.5 * (p0.x() + p1.x()),
+                    0.5 * (p0.y() + p1.y()),
+                    0.5 * (p0.z() + p1.z()),
+                );
+                // An inflected span can cross its chord at its middle and
+                // stand off it either side, so its quarter points count too.
+                let sag = [0.25, 0.75]
+                    .iter()
+                    .map(|&f| off_chord(point(t0 + (t1 - t0) * f, o), p0, p1))
+                    .fold((point(0.5 * (t0 + t1), o) - chord_mid).length(), f64::max);
+                let at_pole = (k == 0 && pole_lo) || (k + 1 == n && pole_hi);
+                let turned = angular_tol > 0.0
+                    && !at_pole
+                    && normal(t0, o).dot(normal(t1, o)).clamp(-1.0, 1.0).acos() > angular_tol;
+                sag <= 0.5 * deflection && !turned
+            })
+        })
+    };
+    let mut n = 1;
+    while n < max_divisions && !fits(n) {
+        n *= 2;
+    }
+    n
+}
+
+/// Tessellate a NURBS surface via curvature-adaptive subdivision.
+#[allow(clippy::too_many_lines)]
+pub(super) fn tessellate_nurbs(
+    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    deflection: f64,
+    angular_tol: f64,
+) -> TriangleMeshUV {
+    let (u_lo, u_hi) = surface.domain_u();
+    let (v_lo, v_hi) = surface.domain_v();
+
+    // The grid below assumes the surface's (u, v) parameterization is
+    // right-handed (dS/du x dS/dv points along `surface.normal`). A
+    // left-handed parameterization (a mirrored UV domain, as the sphere-
+    // corner patches build per-corner with varying contact order) would
+    // otherwise mesh with the geometric normal anti-parallel to the
+    // surface normal, silently inverting the face's material side in
+    // volume/lighting. Detect the handedness once and mirror the
+    // triangle winding when left-handed.
+    // Sample the parametric handedness at a safe interior point.
+    let (um, vm) = (u_lo + (u_hi - u_lo) * 0.5, v_lo + (v_hi - v_lo) * 0.5);
+    let mut handedness = 1.0_f64;
+    let duv = surface.derivatives(um, vm, 1);
+    let su = duv[1][0];
+    let sv = duv[0][1];
+    let nrm = safe_normal(surface, um, vm);
+    if su.cross(sv).dot(nrm) < 0.0 {
+        handedness = -1.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let du = (u_hi - u_lo) / INITIAL_CELLS as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let dv = (v_hi - v_lo) / INITIAL_CELLS as f64;
+    let mut cells = Vec::with_capacity(256);
+
+    for i in 0..INITIAL_CELLS {
+        for j in 0..INITIAL_CELLS {
+            #[allow(clippy::cast_precision_loss)]
+            let u_min = u_lo + (i as f64) * du;
+            #[allow(clippy::cast_precision_loss)]
+            let u_max = u_lo + ((i + 1) as f64) * du;
+            #[allow(clippy::cast_precision_loss)]
+            let v_min = v_lo + (j as f64) * dv;
+            #[allow(clippy::cast_precision_loss)]
+            let v_max = v_lo + ((j + 1) as f64) * dv;
+
+            cells.push(AdaptiveCell {
+                u_min,
+                u_max,
+                v_min,
+                v_max,
+                depth: 0,
+                children: None,
+            });
+        }
+    }
+
+    let n_roots = INITIAL_CELLS * INITIAL_CELLS;
+    for i in 0..n_roots {
+        build_quadtree(surface, &mut cells, i, deflection, angular_tol);
+    }
+
+    conforming_pass(surface, &mut cells);
+
+    let leaf_count = cells.iter().filter(|c| c.children.is_none()).count();
+    let mut eval_cache: DetHashMap<(u64, u64), (Point3, Vec3)> = DetHashMap::default();
+    let mut positions = Vec::with_capacity(leaf_count * 4);
+    let mut normals = Vec::with_capacity(leaf_count * 4);
+    let mut uvs: Vec<[f64; 2]> = Vec::with_capacity(leaf_count * 4);
+    let mut indices = Vec::with_capacity(leaf_count * 6);
+    let mut vertex_map: DetHashMap<(u64, u64), u32> = DetHashMap::default();
+
+    let get_or_insert_vertex = |u: f64,
+                                v: f64,
+                                eval_cache: &mut DetHashMap<(u64, u64), (Point3, Vec3)>,
+                                positions: &mut Vec<Point3>,
+                                normals: &mut Vec<Vec3>,
+                                uvs: &mut Vec<[f64; 2]>,
+                                vertex_map: &mut DetHashMap<(u64, u64), u32>|
+     -> u32 {
+        let key = (u.to_bits(), v.to_bits());
+        if let Some(&idx) = vertex_map.get(&key) {
+            return idx;
+        }
+        let &mut (pos, nrm) = eval_cache.entry(key).or_insert_with(|| {
+            let p = surface.evaluate(u, v);
+            let n = safe_normal(surface, u, v);
+            (p, n)
+        });
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = positions.len() as u32;
+        positions.push(pos);
+        normals.push(nrm);
+        uvs.push([u, v]);
+        vertex_map.insert(key, idx);
+        idx
+    };
+
+    for cell in &cells {
+        if cell.children.is_some() {
+            continue;
+        }
+
+        let i00 = get_or_insert_vertex(
+            cell.u_min,
+            cell.v_min,
+            &mut eval_cache,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut vertex_map,
+        );
+        let i10 = get_or_insert_vertex(
+            cell.u_max,
+            cell.v_min,
+            &mut eval_cache,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut vertex_map,
+        );
+        let i11 = get_or_insert_vertex(
+            cell.u_max,
+            cell.v_max,
+            &mut eval_cache,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut vertex_map,
+        );
+        let i01 = get_or_insert_vertex(
+            cell.u_min,
+            cell.v_max,
+            &mut eval_cache,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut vertex_map,
+        );
+        if handedness > 0.0 {
+            indices.push(i00);
+            indices.push(i10);
+            indices.push(i11);
+
+            indices.push(i00);
+            indices.push(i11);
+            indices.push(i01);
+        } else {
+            indices.push(i00);
+            indices.push(i11);
+            indices.push(i10);
+
+            indices.push(i00);
+            indices.push(i01);
+            indices.push(i11);
+        }
+    }
+
+    TriangleMeshUV {
+        mesh: TriangleMesh {
+            positions,
+            normals,
+            indices,
+        },
+        uvs,
+    }
+}

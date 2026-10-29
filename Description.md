@@ -470,8 +470,8 @@ Each milestone ends with a usable, tested state. Do not start a milestone before
 | **M1: Skeleton** | Workspace, CI, rulesets, `CLAUDE.md`, `ARCHITECTURE.md`, window with empty grid at 60 FPS. |
 | **M2: Grid UI** | Glyph rendering, icon atlas, hit testing, keyboard navigation, strictly monochrome Light/Dark themes (M2.16), frameless window (M2.17), View settings with UI Scale and theme (M2.18), reference-exact menus, trees, Action Boxes, numeric fields and status bar (M2.19–M2.24). Hover is intentionally excluded (approved removal). |
 | **M3: Viewport** | 3D camera, display of a BrepKIT-generated solid through `newell-kernel`, picking. |
-| **M4: Sketch** | 2D sketch, lines/arcs/circles, constraint solver. |
-| **M5: Parametric core** | Feature tree, Extrude/Revolve, recompute, undo/redo, topological naming strategy. |
+| **M4: CAD Command & Parametric Interaction** | Command/controller interface, model-bound trees, shared selection, engineering units, Formula binding, real Extrude modes/modifiers/targets, preview and atomic OK/Cancel. |
+| **M5: Sketcher** | Complete, responsive parametric Sketcher: constrained drawing, regions, M4 Extrude integration, modify tools, patterns, advanced curves, references and text. See [the M5 plan](docs/plans/M5-sketcher.md) and [backlog slices M5.0–M5.15](docs/backlog.md#milestone-5-complete-responsive-parametric-sketcher). |
 | **M6: Files** | Native format with versioning, STEP and STL export. |
 | **M7: First release** | Fillet/Chamfer, booleans, performance pass, `v0.1.0`. |
 
@@ -483,8 +483,8 @@ Each milestone ends with a usable, tested state. Do not start a milestone before
 |---|---|---|
 | BrepKIT maturity is unproven (young project, robustness unknown) | Booleans and fillets may fail on real models | Spike in M0; focused regression/property tests in `newell-kernel`; minimized reproducible cases; upstream fixes/contributions to BrepKIT; no fallback kernel |
 | BrepKIT AGPL/commercial licensing | Constrains Newell's licensing/distribution model; project cannot proceed with BrepKIT-dependent production code if neither path is acceptable | Decide first in M0 (§9); use an AGPL-compatible strategy or obtain the commercial licence |
-| Topological naming | Parametric models break when edited | ADR before M5, dedicated tests |
-| Constraint solver complexity | Major delay on M4 | Evaluate existing crates first |
+| Topological naming | Parametric models break when edited | Stable-reference strategy for M4 geometry and M5 Sketch integration, dedicated tests |
+| Constraint solver complexity | Major delay on M5 | Evaluate existing crates and establish M5.0 feasibility evidence first |
 | wgpu on Raspberry Pi | Low-end target unreachable | Spike in M0; if it fails, redefine the target |
 | 60 FPS during heavy recompute | Freezes | Background workers, cancellation (§3.3) |
 | AI agents drifting from the plan or gaming tests | Low-quality code passing CI | CODEOWNERS, test rules (§6.3), human review of every PR |

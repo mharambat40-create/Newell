@@ -1,0 +1,232 @@
+//! A cylindrical drill into a ball off its axis and through a ring's tube
+//! parallel to its axis, on the surface's seam meridian and off it.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+
+use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use brepkit_math::mat::Mat4;
+use brepkit_math::vec::Point3;
+use brepkit_operations::boolean::{BooleanOp, boolean};
+use brepkit_operations::measure::{face_area, oriented_solid_volume, solid_volume};
+use brepkit_operations::primitives::{make_cylinder, make_sphere, make_torus};
+use brepkit_operations::tessellate::{is_watertight, tessellate_solid};
+use brepkit_operations::transform::transform_solid;
+use brepkit_operations::validate::validate_solid;
+use brepkit_topology::Topology;
+use brepkit_topology::explorer::solid_faces;
+use brepkit_topology::solid::SolidId;
+
+/// The integral over a disc of radius `r` about `(cx, cy)` of `height(x, y)`,
+/// by a midpoint rule in polar coordinates.
+fn over_disc(cx: f64, cy: f64, r: f64, height: impl Fn(f64, f64) -> f64) -> f64 {
+    const N: u32 = 600;
+    let mut sum = 0.0;
+    for i in 0..N {
+        let rho = r * ((f64::from(i) + 0.5) / f64::from(N)).sqrt();
+        for j in 0..N {
+            let theta = 2.0 * PI * (f64::from(j) + 0.5) / f64::from(N);
+            sum += height(cx + rho * theta.cos(), cy + rho * theta.sin());
+        }
+    }
+    sum * PI * r * r / f64::from(N * N)
+}
+
+/// Validity, an analytic census, the exact volume, a closed mesh, and the
+/// drilled points carved away with the material around them kept.
+fn check(
+    topo: &Topology,
+    result: SolidId,
+    census: &[(&str, usize)],
+    truth: f64,
+    carved: &[Point3],
+    kept: &[Point3],
+) {
+    let report = validate_solid(topo, result).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    let mut faces: BTreeMap<&str, usize> = BTreeMap::new();
+    for face in solid_faces(topo, result).unwrap() {
+        *faces
+            .entry(topo.face(face).unwrap().surface().type_tag())
+            .or_default() += 1;
+    }
+    assert_eq!(
+        faces,
+        census.iter().copied().collect(),
+        "the cut stays analytic"
+    );
+    let exact = solid_volume(topo, result, 0.001).unwrap();
+    assert!(
+        (exact - truth).abs() < 1e-7 * truth,
+        "volume {exact}, truth {truth}"
+    );
+    assert!(is_watertight(
+        &tessellate_solid(topo, result, 0.01).unwrap()
+    ));
+    let classify =
+        |p: Point3| classify_point(topo, result, p, &ClassifyOptions::default()).unwrap();
+    for &p in carved {
+        assert_eq!(classify(p), PointClassification::Outside, "{p:?} is carved");
+    }
+    for &p in kept {
+        assert_eq!(classify(p), PointClassification::Inside, "{p:?} is kept");
+    }
+}
+
+/// A radius 0.2 drill from `(x, y, 1)` up through a radius 2 ball.
+fn drill_ball(x: f64, y: f64) {
+    let mut topo = Topology::new();
+    let ball = make_sphere(&mut topo, 2.0, 16).unwrap();
+    let undrilled = oriented_solid_volume(&topo, ball, 0.001).unwrap();
+    let drill = make_cylinder(&mut topo, 0.2, 2.0).unwrap();
+    transform_solid(&mut topo, drill, &Mat4::translation(x, y, 1.0)).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Cut, ball, drill).unwrap();
+
+    let plug = over_disc(x, y, 0.2, |px, py| (4.0 - px * px - py * py).sqrt() - 1.0);
+    check(
+        &topo,
+        result,
+        &[("cylinder", 1), ("plane", 1), ("sphere", 2)],
+        4.0 / 3.0 * PI * 8.0 - plug,
+        &[Point3::new(x, y, 1.1), Point3::new(x, y, 1.8)],
+        &[
+            Point3::new(x, y, 0.9),
+            Point3::new(x * 1.8, y * 1.8, 1.5),
+            Point3::new(0.0, 0.0, -1.5),
+        ],
+    );
+    // The hemispheres meet on a chordal equator, which the mesh follows: it
+    // loses the plug from the undrilled ball's mesh.
+    let meshed = oriented_solid_volume(&topo, result, 0.001).unwrap();
+    assert!(
+        (meshed - (undrilled - plug)).abs() < 1e-3,
+        "mesh volume {meshed}, undrilled mesh {undrilled} less the plug {plug}"
+    );
+}
+
+/// A radius 0.3 drill parallel to the axis of a (5, 1) ring, through its
+/// tube at `(x, y)`.
+fn drill_ring(x: f64, y: f64) {
+    let mut topo = Topology::new();
+    let ring = make_torus(&mut topo, 5.0, 1.0, 16).unwrap();
+    let drill = make_cylinder(&mut topo, 0.3, 4.0).unwrap();
+    transform_solid(&mut topo, drill, &Mat4::translation(x, y, -2.0)).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Cut, ring, drill).unwrap();
+
+    let plug = over_disc(x, y, 0.3, |px, py| {
+        let reach = 1.0 - (px.hypot(py) - 5.0).powi(2);
+        2.0 * reach.max(0.0).sqrt()
+    });
+    let truth = 2.0 * PI * PI * 5.0 - plug;
+    let (ux, uy) = (x / 5.0, y / 5.0);
+    check(
+        &topo,
+        result,
+        &[("cylinder", 1), ("torus", 1)],
+        truth,
+        &[Point3::new(x, y, 0.0), Point3::new(x, y, 0.8)],
+        &[
+            Point3::new(x - uy * 0.6, y + ux * 0.6, 0.0),
+            Point3::new(-x, -y, 0.0),
+            Point3::new(x + ux * 0.6, y + uy * 0.6, 0.0),
+        ],
+    );
+    let meshed = oriented_solid_volume(&topo, result, 0.001).unwrap();
+    assert!(
+        (meshed - truth).abs() < 1e-3 * truth,
+        "mesh volume {meshed}, truth {truth}"
+    );
+    // The ring's face is the whole ring less the tube over the drill's disc
+    // above and below, where the tube's area element is `r / sqrt(r^2 - d^2)`
+    // over the plane at `d` from the tube's core.
+    let holes = 2.0
+        * over_disc(x, y, 0.3, |px, py| {
+            1.0 / (1.0 - (px.hypot(py) - 5.0).powi(2)).sqrt()
+        });
+    let ring_face = solid_faces(&topo, result)
+        .unwrap()
+        .into_iter()
+        .find(|&f| topo.face(f).unwrap().surface().type_tag() == "torus")
+        .unwrap();
+    let area = face_area(&topo, ring_face, 0.01).unwrap();
+    let area_truth = 4.0 * PI * PI * 5.0 - holes;
+    assert!(
+        (area - area_truth).abs() < 1e-6 * area_truth,
+        "ring face area {area}, truth {area_truth}"
+    );
+}
+
+#[test]
+fn ball_drilled_across_its_seam() {
+    drill_ball(0.5, 0.0);
+}
+
+#[test]
+fn ball_drilled_clear_of_its_seam() {
+    drill_ball(0.0, 0.5);
+}
+
+#[test]
+fn ring_drilled_across_its_seam() {
+    drill_ring(5.0, 0.0);
+}
+
+#[test]
+fn ring_drilled_clear_of_its_seam() {
+    drill_ring(0.0, 5.0);
+}
+
+/// The drill's two holes cover the ring's points at `u = 0`, `v = ±3pi/4`.
+#[test]
+fn ring_drilled_near_its_inner_equator() {
+    drill_ring(4.35, 0.0);
+}
+
+/// `make_sphere(3, 32)` bored through by `make_cylinder(0.3, 10)` at
+/// `(1, 0, -5)`, upright, turned and mirrored: the engine's ray cast and the
+/// check crate's classifier both read a point above the bore's mouth, in the
+/// bore, and below it outside, and a point in the ball beside the bore
+/// inside. The bore's wall, bounded by curves on the sphere, is read by its
+/// own wires, not by the band between its rims' lowest and highest points.
+#[test]
+fn both_classifiers_read_the_bores_mouth() {
+    let poses = [
+        ("upright", Mat4::identity()),
+        (
+            "turned",
+            Mat4::translation(0.4, -0.3, 0.2) * Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+        ),
+        ("mirrored", Mat4::scale(-1.0, 1.0, 1.0)),
+    ];
+    for (pose, place) in poses {
+        let mut topo = Topology::new();
+        let ball = make_sphere(&mut topo, 3.0, 32).unwrap();
+        let rod = make_cylinder(&mut topo, 0.3, 10.0).unwrap();
+        transform_solid(&mut topo, rod, &Mat4::translation(1.0, 0.0, -5.0)).unwrap();
+        let bored = boolean(&mut topo, BooleanOp::Cut, ball, rod).unwrap();
+        transform_solid(&mut topo, bored, &place).unwrap();
+        for ((x, y, z), inside) in [
+            ((1.0, 0.0, 2.9), false),
+            ((1.0, 0.0, 0.0), false),
+            ((1.0, 0.0, -2.9), false),
+            ((1.5, 0.0, 2.0), true),
+        ] {
+            let p = place.mul_point(Point3::new(x, y, z));
+            let engine = brepkit_algo::classifier::classify_point(&topo, bored, p).unwrap();
+            let want = if inside {
+                brepkit_algo::FaceClass::Inside
+            } else {
+                brepkit_algo::FaceClass::Outside
+            };
+            assert_eq!(engine, want, "{pose}: engine at ({x}, {y}, {z})");
+            let check = classify_point(&topo, bored, p, &ClassifyOptions::default()).unwrap();
+            let want = if inside {
+                PointClassification::Inside
+            } else {
+                PointClassification::Outside
+            };
+            assert_eq!(check, want, "{pose}: check at ({x}, {y}, {z})");
+        }
+    }
+}

@@ -130,6 +130,8 @@ pub struct SelectionFieldCount {
 pub struct LocalSelectionView {
     /// Application-owned window selection projected into the UI.
     pub selection: EntitySelectionView,
+    /// Built-in world-origin references selected in this window, by semantic identity.
+    pub origin_references: Vec<crate::OriginReference>,
     /// Complete field counts, including zero counts for empty inputs.
     pub fields: Vec<SelectionFieldCount>,
 }

@@ -58,17 +58,9 @@ For Merge with add □ before :
 ╰─────────────────────────────╯
 
 "Profile Selection box"
-╭─Profils─────────────────────╮
-│┌───────────────────────────┐│
-││ ☰ Spline_1             × ▲││
-││ ☰ Profil_3             × ╻││
-││ ☰ Profil_4             × ╹││
-││ ☰ Profil_4             ×  ││
-││ ☰ Compound_line_1      × ▼││
-│└───────────────────────────┘│
-│─────────────────────────────│
-│      OK      │    Cancel    │
-╰─────────────────────────────╯
+Use the ordered-item artwork in "Selection box" above.
+Canonical geometry, purpose mapping and scrolling: README_UI.md sections 19-21.
+The sweep example is illustrative, not a command ordering/cardinality rule.
 
 "Invert variants"
 Angle   [+|0.0 deg      ☰]

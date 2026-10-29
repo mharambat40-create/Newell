@@ -1,0 +1,35 @@
+# Experimental source provenance; ADR0009, M5 revisions 4–5.
+format_version = 1
+
+[[package]]
+name = "faer"
+version = "0.22.6"
+path = "vendor/faer-0.22.6"
+source = "https://static.crates.io/crates/faer/faer-0.22.6.crate"
+archive_sha256 = "49fce40ad65c366fbc6cd70a99d09d1008f075280bf2455e558e163c82913a9f"
+license = "MIT"
+rust_version = "1.84.0"
+patches = ["M50-FAER-001"]
+maintenance_owner = "unassigned; required before production adoption"
+
+[[package]]
+name = "brepkit-math"
+version = "4.2.2"
+path = "vendor/brepkit-math-4.2.2"
+source = "https://static.crates.io/crates/brepkit-math/brepkit-math-4.2.2.crate"
+archive_sha256 = "2072d50deceac9091574042d75d113a273c6d567eeea7ef9a59466bd3f32de43"
+license = "AGPL-3.0-only"
+rust_version = "1.88"
+patches = ["M50-MATH-001"]
+maintenance_owner = "unassigned; required before production adoption"
+
+[[package]]
+name = "brepkit-operations"
+version = "4.2.2"
+path = "vendor/brepkit-operations-4.2.2"
+source = "https://static.crates.io/crates/brepkit-operations/brepkit-operations-4.2.2.crate"
+archive_sha256 = "e974e01f2aaa1d98d185e76b185aeced3fda1a7e3a17c6dbaac11fcae373cac8"
+license = "AGPL-3.0-only"
+rust_version = "1.88"
+patches = ["M50-OPERATIONS-001"]
+maintenance_owner = "unassigned; required before production adoption"

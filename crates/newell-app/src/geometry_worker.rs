@@ -44,6 +44,14 @@ pub struct PrepareGeometry {
     pub insertion: Option<FeatureId>,
     pub parameters: ParameterDraft,
     pub cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    pub(crate) kernel_probe: Option<KernelCallProbe>,
+}
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct KernelCallProbe {
+    entered: mpsc::Sender<std::time::Instant>,
+    returned: mpsc::Sender<std::time::Instant>,
 }
 /// Integer authority scoped to worker lifetime, document and finalized generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,11 +189,20 @@ impl GeometryWorker {
         std::thread::Builder::new()
             .name("newell-geometry".into())
             .spawn(move || {
-                struct Exit<'a> { alive: &'a AtomicBool, wake: &'a dyn Fn() }
-                impl Drop for Exit<'_> {
-                    fn drop(&mut self) { self.alive.store(false, Ordering::Release); (self.wake)(); }
+                struct Exit<'a> {
+                    alive: &'a AtomicBool,
+                    wake: &'a dyn Fn(),
                 }
-                let _exit = Exit { alive: &worker_alive, wake: &wake_completion };
+                impl Drop for Exit<'_> {
+                    fn drop(&mut self) {
+                        self.alive.store(false, Ordering::Release);
+                        (self.wake)();
+                    }
+                }
+                let _exit = Exit {
+                    alive: &worker_alive,
+                    wake: &wake_completion,
+                };
                 let mut generations: BTreeMap<u64, StagedGeneration> = BTreeMap::new();
                 let mut committed = None;
                 let mut next_generation = 0u64;
@@ -195,7 +212,9 @@ impl GeometryWorker {
                             break;
                         };
                         #[cfg(test)]
-                        if inbox.shutdown { break; }
+                        if inbox.shutdown {
+                            break;
+                        }
                         if let Some(document) = inbox.replacement.take() {
                             generations.retain(|_, state| state.token.document == document);
                             committed = committed
@@ -229,6 +248,11 @@ impl GeometryWorker {
                             next_generation = next;
                             prepare(&job, GeometryGeneration(next))
                         });
+                    let prepared = if job.cancelled.load(Ordering::Acquire) {
+                        Err(GeometryFailure::Cancelled)
+                    } else {
+                        prepared
+                    };
                     let reply = match prepared {
                         Ok((prepared, scene, geometry)) => {
                             let token = NewellGeometryToken {
@@ -281,13 +305,23 @@ impl GeometryWorker {
                 }
             })
             .map_err(|error| transport(&error.to_string()))?;
-        Ok(Self { inbox, wake, epoch, alive })
+        Ok(Self {
+            inbox,
+            wake,
+            epoch,
+            alive,
+        })
     }
     /// Worker lifetime is observable without waiting for an active kernel call.
-    pub fn is_alive(&self) -> bool { self.alive.load(Ordering::Acquire) }
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
     #[cfg(test)]
     pub(crate) fn stop_for_test(&self) -> Result<(), AppError> {
-        self.inbox.lock().map_err(|_| transport("worker mailbox failed"))?.shutdown = true;
+        self.inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .shutdown = true;
         self.signal()
     }
     fn signal(&self) -> Result<(), AppError> {
@@ -315,7 +349,9 @@ impl GeometryWorker {
     /// # Errors
     /// Reports mailbox poisoning rather than panicking.
     pub fn drain(&self) -> Result<Option<WorkerReply>, AppError> {
-        if !self.is_alive() { return Err(transport("worker has stopped; retry the command")); }
+        if !self.is_alive() {
+            return Err(transport("worker has stopped; retry the command"));
+        }
         Ok(self
             .inbox
             .lock()
@@ -472,6 +508,7 @@ fn prepare(
         .prepare_edit(&job.edit, &job.parameters, job.insertion)?;
     let document = candidate.document();
     let mut geometry = NewellGeometry::new();
+    geometry.set_cancellation_flag(Arc::clone(&job.cancelled));
     let mut entities: BTreeMap<EntityId, NewellShapeKey> = BTreeMap::new();
     let mut active: BTreeMap<geometry::GeometryOutputRef, NewellShapeKey> = BTreeMap::new();
     let mut origins: BTreeMap<EntityId, geometry::GeometryOutputRef> = BTreeMap::new();
@@ -491,6 +528,30 @@ fn prepare(
                             .box_shape(size.map(|length| length.as_millimetres()), [0.; 3])?;
                         entities.insert(*entity, shape);
                         shapes.push(shape);
+                    }
+                    #[cfg(test)]
+                    match document.base_geometry_recipe(*entity) {
+                        Some(geometry::BaseGeometryRecipe::TestCubic {
+                            control,
+                            depth,
+                            transform,
+                        }) => {
+                            let shape = geometry.cubic_shape_for_test(
+                                *control,
+                                depth.as_millimetres(),
+                                *transform,
+                            )?;
+                            entities.insert(*entity, shape);
+                            shapes.push(shape);
+                        }
+                        Some(geometry::BaseGeometryRecipe::TestBox { size, transform }) => {
+                            let shape =
+                                geometry.box_shape(size.map(|v| v.as_millimetres()), [0.; 3])?;
+                            geometry.transform_shape_for_test(shape, *transform)?;
+                            entities.insert(*entity, shape);
+                            shapes.push(shape);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -731,13 +792,36 @@ fn prepare(
                         newell_kernel::NewellBooleanMode::Remove
                     };
                     let (outputs, changed) = if surface {
-                        let result = geometry.combine_surfaces(&shapes, &keys, mode)?;
+                        #[cfg(test)]
+                        if let Some(probe) = &job.kernel_probe {
+                            let _ = probe.entered.send(std::time::Instant::now());
+                        }
+                        let result = geometry.combine_surfaces(&shapes, &keys, mode);
+                        #[cfg(test)]
+                        if let Some(probe) = &job.kernel_probe {
+                            let _ = probe.returned.send(std::time::Instant::now());
+                        }
+                        cancelled(job)?;
+                        let result = result?;
                         (result.outputs, result.changed_targets)
                     } else {
                         if shapes.len() != 1 {
                             return Err(newell_model::ModelError::InvalidGeometryManifest.into());
                         }
-                        let result = geometry.combine_bodies(shapes[0], &keys, mode)?;
+                        #[cfg(test)]
+                        if let Some(probe) = &job.kernel_probe {
+                            let _ = probe.entered.send(std::time::Instant::now());
+                        }
+                        let result =
+                            geometry.combine_bodies_cancellable(shapes[0], &keys, mode, || {
+                                job.cancelled.load(Ordering::Acquire)
+                            });
+                        #[cfg(test)]
+                        if let Some(probe) = &job.kernel_probe {
+                            let _ = probe.returned.send(std::time::Instant::now());
+                        }
+                        cancelled(job)?;
+                        let result = result?;
                         (result.outputs, result.changed_targets)
                     };
                     for index in changed {
@@ -784,6 +868,7 @@ fn prepare(
             .iter()
             .map(|shape| {
                 Ok(geometry::GeometryComponent {
+                    source_wire: geometry.source_wire(*shape),
                     kind: if geometry.is_surface(*shape) {
                         newell_model::EntityKind::Surface
                     } else {
@@ -877,6 +962,7 @@ fn prepare(
     }
     let references: Vec<_> = items.iter().map(|item| &item.mesh).collect();
     NewellMesh::compose(&references)?;
+    cancelled(job)?;
     Ok((
         prepared,
         SceneSnapshot {
@@ -893,6 +979,436 @@ mod tests {
     use super::*;
     use crate::DocumentSession;
     use std::time::Duration;
+    #[test]
+    fn insertion_uses_prefix_and_deduplicates_operands_without_dropping_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeResult, ExtrudeSpec, Length, MergePolicy, ParameterValue,
+            geometry::{ExtrudeValidationRefs, FaceRef, ProfileRef},
+            parameters::ParameterDraftOwner,
+        };
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        let base = session.add_base_solid("Base Solid")?;
+        session.bind_geometry_worker(1)?;
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &session,
+            1,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        let initial = ready(&worker, &wake)?;
+        session.accept_prepared(session.version(), initial.prepared, initial.token)?;
+        worker.retain_committed(initial.token)?;
+        let entity = session.document().feature(base).ok_or("base")?.outputs()[0];
+        let geometry = session
+            .document()
+            .entity_geometry(entity)
+            .ok_or("geometry")?;
+        let profile = ProfileRef::Face(FaceRef {
+            entity,
+            generation: geometry.generation,
+            face: geometry
+                .faces
+                .iter()
+                .find(|face| face.frame.normal == [0., 0., -1.])
+                .ok_or("bottom")?
+                .face,
+        });
+        let blind = |depth| ExtentSpec::Blind {
+            depth: ParameterValue::literal(Length::millimetres(depth).unwrap()),
+            direction: Direction::Forward,
+            along: None,
+            start: None,
+            end: None,
+        };
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+        let later = parameters.feature_owner().ok_or("later")?;
+        worker.submit(job(
+            &session,
+            2,
+            DocumentEdit::ExtrudeInsert {
+                spec: ExtrudeSpec {
+                    profile: Some(profile),
+                    extent: blind(5.),
+                    ..ExtrudeSpec::default()
+                },
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        ))?;
+        let result = ready(&worker, &wake)?;
+        session.accept_prepared(session.version(), result.prepared, result.token)?;
+        worker.retain_committed(result.token)?;
+        let later_entity = session.document().feature(later).ok_or("later")?.outputs()[0];
+        // Refresh the generation-scoped reference after the accepted replay.
+        let profile = ProfileRef::Face(FaceRef {
+            generation: session
+                .document()
+                .entity_geometry(entity)
+                .ok_or("base")?
+                .generation,
+            ..profile.support()
+        });
+        let source = session.document().clone();
+        let version = session.version();
+        let token = session.geometry_token();
+        let events = session.subscribe();
+        let parameters =
+            session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::InsertExtrude {
+                    before: Some(later),
+                })?;
+        let through = ExtrudeSpec {
+            profile: Some(profile),
+            extent: ExtentSpec::ThroughAll {
+                invert: false,
+                start: None,
+            },
+            ..ExtrudeSpec::default()
+        };
+        let mut request = job(
+            &session,
+            3,
+            DocumentEdit::ExtrudeInsert {
+                spec: through.clone(),
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters.clone(),
+        );
+        request.insertion = Some(later);
+        worker.submit(request)?;
+        wake.recv_timeout(Duration::from_secs(10))?;
+        assert!(matches!(worker.drain()?, Some(WorkerReply::Failed { .. })));
+        // Even an inactive field-27 reference cannot reach forward into the suffix.
+        let invalid = DocumentEdit::ExtrudeInsert {
+            spec: through,
+            validation: ExtrudeValidationRefs {
+                retained_merge_scope: vec![later_entity],
+            },
+        };
+        assert!(
+            session
+                .document()
+                .prepare_edit(&invalid, &parameters, Some(later))
+                .is_err()
+        );
+        assert_eq!(session.document(), &source);
+        assert_eq!(session.version(), version);
+        assert_eq!(session.geometry_token(), token);
+        assert_eq!(events.try_iter().count(), 0);
+        let inserted = parameters.feature_owner().ok_or("inserted")?;
+        let edit = DocumentEdit::ExtrudeInsert {
+            spec: ExtrudeSpec {
+                profile: Some(profile),
+                extent: blind(2.),
+                result: ExtrudeResult::Add,
+                targets: MergePolicy::Explicit(vec![entity, entity]),
+                ..ExtrudeSpec::default()
+            },
+            validation: ExtrudeValidationRefs {
+                retained_merge_scope: vec![entity, entity],
+            },
+        };
+        let mut request = job(&session, 4, edit.clone(), parameters);
+        request.insertion = Some(later);
+        worker.submit(request)?;
+        let result = ready(&worker, &wake)?;
+        assert_eq!(result.prepared.manifest().edit(), &edit);
+        let newell_model::Feature::Extrude(feature) = result
+            .prepared
+            .document()
+            .feature(inserted)
+            .ok_or("inserted")?
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(feature.spec.targets, MergePolicy::Explicit(vec![entity]));
+        let output = feature.outputs[0];
+        assert!(
+            (result
+                .prepared
+                .document()
+                .entity_geometry(output)
+                .ok_or("union")?
+                .measure
+                - 3.)
+                .abs()
+                < 1e-6
+        );
+        session.accept_prepared(version, result.prepared, result.token)?;
+        assert_eq!(
+            session
+                .document()
+                .features()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![base, inserted, later]
+        );
+        assert_eq!(session.document().active_entities_at(None)?.len(), 2);
+        assert_eq!(
+            session.document().feature(later).ok_or("later")?.outputs(),
+            &[later_entity]
+        );
+        assert_eq!(events.try_iter().count(), 1);
+        Ok(())
+    }
+    #[test]
+    fn cap_edge_replay_keeps_unique_identities_and_lost_suffix_is_atomic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeGeometry, ExtrudeSpec, ParameterValue,
+            geometry::{ExtrudeValidationRefs, FaceProvenance, FaceRef, ProfileRef},
+            parameters::ParameterDraftOwner,
+        };
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        let base = session.add_base_solid("Base Solid")?;
+        session.bind_geometry_worker(1)?;
+        let commit = |session: &mut DocumentSession,
+                      request: PrepareGeometry|
+         -> Result<(), Box<dyn std::error::Error>> {
+            worker.submit(request)?;
+            let result = ready(&worker, &wake)?;
+            let old = session.geometry_token();
+            let token = result.token;
+            session.accept_prepared(session.version(), result.prepared, token)?;
+            worker.retain_committed(token)?;
+            if let Some(old) = old {
+                worker.release(old)?;
+            }
+            Ok(())
+        };
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        let request = job(&session, 1, DocumentEdit::ParameterDefinitions, parameters);
+        commit(&mut session, request)?;
+        let base_entity = session.document().feature(base).ok_or("base")?.outputs()[0];
+        let geometry = session
+            .document()
+            .entity_geometry(base_entity)
+            .ok_or("base geometry")?;
+        let original = ProfileRef::Face(FaceRef {
+            entity: base_entity,
+            generation: geometry.generation,
+            face: geometry
+                .faces
+                .iter()
+                .find(|face| face.frame.normal == [0., 0., -1.])
+                .ok_or("bottom")?
+                .face,
+        });
+        let mut parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+        let parameter = parameters.stage_edit(newell_model::parameters::ParameterEdit {
+            parameter: None,
+            owner: newell_model::parameters::ParameterOwner::Document,
+            source: "#Depth := 3mm".into(),
+            destination: newell_model::QuantityKind::Length,
+            source_edit: None,
+            source_origins: None,
+        })?;
+        let first = parameters.feature_owner().ok_or("first owner")?;
+        let spec = ExtrudeSpec {
+            profile: Some(original),
+            extent: ExtentSpec::Blind {
+                depth: ParameterValue::Bound(parameter),
+                direction: Direction::Forward,
+                along: None,
+                start: None,
+                end: None,
+            },
+            ..ExtrudeSpec::default()
+        };
+        let request = job(
+            &session,
+            2,
+            DocumentEdit::ExtrudeInsert {
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        );
+        commit(&mut session, request)?;
+        let first_entity = session.document().feature(first).ok_or("first")?.outputs()[0];
+        let geometry = session
+            .document()
+            .entity_geometry(first_entity)
+            .ok_or("first geometry")?;
+        let cap = geometry
+            .faces
+            .iter()
+            .find(|face| face.provenance == FaceProvenance::EndCap)
+            .ok_or("cap")?;
+        let boundary = ProfileRef::Edge {
+            support: FaceRef {
+                entity: first_entity,
+                generation: geometry.generation,
+                face: cap.face,
+            },
+            wire: cap.wires[0].wire,
+            edge: cap.wires[0].edges[0].edge,
+        };
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+        let second = parameters.feature_owner().ok_or("second owner")?;
+        let spec = ExtrudeSpec {
+            profile: Some(boundary),
+            geometry: ExtrudeGeometry::Surface,
+            extent: ExtentSpec::Blind {
+                depth: ParameterValue::literal(newell_model::Length::millimetres(2.)?),
+                direction: Direction::Forward,
+                along: None,
+                start: None,
+                end: None,
+            },
+            ..ExtrudeSpec::default()
+        };
+        let request = job(
+            &session,
+            3,
+            DocumentEdit::ExtrudeInsert {
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        );
+        commit(&mut session, request)?;
+        let second_entity = session
+            .document()
+            .feature(second)
+            .ok_or("second")?
+            .outputs()[0];
+        let mut parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::EditExtrude(first))?;
+        let edited_parameter = parameters.stage_edit(newell_model::parameters::ParameterEdit {
+            parameter: Some(parameter),
+            owner: newell_model::parameters::ParameterOwner::Document,
+            source: "#Depth := 4.5mm".into(),
+            destination: newell_model::QuantityKind::Length,
+            source_edit: None,
+            source_origins: None,
+        })?;
+        assert_eq!(parameter, edited_parameter);
+        let newell_model::Feature::Extrude(feature) =
+            session.document().feature(first).ok_or("first")?
+        else {
+            return Err("wrong feature".into());
+        };
+        let spec = feature.spec.clone();
+        let revision = session.revision();
+        let events = session.subscribe();
+        let request = job(
+            &session,
+            4,
+            DocumentEdit::ExtrudeReplace {
+                feature: first,
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        );
+        commit(&mut session, request)?;
+        assert_eq!(session.revision(), revision + 1);
+        assert_eq!(events.try_iter().count(), 1);
+        assert_eq!(
+            session.document().feature(first).ok_or("first")?.outputs(),
+            &[first_entity]
+        );
+        assert_eq!(
+            session
+                .document()
+                .feature(second)
+                .ok_or("second")?
+                .outputs(),
+            &[second_entity]
+        );
+        let newell_model::Feature::Extrude(feature) =
+            session.document().feature(second).ok_or("second")?
+        else {
+            return Err("wrong suffix".into());
+        };
+        assert_eq!(
+            feature.spec.profile.ok_or("profile")?.support().generation,
+            session
+                .document()
+                .entity_geometry(first_entity)
+                .ok_or("geometry")?
+                .generation
+        );
+        assert!(
+            (session
+                .document()
+                .entity_geometry(second_entity)
+                .ok_or("sheet")?
+                .measure
+                - 2.)
+                .abs()
+                < 1e-6
+        );
+        let source = session.document().clone();
+        let version = session.version();
+        let token = session.geometry_token();
+        let events = session.subscribe();
+        let geometry = session
+            .document()
+            .entity_geometry(base_entity)
+            .ok_or("base")?;
+        let other = ProfileRef::Face(FaceRef {
+            entity: base_entity,
+            generation: geometry.generation,
+            face: geometry
+                .faces
+                .iter()
+                .find(|face| face.frame.normal == [0., 0., 1.])
+                .ok_or("top")?
+                .face,
+        });
+        let newell_model::Feature::Extrude(feature) =
+            session.document().feature(first).ok_or("first")?
+        else {
+            return Err("wrong first".into());
+        };
+        let mut spec = feature.spec.clone();
+        spec.profile = Some(other);
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::EditExtrude(first))?;
+        worker.submit(job(
+            &session,
+            5,
+            DocumentEdit::ExtrudeReplace {
+                feature: first,
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        ))?;
+        wake.recv_timeout(Duration::from_secs(10))?;
+        assert!(matches!(worker.drain()?, Some(WorkerReply::Failed { .. })));
+        assert_eq!(session.document(), &source);
+        assert_eq!(session.version(), version);
+        assert_eq!(session.geometry_token(), token);
+        assert_eq!(events.try_iter().count(), 0);
+        Ok(())
+    }
     fn job(
         session: &DocumentSession,
         serial: u64,
@@ -915,6 +1431,7 @@ mod tests {
             insertion: None,
             parameters,
             cancelled: Arc::new(AtomicBool::new(false)),
+            kernel_probe: None,
         }
     }
     fn ready(
@@ -1036,40 +1553,96 @@ mod tests {
             profile_geometry: Some(reference),
             depth: newell_model::ParameterValue::Bound(depth),
             starting_offset: Some(newell_model::ParameterValue::Bound(start)),
+            merge_with_all: false,
+            merge_scope: vec![entity, entity],
             ..newell_model::ExtrudeInputProjection::default()
         }
         .into_spec()
         .unwrap();
         let edit = DocumentEdit::ExtrudeInsert {
             spec,
-            validation: geometry::ExtrudeValidationRefs { retained_merge_scope: vec![entity,entity] },
+            validation: geometry::ExtrudeValidationRefs {
+                retained_merge_scope: vec![entity, entity],
+            },
         };
         let unchanged = session.document().clone();
         let version = session.version();
         let notifications = session.subscribe();
         let mut missing = edit.clone();
         if let DocumentEdit::ExtrudeInsert { validation, .. } = &mut missing {
-            validation.retained_merge_scope.push(EntityId::from_raw(u64::MAX));
+            validation
+                .retained_merge_scope
+                .push(EntityId::from_raw(u64::MAX));
         }
-        assert!(session.document().prepare_edit(&missing,&parameters,None).is_err());
-        let frozen = session.document().prepare_edit(&edit,&parameters,None)?;
+        assert!(
+            session
+                .document()
+                .prepare_edit(&missing, &parameters, None)
+                .is_err()
+        );
+        let frozen = session.document().prepare_edit(&edit, &parameters, None)?;
         worker.submit(job(&session, 2, edit.clone(), parameters))?;
         let result = ready(&worker, &wake)?;
         assert_eq!(result.prepared.manifest().edit(), &edit);
-        let inventory = result.prepared.document().features().iter().map(|(feature,value)| {
-            let components = value.outputs().iter().map(|entity| {
-                let geometry = result.prepared.document().entity_geometry(*entity).ok_or("missing actual geometry")?;
-                Ok(geometry::GeometryComponent { kind:geometry.kind, faces:geometry.faces.clone(), measure:geometry.measure,face_count:geometry.face_count })
-            }).collect::<Result<Vec<_>, &str>>()?;
-            Ok(geometry::GeometryFeatureResult { feature:*feature,consumed:Vec::new(),components })
-        }).collect::<Result<Vec<_>, &str>>()?;
-        let manifest = geometry::GeometryResultManifest { edit:edit.clone(),generation:result.token.generation(),features:inventory };
+        let newell_model::Feature::Extrude(feature) = result
+            .prepared
+            .document()
+            .feature(owner.ok_or("owner")?)
+            .ok_or("feature")?
+        else {
+            return Err("wrong feature".into());
+        };
+        assert_eq!(feature.spec.targets, newell_model::MergePolicy::All);
+        let inventory = result
+            .prepared
+            .document()
+            .features()
+            .iter()
+            .map(|(feature, value)| {
+                let components = value
+                    .outputs()
+                    .iter()
+                    .map(|entity| {
+                        let geometry = result
+                            .prepared
+                            .document()
+                            .entity_geometry(*entity)
+                            .ok_or("missing actual geometry")?;
+                        Ok(geometry::GeometryComponent {
+                            source_wire: geometry.source_wire,
+                            kind: geometry.kind,
+                            faces: geometry.faces.clone(),
+                            measure: geometry.measure,
+                            face_count: geometry.face_count,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, &str>>()?;
+                Ok(geometry::GeometryFeatureResult {
+                    feature: *feature,
+                    consumed: Vec::new(),
+                    components,
+                })
+            })
+            .collect::<Result<Vec<_>, &str>>()?;
+        let manifest = geometry::GeometryResultManifest {
+            edit: edit.clone(),
+            generation: result.token.generation(),
+            features: inventory,
+        };
         // Establish that this is a valid, real kernel inventory before altering
         // only the frozen validation payload supplied to finalization.
-        assert_eq!(frozen.clone().finalize(manifest.clone())?.document(), result.prepared.document());
+        assert_eq!(
+            frozen.clone().finalize(manifest.clone())?.document(),
+            result.prepared.document()
+        );
         let mut altered = manifest;
-        if let DocumentEdit::ExtrudeInsert { validation,.. } = &mut altered.edit { validation.retained_merge_scope.clear(); }
-        assert!(matches!(frozen.finalize(altered),Err(newell_model::ModelError::InvalidGeometryManifest)));
+        if let DocumentEdit::ExtrudeInsert { validation, .. } = &mut altered.edit {
+            validation.retained_merge_scope.clear();
+        }
+        assert!(matches!(
+            frozen.finalize(altered),
+            Err(newell_model::ModelError::InvalidGeometryManifest)
+        ));
         assert_eq!(session.document(), &unchanged);
         assert_eq!(result.scene.items.len(), 2);
         assert!(matches!(
@@ -1100,6 +1673,1397 @@ mod tests {
         worker.retain_committed(token)?;
         worker.release(first_token)?;
         Ok(())
+    }
+    #[test]
+    fn cancellation_during_native_boolean_returns_promptly_rejects_late_work_and_recovers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::extrude_session::{
+            ExtrudeGeometrySession, PreparationEvent, PreparationPurpose,
+        };
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeResult, ExtrudeSpec, Length, ParameterValue,
+            geometry::{ExtrudeValidationRefs, FaceRef, ProfileRef},
+            parameters::ParameterDraftOwner,
+        };
+        use std::time::Instant;
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        let first = session.add_base_solid("Base Solid")?;
+        // Actual overlapping B-Reps force the production exact Boolean operand loop.
+        for i in 0..127 {
+            session.add_base_solid(&format!("Target {i}"))?;
+        }
+        session.bind_geometry_worker(1)?;
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &session,
+            1,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        let initial = ready(&worker, &wake)?;
+        session.accept_prepared(session.version(), initial.prepared, initial.token)?;
+        worker.retain_committed(initial.token)?;
+        let entity = session.document().feature(first).ok_or("base")?.outputs()[0];
+        let shape = session
+            .document()
+            .entity_geometry(entity)
+            .ok_or("geometry")?;
+        let profile = ProfileRef::Face(FaceRef {
+            entity,
+            generation: shape.generation,
+            face: shape
+                .faces
+                .iter()
+                .find(|f| f.frame.normal == [0., 0., -1.])
+                .ok_or("bottom")?
+                .face,
+        });
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+        let spec = ExtrudeSpec {
+            profile: Some(profile),
+            result: ExtrudeResult::Add,
+            extent: ExtentSpec::Blind {
+                depth: ParameterValue::literal(Length::millimetres(2.)?),
+                direction: Direction::Forward,
+                along: None,
+                start: None,
+                end: None,
+            },
+            ..ExtrudeSpec::default()
+        };
+        let mut command = ExtrudeGeometrySession::new(
+            session.version(),
+            CommandInputSessionId(2),
+            1,
+            session.document().geometry_generation(),
+            None,
+            parameters.registry().epoch(),
+        );
+        let mut request = command.freeze(
+            session.version(),
+            session.document(),
+            DocumentEdit::ExtrudeInsert {
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            &parameters,
+            PreparationPurpose::Preview,
+        )?;
+        let flag = Arc::clone(&request.cancelled);
+        let (entered, entering) = mpsc::channel();
+        let (returned, returning) = mpsc::channel();
+        request.kernel_probe = Some(KernelCallProbe { entered, returned });
+        let unchanged = session.document().clone();
+        let version = session.version();
+        let notifications = session.subscribe();
+        worker.submit(request)?;
+        let begin = entering.recv_timeout(Duration::from_secs(10))?;
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            matches!(returning.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "native Boolean workload finished before cancellation; measurement invalid"
+        );
+        let cancelling = Instant::now();
+        assert_eq!(command.cancel(), None);
+        let reducer_latency = cancelling.elapsed();
+        assert!(reducer_latency < Duration::from_millis(100));
+        assert!(flag.load(Ordering::Acquire));
+        assert_eq!(session.document(), &unchanged);
+        assert_eq!(session.version(), version);
+        assert_eq!(notifications.try_iter().count(), 0);
+        let end = returning.recv_timeout(Duration::from_secs(10))?;
+        wake.recv_timeout(Duration::from_secs(10))?;
+        let reply = worker.drain()?.ok_or("missing cancelled reply")?;
+        assert!(matches!(
+            &reply,
+            WorkerReply::Failed {
+                error: GeometryFailure::Cancelled,
+                ..
+            }
+        ));
+        assert!(matches!(
+            command.receive(reply, session.version()),
+            PreparationEvent::Ignored
+        ));
+        assert!(command.take_ready(session.version()).is_none());
+        // A later ordinary command is processed by the same worker. It is still
+        // accepted once through real finalized authority, with no cancelled feature.
+        let recovery_start = Instant::now();
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &session,
+            3,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        let recovered = ready(&worker, &wake)?;
+        let feature_count = session.document().features().len();
+        session.accept_prepared(session.version(), recovered.prepared, recovered.token)?;
+        assert_eq!(session.document().features().len(), feature_count);
+        assert_eq!(session.revision(), version.revision + 1);
+        assert_eq!(notifications.try_iter().count(), 1);
+        println!(
+            "native Boolean batch until cooperative boundary: {:?}; cancel reducer: {:?}; uninterruptible remainder: {:?}; subsequent real preparation: {:?}",
+            end.duration_since(begin),
+            reducer_latency,
+            end.saturating_duration_since(cancelling),
+            recovery_start.elapsed()
+        );
+        // M5.0 R3: a distinct window/session certificate uses the same real
+        // worker after native cancellation, without publishing a second edit.
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        let mut other = job(&session, 4, DocumentEdit::ParameterDefinitions, parameters);
+        other.id.session = CommandInputSessionId(2);
+        let other_start = Instant::now();
+        worker.submit(other)?;
+        let completed = ready(&worker, &wake)?;
+        assert_eq!(completed.id.session, CommandInputSessionId(2));
+        assert_eq!(completed.id.serial, 4);
+        assert_eq!(session.revision(), version.revision + 1);
+        worker.release(completed.token)?;
+        println!(
+            "R3_REAL_WORKER,other_session=2,queue_to_completed_us={:.3},committed_revision_unchanged=true,press_query_and_full_sketch_scheduler=Unproven",
+            other_start.elapsed().as_secs_f64() * 1e6
+        );
+        Ok(())
+    }
+    #[test]
+    fn partial_curved_through_all_real_worker_replays_both_directions_and_rolls_back_suffix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeGeometry, ExtrudeSpec, Length, ParameterValue,
+            geometry::{BaseGeometryRecipe, ExtrudeValidationRefs, FaceRef, ProfileRef},
+            parameters::ParameterDraftOwner,
+        };
+        for reverse in [false, true] {
+            let (sender, wake) = mpsc::channel();
+            let worker = GeometryWorker::start(1, move || {
+                let _ = sender.send(());
+            })?;
+            let mut document = Document::default();
+            let cubic = document.add_base_recipe_for_test(
+                "Curved source",
+                BaseGeometryRecipe::TestCubic {
+                    control: [[0., 0.], [2., 3.], [4., 2.], [6., 0.]],
+                    depth: Length::millimetres(1.)?,
+                    transform: [
+                        [1., 0., 0., 0.],
+                        [0., 0.6, -0.8, 0.],
+                        [0., 0.8, 0.6, 4.],
+                        [0., 0., 0., 1.],
+                    ],
+                },
+            )?;
+            let source = document.add_base_recipe_for_test(
+                "Partial footprint",
+                BaseGeometryRecipe::TestBox {
+                    size: [
+                        Length::millimetres(1.)?,
+                        Length::millimetres(0.1)?,
+                        Length::millimetres(1.)?,
+                    ],
+                    transform: [
+                        [1., 0., 0., 2.],
+                        [0., 1., 0., -2.8],
+                        [0., 0., 1., if reverse { 12. } else { 0. }],
+                        [0., 0., 0., 1.],
+                    ],
+                },
+            )?;
+            let mut session = DocumentSession::default();
+            session.replace(document)?;
+            session.bind_geometry_worker(1)?;
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::Document)?;
+            worker.submit(job(
+                &session,
+                1,
+                DocumentEdit::ParameterDefinitions,
+                parameters,
+            ))?;
+            let initial = ready(&worker, &wake)?;
+            session.accept_prepared(session.version(), initial.prepared, initial.token)?;
+            worker.retain_committed(initial.token)?;
+            let cubic_entity = session.document().feature(cubic).ok_or("cubic")?.outputs()[0];
+            let shape = session
+                .document()
+                .entity_geometry(cubic_entity)
+                .ok_or("cubic geometry")?;
+            let face = shape
+                .faces
+                .iter()
+                .find(|f| f.frame.normal[1] < -0.79 && f.frame.normal[2] > 0.59)
+                .ok_or("cubic top")?;
+            let edge = face.wires[0]
+                .edges
+                .iter()
+                .find(|e| !e.straight)
+                .ok_or("curve")?
+                .edge;
+            let profile = ProfileRef::Edge {
+                support: FaceRef {
+                    entity: cubic_entity,
+                    generation: shape.generation,
+                    face: face.face,
+                },
+                wire: 0,
+                edge,
+            };
+            let blind = |depth| -> Result<ExtentSpec, newell_model::ModelError> {
+                Ok(ExtentSpec::Blind {
+                    depth: ParameterValue::literal(Length::millimetres(depth)?),
+                    direction: Direction::Forward,
+                    along: None,
+                    start: None,
+                    end: None,
+                })
+            };
+            let target_spec = ExtrudeSpec {
+                profile: Some(profile),
+                geometry: ExtrudeGeometry::Surface,
+                extent: blind(4.)?,
+                ..ExtrudeSpec::default()
+            };
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+            let target_feature = parameters.feature_owner().ok_or("target owner")?;
+            worker.submit(job(
+                &session,
+                2,
+                DocumentEdit::ExtrudeInsert {
+                    spec: target_spec.clone(),
+                    validation: ExtrudeValidationRefs::default(),
+                },
+                parameters,
+            ))?;
+            let result = ready(&worker, &wake)?;
+            session.accept_prepared(session.version(), result.prepared, result.token)?;
+            worker.retain_committed(result.token)?;
+            let target = session
+                .document()
+                .feature(target_feature)
+                .ok_or("target")?
+                .outputs()[0];
+            let source_entity = session
+                .document()
+                .feature(source)
+                .ok_or("source")?
+                .outputs()[0];
+            let shape = session
+                .document()
+                .entity_geometry(source_entity)
+                .ok_or("footprint")?;
+            let face = shape
+                .faces
+                .iter()
+                .find(|f| {
+                    if reverse {
+                        f.frame.normal[2] < -0.99
+                    } else {
+                        f.frame.normal[2] > 0.99
+                    }
+                })
+                .ok_or("source face")?;
+            let spec = ExtrudeSpec {
+                profile: Some(ProfileRef::Face(FaceRef {
+                    entity: source_entity,
+                    generation: shape.generation,
+                    face: face.face,
+                })),
+                extent: ExtentSpec::ThroughAll {
+                    invert: false,
+                    start: None,
+                },
+                ..ExtrudeSpec::default()
+            };
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+            let owner = parameters.feature_owner().ok_or("owner")?;
+            let before = session.version();
+            let notifications = session.subscribe();
+            worker.submit(job(
+                &session,
+                3,
+                DocumentEdit::ExtrudeInsert {
+                    spec,
+                    validation: ExtrudeValidationRefs::default(),
+                },
+                parameters,
+            ))?;
+            let result = ready(&worker, &wake)?;
+            let output = result
+                .prepared
+                .document()
+                .feature(owner)
+                .ok_or("ThroughAll")?
+                .outputs()[0];
+            let shape = result
+                .prepared
+                .document()
+                .entity_geometry(output)
+                .ok_or("output geometry")?;
+            let t = (24. - 252_f64.sqrt()) / 18.;
+            let y = 9. * t - 12. * t * t + 3. * t * t * t;
+            let reach = if reverse {
+                12. - 6.025 - 1.25 * (16. / 9.) + 1e-6
+            } else {
+                5.1 + 1.25 * y + 1e-6
+            };
+            assert!(
+                (shape.measure - 0.1 * reach).abs() < 1e-6,
+                "reverse={reverse}: {}, expected {}",
+                shape.measure,
+                0.1 * reach
+            );
+            assert!(
+                result
+                    .scene
+                    .items
+                    .iter()
+                    .any(|i| i.entity == output && !i.mesh.indices().is_empty())
+            );
+            session.accept_prepared(before, result.prepared, result.token)?;
+            worker.retain_committed(result.token)?;
+            assert_eq!(notifications.try_iter().count(), 1);
+            let unchanged = session.document().clone();
+            let version = session.version();
+            let token = session.geometry_token();
+            // Shortening the curved producer removes every finite hit in the
+            // retained suffix. The real replay must reject the whole candidate.
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::EditExtrude(target_feature))?;
+            let mut bad = target_spec.clone();
+            bad.extent = blind(2.)?;
+            worker.submit(job(
+                &session,
+                4,
+                DocumentEdit::ExtrudeReplace {
+                    feature: target_feature,
+                    spec: bad,
+                    validation: ExtrudeValidationRefs::default(),
+                },
+                parameters,
+            ))?;
+            wake.recv_timeout(Duration::from_secs(10))?;
+            assert!(matches!(worker.drain()?, Some(WorkerReply::Failed { .. })));
+            assert_eq!(session.document(), &unchanged);
+            assert_eq!(session.version(), version);
+            assert_eq!(session.geometry_token(), token);
+            assert_eq!(notifications.try_iter().count(), 0);
+            assert_eq!(
+                session
+                    .document()
+                    .feature(target_feature)
+                    .ok_or("retained target")?
+                    .outputs(),
+                &[target]
+            );
+            // Explicit recovery/replay preserves both producer and suffix output ids.
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::EditExtrude(target_feature))?;
+            worker.submit(job(
+                &session,
+                5,
+                DocumentEdit::ExtrudeReplace {
+                    feature: target_feature,
+                    spec: target_spec,
+                    validation: ExtrudeValidationRefs::default(),
+                },
+                parameters,
+            ))?;
+            let result = ready(&worker, &wake)?;
+            assert_eq!(
+                result
+                    .prepared
+                    .document()
+                    .feature(owner)
+                    .ok_or("suffix")?
+                    .outputs(),
+                &[output]
+            );
+            assert_eq!(
+                result
+                    .prepared
+                    .document()
+                    .feature(target_feature)
+                    .ok_or("producer")?
+                    .outputs(),
+                &[target]
+            );
+            session.accept_prepared(version, result.prepared, result.token)?;
+            assert_eq!(notifications.try_iter().count(), 1);
+        }
+        Ok(())
+    }
+    fn accept_fixture(
+        session: &mut DocumentSession,
+        worker: &GeometryWorker,
+        result: PreparedGeometry,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let old = session.geometry_token();
+        session.accept_prepared(session.version(), result.prepared, result.token)?;
+        worker.retain_committed(result.token)?;
+        if let Some(old) = old {
+            worker.release(old)?;
+        }
+        Ok(())
+    }
+    #[test]
+    fn curved_crossing_and_pinched_scopes_use_real_preparation_identity_and_atomic_rejection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeGeometry, ExtrudeResult, ExtrudeSpec, Length,
+            MergePolicy, OffsetSpec, ParameterValue, SecondSpec, SidesSpec,
+            geometry::{BaseGeometryRecipe, ExtrudeValidationRefs, FaceRef, ProfileRef},
+            parameters::ParameterDraftOwner,
+        };
+        let value = |x| -> Result<ParameterValue, newell_model::ModelError> {
+            Ok(ParameterValue::literal(Length::millimetres(x)?))
+        };
+        let t = (24. - 252_f64.sqrt()) / 18.;
+        let ymax = 9. * t - 12. * t * t + 3. * t * t * t;
+        for pinched in [false, true] {
+            for all in [false, true] {
+                let (sender, wake) = mpsc::channel();
+                let worker = GeometryWorker::start(1, move || {
+                    let _ = sender.send(());
+                })?;
+                let mut document = Document::default();
+                let cubic = document.add_base_recipe_for_test(
+                    "Cubic",
+                    BaseGeometryRecipe::TestCubic {
+                        control: [[0., 0.], [2., 3.], [4., 2.], [6., 0.]],
+                        depth: Length::millimetres(1.)?,
+                        transform: [
+                            [1., 0., 0., 0.],
+                            [0., 1., 0., 0.],
+                            [0., 0., 1., 0.],
+                            [0., 0., 0., 1.],
+                        ],
+                    },
+                )?;
+                let other = document.add_base_recipe_for_test(
+                    "Disjoint cubic",
+                    BaseGeometryRecipe::TestCubic {
+                        control: [[0., 0.], [2., 3.], [4., 2.], [6., 0.]],
+                        depth: Length::millimetres(1.)?,
+                        transform: [
+                            [1., 0., 0., 100.],
+                            [0., 1., 0., 0.],
+                            [0., 0., 1., 0.],
+                            [0., 0., 0., 1.],
+                        ],
+                    },
+                )?;
+                let mut planes = Vec::new();
+                for (name, sx, sy, z) in [
+                    ("A", 0.1, 0., 3.9),
+                    ("Cross", -0.1, 0., 4.7),
+                    ("High", 0.2, 0., 4.8),
+                    ("Low", 0., 0.1, 0.9),
+                    ("Pinch", 0., -1., 2. + ymax),
+                ] {
+                    planes.push(document.add_base_recipe_for_test(
+                        name,
+                        BaseGeometryRecipe::TestBox {
+                            size: [
+                                Length::millimetres(10.)?,
+                                Length::millimetres(10.)?,
+                                Length::millimetres(1.)?,
+                            ],
+                            transform: [
+                                [1., 0., 0., -1.],
+                                [0., 1., 0., -1.],
+                                [sx, sy, 1., z],
+                                [0., 0., 0., 1.],
+                            ],
+                        },
+                    )?);
+                }
+                let mut session = DocumentSession::default();
+                session.replace(document)?;
+                session.bind_geometry_worker(1)?;
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::Document)?;
+                worker.submit(job(
+                    &session,
+                    1,
+                    DocumentEdit::ParameterDefinitions,
+                    parameters,
+                ))?;
+                accept_fixture(&mut session, &worker, ready(&worker, &wake)?)?;
+                let entity = session.document().feature(cubic).ok_or("source")?.outputs()[0];
+                let shape = session
+                    .document()
+                    .entity_geometry(entity)
+                    .ok_or("geometry")?;
+                let face = shape
+                    .faces
+                    .iter()
+                    .find(|f| f.frame.normal == [0., 0., 1.])
+                    .ok_or("support")?;
+                let edge = face.wires[0]
+                    .edges
+                    .iter()
+                    .find(|e| !e.straight)
+                    .ok_or("curve")?
+                    .edge;
+                let profile = ProfileRef::Edge {
+                    support: FaceRef {
+                        entity,
+                        generation: shape.generation,
+                        face: face.face,
+                    },
+                    wire: 0,
+                    edge,
+                };
+                let references: Vec<_> = planes
+                    .iter()
+                    .map(|id| {
+                        let entity = session.document().feature(*id).unwrap().outputs()[0];
+                        let shape = session.document().entity_geometry(entity).unwrap();
+                        let face = shape
+                            .faces
+                            .iter()
+                            .find(|f| f.frame.normal[2] < -0.7)
+                            .unwrap();
+                        FaceRef {
+                            entity,
+                            generation: shape.generation,
+                            face: face.face,
+                        }
+                    })
+                    .collect();
+                let spec = ExtrudeSpec {
+                    profile: Some(profile),
+                    geometry: ExtrudeGeometry::Surface,
+                    extent: ExtentSpec::UpTo {
+                        target: references[0],
+                        clearance: None,
+                    },
+                    ..ExtrudeSpec::default()
+                };
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+                let target_feature = parameters.feature_owner().ok_or("owner")?;
+                worker.submit(job(
+                    &session,
+                    2,
+                    DocumentEdit::ExtrudeInsert {
+                        spec,
+                        validation: ExtrudeValidationRefs::default(),
+                    },
+                    parameters,
+                ))?;
+                accept_fixture(&mut session, &worker, ready(&worker, &wake)?)?;
+                let target = session
+                    .document()
+                    .feature(target_feature)
+                    .ok_or("target")?
+                    .outputs()[0];
+                let other_entity = session
+                    .document()
+                    .feature(other)
+                    .ok_or("other base")?
+                    .outputs()[0];
+                let other_shape = session
+                    .document()
+                    .entity_geometry(other_entity)
+                    .ok_or("other geometry")?;
+                let other_face = other_shape
+                    .faces
+                    .iter()
+                    .find(|f| f.frame.normal == [0., 0., 1.])
+                    .ok_or("other support")?;
+                let other_edge = other_face.wires[0]
+                    .edges
+                    .iter()
+                    .find(|e| !e.straight)
+                    .ok_or("other cubic edge")?
+                    .edge;
+                let other_profile = ProfileRef::Edge {
+                    support: FaceRef {
+                        entity: other_entity,
+                        generation: other_shape.generation,
+                        face: other_face.face,
+                    },
+                    wire: 0,
+                    edge: other_edge,
+                };
+                let miss_spec = ExtrudeSpec {
+                    profile: Some(other_profile),
+                    geometry: ExtrudeGeometry::Surface,
+                    extent: ExtentSpec::Blind {
+                        depth: value(1.)?,
+                        direction: Direction::Forward,
+                        along: None,
+                        start: Some(OffsetSpec::Blind {
+                            distance: value(10.)?,
+                            direction: Direction::Forward,
+                        }),
+                        end: None,
+                    },
+                    ..ExtrudeSpec::default()
+                };
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+                let miss_feature = parameters.feature_owner().ok_or("miss")?;
+                worker.submit(job(
+                    &session,
+                    3,
+                    DocumentEdit::ExtrudeInsert {
+                        spec: miss_spec,
+                        validation: ExtrudeValidationRefs::default(),
+                    },
+                    parameters,
+                ))?;
+                accept_fixture(&mut session, &worker, ready(&worker, &wake)?)?;
+                let miss = session
+                    .document()
+                    .feature(miss_feature)
+                    .ok_or("miss")?
+                    .outputs()[0];
+                let spec = ExtrudeSpec {
+                    profile: Some(profile),
+                    geometry: ExtrudeGeometry::Surface,
+                    result: if pinched {
+                        ExtrudeResult::Remove
+                    } else {
+                        ExtrudeResult::Add
+                    },
+                    extent: ExtentSpec::Blind {
+                        depth: value(1.)?,
+                        direction: Direction::Forward,
+                        along: None,
+                        start: Some(OffsetSpec::Blind {
+                            distance: value(if pinched { 2. } else { 1. })?,
+                            direction: Direction::Forward,
+                        }),
+                        end: Some(OffsetSpec::UpTo(references[if pinched { 2 } else { 1 }])),
+                    },
+                    sides: if pinched {
+                        SidesSpec::Second(SecondSpec::UpTo {
+                            target: references[3],
+                            end: None,
+                        })
+                    } else {
+                        SidesSpec::One
+                    },
+                    targets: if all {
+                        MergePolicy::All
+                    } else {
+                        MergePolicy::Explicit(vec![miss, target, target])
+                    },
+                };
+                let validation = ExtrudeValidationRefs {
+                    retained_merge_scope: vec![miss, target, target],
+                };
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+                let feature = parameters.feature_owner().ok_or("operation")?;
+                let revision = session.revision();
+                let events = session.subscribe();
+                worker.submit(job(
+                    &session,
+                    4,
+                    DocumentEdit::ExtrudeInsert {
+                        spec: spec.clone(),
+                        validation: validation.clone(),
+                    },
+                    parameters,
+                ))?;
+                let result = ready(&worker, &wake)?;
+                let newell_model::Feature::Extrude(extrude) = result
+                    .prepared
+                    .document()
+                    .feature(feature)
+                    .ok_or("result")?
+                else {
+                    return Err("wrong feature".into());
+                };
+                assert_eq!(extrude.consumed_inputs(), &[target]);
+                assert_eq!(extrude.outputs.len(), 1);
+                let output = extrude.outputs[0];
+                let geometry = result
+                    .prepared
+                    .document()
+                    .entity_geometry(output)
+                    .ok_or("actual sheet")?;
+                let mut expected = 0.;
+                let n = 16384;
+                for i in 0..=n {
+                    let t = f64::from(i) / f64::from(n);
+                    let y = 9. * t - 12. * t * t + 3. * t * t * t;
+                    let w = if i == 0 || i == n {
+                        1.
+                    } else if i % 2 == 0 {
+                        2.
+                    } else {
+                        4.
+                    };
+                    let height = if pinched {
+                        0.1 * y
+                    } else {
+                        (3. + 0.6 * t).max(3.6 - 0.6 * t)
+                    };
+                    expected += w * (36. + (9. - 24. * t + 9. * t * t).powi(2)).sqrt() * height;
+                }
+                expected /= 3. * f64::from(n);
+                assert!(
+                    (geometry.measure - expected).abs() < 1e-6,
+                    "pinched={pinched}, all={all}: {} vs {expected}",
+                    geometry.measure
+                );
+                assert_eq!(geometry.source_wire, Some(0));
+                assert!(
+                    result
+                        .scene
+                        .items
+                        .iter()
+                        .any(|i| i.entity == output && !i.mesh.indices().is_empty())
+                );
+                assert!(
+                    result
+                        .prepared
+                        .document()
+                        .active_entities_at(None)?
+                        .contains(&miss)
+                );
+                accept_fixture(&mut session, &worker, result)?;
+                assert_eq!(session.revision(), revision + 1);
+                assert_eq!(events.try_iter().count(), 1);
+                // A valid tool can leave two disks meeting at one interior point.
+                // This required nonmanifold result is rejected, with no persistent ids,
+                // references, geometry authority, notifications or history consumed.
+                let bad = ExtrudeSpec {
+                    profile: Some(profile),
+                    geometry: ExtrudeGeometry::Surface,
+                    result: ExtrudeResult::Remove,
+                    extent: ExtentSpec::Blind {
+                        depth: value(1.)?,
+                        direction: Direction::Forward,
+                        along: None,
+                        start: Some(OffsetSpec::Blind {
+                            distance: value(2.)?,
+                            direction: Direction::Forward,
+                        }),
+                        end: Some(OffsetSpec::UpTo(references[2])),
+                    },
+                    sides: SidesSpec::Second(SecondSpec::UpTo {
+                        target: references[4],
+                        end: None,
+                    }),
+                    targets: MergePolicy::Explicit(vec![output]),
+                };
+                let unchanged = session.document().clone();
+                let version = session.version();
+                let token = session.geometry_token();
+                for serial in [5, 6] {
+                    let parameters = session.document().begin_parameter_draft(
+                        ParameterDraftOwner::InsertExtrude { before: None },
+                    )?;
+                    worker.submit(job(
+                        &session,
+                        serial,
+                        DocumentEdit::ExtrudeInsert {
+                            spec: bad.clone(),
+                            validation: ExtrudeValidationRefs {
+                                retained_merge_scope: vec![output],
+                            },
+                        },
+                        parameters,
+                    ))?;
+                    wake.recv_timeout(Duration::from_secs(10))?;
+                    assert!(
+                        matches!(worker.drain()?,Some(WorkerReply::Failed {error:GeometryFailure::Kernel(newell_kernel::NewellKernelError::Operation {message}),..}) if message=="nonmanifold pinched sheet vertex")
+                    );
+                    assert_eq!(session.document(), &unchanged);
+                    assert_eq!(session.version(), version);
+                    assert_eq!(session.geometry_token(), token);
+                    assert_eq!(events.try_iter().count(), 0);
+                }
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::EditExtrude(feature))?;
+                worker.submit(job(
+                    &session,
+                    7,
+                    DocumentEdit::ExtrudeReplace {
+                        feature,
+                        spec,
+                        validation,
+                    },
+                    parameters,
+                ))?;
+                let result = ready(&worker, &wake)?;
+                assert_eq!(
+                    result
+                        .prepared
+                        .document()
+                        .feature(feature)
+                        .ok_or("edited result")?
+                        .outputs(),
+                    &[output]
+                );
+                accept_fixture(&mut session, &worker, result)?;
+                assert_eq!(events.try_iter().count(), 1);
+                // The reconstructed/pinched result is a real later merge operand;
+                // complete removal proves zero outputs instead of an arbitrary error.
+                let parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+                let remover = parameters.feature_owner().ok_or("remover")?;
+                let full = ExtrudeSpec {
+                    profile: Some(profile),
+                    geometry: ExtrudeGeometry::Surface,
+                    result: ExtrudeResult::Remove,
+                    extent: ExtentSpec::Blind {
+                        depth: value(20.)?,
+                        direction: Direction::Forward,
+                        along: None,
+                        start: None,
+                        end: None,
+                    },
+                    targets: MergePolicy::Explicit(vec![output]),
+                    ..ExtrudeSpec::default()
+                };
+                worker.submit(job(
+                    &session,
+                    8,
+                    DocumentEdit::ExtrudeInsert {
+                        spec: full,
+                        validation: ExtrudeValidationRefs {
+                            retained_merge_scope: vec![output],
+                        },
+                    },
+                    parameters,
+                ))?;
+                let result = ready(&worker, &wake)?;
+                assert!(
+                    result
+                        .prepared
+                        .document()
+                        .feature(remover)
+                        .ok_or("full removal")?
+                        .outputs()
+                        .is_empty()
+                );
+                accept_fixture(&mut session, &worker, result)?;
+                assert!(session.document().active_entities_at(None)?.contains(&miss));
+                assert_eq!(events.try_iter().count(), 1);
+            }
+        }
+        Ok(())
+    }
+    fn modifier_crossings(surface: bool, family: usize) -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Direction, ExtentSpec, ExtrudeGeometry, ExtrudeResult, ExtrudeSpec, Length,
+            MergePolicy, OffsetSpec, ParameterValue, SecondOffsetSpec, SecondSpec, SidesSpec,
+            geometry::{
+                BaseGeometryRecipe, DirectionRef, ExtrudeValidationRefs, FaceRef, ProfileRef,
+            },
+            parameters::ParameterDraftOwner,
+        };
+        let value = |x| ParameterValue::literal(Length::millimetres(x).unwrap());
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut document = Document::default();
+        let source = document.add_base_solid("Source")?;
+        let mut references = Vec::new();
+        for (name, z) in [("Negative", -4.), ("Positive", 2.)] {
+            references.push(document.add_base_recipe_for_test(
+                name,
+                BaseGeometryRecipe::TestBox {
+                    size: [
+                        Length::millimetres(1.)?,
+                        Length::millimetres(1.)?,
+                        Length::millimetres(2.)?,
+                    ],
+                    transform: [
+                        [1., 0., 0., 0.],
+                        [0., 1., 0., 0.],
+                        [0., 0., 1., z],
+                        [0., 0., 0., 1.],
+                    ],
+                },
+            )?);
+        }
+        let mut baseline = DocumentSession::default();
+        baseline.replace(document)?;
+        baseline.bind_geometry_worker(1)?;
+        let parameters = baseline
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &baseline,
+            1,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        accept_fixture(&mut baseline, &worker, ready(&worker, &wake)?)?;
+        let entity = baseline
+            .document()
+            .feature(source)
+            .ok_or("source")?
+            .outputs()[0];
+        let shape = baseline
+            .document()
+            .entity_geometry(entity)
+            .ok_or("source geometry")?;
+        let face = shape
+            .faces
+            .iter()
+            .find(|f| f.frame.normal == [0., 0., -1.])
+            .ok_or("bottom")?;
+        let profile = ProfileRef::Face(FaceRef {
+            entity,
+            generation: shape.generation,
+            face: face.face,
+        });
+        let along = shape
+            .faces
+            .iter()
+            .find_map(|f| {
+                f.wires.iter().find_map(|w| {
+                    w.edges
+                        .iter()
+                        .find(|e| (e.end[2] - e.start[2]).abs() > 0.99)
+                        .map(|e| {
+                            (
+                                DirectionRef {
+                                    support: FaceRef {
+                                        entity,
+                                        generation: shape.generation,
+                                        face: f.face,
+                                    },
+                                    wire: w.wire,
+                                    edge: e.edge,
+                                },
+                                e.end[2] > e.start[2],
+                            )
+                        })
+                })
+            })
+            .ok_or("axis occurrence")?;
+        let mut planes = Vec::new();
+        for feature in &references {
+            let entity = baseline
+                .document()
+                .feature(*feature)
+                .ok_or("plane body")?
+                .outputs()[0];
+            let shape = baseline
+                .document()
+                .entity_geometry(entity)
+                .ok_or("planes")?;
+            for z in if feature == &references[0] {
+                [-4., -2.]
+            } else {
+                [2., 4.]
+            } {
+                let face = shape
+                    .faces
+                    .iter()
+                    .find(|f| {
+                        (f.frame.origin[2] - z).abs() < 1e-7 && f.frame.normal[2].abs() > 0.99
+                    })
+                    .ok_or("plane")?;
+                planes.push(FaceRef {
+                    entity,
+                    generation: shape.generation,
+                    face: face.face,
+                });
+            }
+        }
+        let parameters = baseline
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::InsertExtrude { before: None })?;
+        let target_feature = parameters.feature_owner().ok_or("target")?;
+        let spec = ExtrudeSpec {
+            profile: Some(profile),
+            geometry: if surface {
+                ExtrudeGeometry::Surface
+            } else {
+                ExtrudeGeometry::Solid
+            },
+            extent: ExtentSpec::Blind {
+                depth: value(3.),
+                direction: Direction::Forward,
+                along: None,
+                start: None,
+                end: None,
+            },
+            sides: SidesSpec::Symmetric,
+            ..ExtrudeSpec::default()
+        };
+        worker.submit(job(
+            &baseline,
+            2,
+            DocumentEdit::ExtrudeInsert {
+                spec,
+                validation: ExtrudeValidationRefs::default(),
+            },
+            parameters,
+        ))?;
+        accept_fixture(&mut baseline, &worker, ready(&worker, &wake)?)?;
+        let target = baseline
+            .document()
+            .feature(target_feature)
+            .ok_or("target")?
+            .outputs()[0];
+        let mut serial = 3;
+        let mut accepted = 0;
+        let mut rejected = 0;
+        let mut session = DocumentSession::default();
+        session.bind_geometry_worker(1)?;
+        let count = if family == 0 {
+            100
+        } else if family == 1 {
+            3
+        } else {
+            8
+        };
+        for variant in 0..count {
+            let reverse = if family == 0 {
+                variant % 2 == 1
+            } else {
+                family == 2 && variant >= 4
+            };
+            let (near, far, opposite_near, opposite_far) = if reverse {
+                (planes[2], planes[3], planes[1], planes[0])
+            } else {
+                (planes[1], planes[0], planes[2], planes[3])
+            };
+            let mut start = 0.;
+            let start_kind = if family == 0 {
+                (variant / 4) % 5
+            } else if family == 2 {
+                variant % 4
+            } else {
+                0
+            };
+            let start_spec = match start_kind {
+                1 => {
+                    start = if family == 2 { 0.5 } else { 2. };
+                    Some(OffsetSpec::Blind {
+                        distance: value(start),
+                        direction: Direction::Forward,
+                    })
+                }
+                2 => {
+                    start = if family == 2 { -0.5 } else { -2. };
+                    Some(OffsetSpec::Blind {
+                        distance: value(-start),
+                        direction: Direction::Reverse,
+                    })
+                }
+                3 => {
+                    start = 2.;
+                    Some(OffsetSpec::UpTo(near))
+                }
+                4 => Some(OffsetSpec::Blind {
+                    distance: value(0.),
+                    direction: Direction::Forward,
+                }),
+                _ => None,
+            };
+            let mut end = if family == 0 {
+                start + 5.
+            } else if family == 1 {
+                4. - if variant == 1 { 0.25 } else { 0. }
+            } else {
+                4.000001
+            };
+            let extent = if family == 0 {
+                let end_spec = match variant / 20 {
+                    1 => {
+                        end += 1.;
+                        Some(OffsetSpec::Blind {
+                            distance: value(1.),
+                            direction: Direction::Forward,
+                        })
+                    }
+                    2 => {
+                        end -= 1.;
+                        Some(OffsetSpec::Blind {
+                            distance: value(1.),
+                            direction: Direction::Reverse,
+                        })
+                    }
+                    3 => {
+                        end = 4.;
+                        Some(OffsetSpec::UpTo(far))
+                    }
+                    4 => Some(OffsetSpec::Blind {
+                        distance: value(0.),
+                        direction: Direction::Forward,
+                    }),
+                    _ => None,
+                };
+                let use_along = (variant / 2) % 2 == 1;
+                let forward = if use_along {
+                    along.1 == reverse
+                } else {
+                    !reverse
+                };
+                ExtentSpec::Blind {
+                    depth: value(5.),
+                    direction: if forward {
+                        Direction::Forward
+                    } else {
+                        Direction::Reverse
+                    },
+                    along: use_along.then_some(along.0),
+                    start: start_spec,
+                    end: end_spec,
+                }
+            } else if family == 1 {
+                ExtentSpec::UpTo {
+                    target: far,
+                    clearance: if variant == 0 {
+                        None
+                    } else {
+                        Some(value(if variant == 1 { 0.25 } else { 0. }))
+                    },
+                }
+            } else {
+                ExtentSpec::ThroughAll {
+                    invert: reverse,
+                    start: start_spec,
+                }
+            };
+            for side in 0..7 {
+                let (low, high) = match side {
+                    1 => (2. * start - end, end),
+                    2 => (start - 3., end),
+                    3 => (start, end.max(start + 3.)),
+                    4 => (-4., end),
+                    5 => (-3.75, end),
+                    6 => (-2., end),
+                    _ => (start, end),
+                };
+                let sides = match side {
+                    1 => SidesSpec::Symmetric,
+                    2 | 3 => SidesSpec::Second(SecondSpec::Blind {
+                        depth: value(3.),
+                        direction: if side == 2 {
+                            Direction::Forward
+                        } else {
+                            Direction::Reverse
+                        },
+                    }),
+                    4..=6 => SidesSpec::Second(SecondSpec::UpTo {
+                        target: opposite_far,
+                        end: match side {
+                            5 => Some(SecondOffsetSpec::Clearance(value(0.25))),
+                            6 => Some(SecondOffsetSpec::UpTo(opposite_near)),
+                            _ => None,
+                        },
+                    }),
+                    _ => SidesSpec::One,
+                };
+                for result in 0..3 {
+                    let scopes: &[bool] = if result == 0 { &[true] } else { &[true, false] };
+                    for all in scopes {
+                        session.replace(baseline.document().clone())?;
+                        worker.replace_document(session.identity())?;
+                        let spec = ExtrudeSpec {
+                            profile: Some(profile),
+                            geometry: if surface {
+                                ExtrudeGeometry::Surface
+                            } else {
+                                ExtrudeGeometry::Solid
+                            },
+                            result: match result {
+                                1 => ExtrudeResult::Add,
+                                2 => ExtrudeResult::Remove,
+                                _ => ExtrudeResult::New,
+                            },
+                            extent: extent.clone(),
+                            sides: sides.clone(),
+                            targets: if *all {
+                                MergePolicy::All
+                            } else {
+                                MergePolicy::Explicit(vec![target])
+                            },
+                        };
+                        let parameters = session.document().begin_parameter_draft(
+                            ParameterDraftOwner::InsertExtrude { before: None },
+                        )?;
+                        let feature = parameters.feature_owner().ok_or("feature")?;
+                        let source = session.document().clone();
+                        let version = session.version();
+                        let events = session.subscribe();
+                        worker.submit(job(
+                            &session,
+                            serial,
+                            DocumentEdit::ExtrudeInsert {
+                                spec,
+                                validation: ExtrudeValidationRefs {
+                                    retained_merge_scope: if *all { vec![] } else { vec![target] },
+                                },
+                            },
+                            parameters,
+                        ))?;
+                        serial += 1;
+                        let unchanged_add = result == 1
+                            && (surface || !all)
+                            && low >= -3. - 1e-7
+                            && high <= 3. + 1e-7;
+                        if (side == 6 && start == -2.) || unchanged_add {
+                            wake.recv_timeout(Duration::from_secs(10))?;
+                            let Some(WorkerReply::Failed {
+                                error: GeometryFailure::Kernel(error),
+                                ..
+                            }) = worker.drain()?
+                            else {
+                                return Err("missing geometric rejection".into());
+                            };
+                            if side == 6 && start == -2. {
+                                let expected = if surface {
+                                    "target is not beyond the displaced start"
+                                } else {
+                                    "target does not lie beyond the entire start section"
+                                };
+                                assert!(
+                                    matches!(error,newell_kernel::NewellKernelError::InvalidParameter {parameter} if parameter==expected),
+                                    "unexpected collapsed-side error: {error}"
+                                );
+                            } else {
+                                assert!(
+                                    matches!(error,newell_kernel::NewellKernelError::Operation {message} if message=="NoTargetIntersection")
+                                );
+                            }
+                            assert_eq!(session.document(), &source);
+                            assert_eq!(session.version(), version);
+                            assert_eq!(events.try_iter().count(), 0);
+                            rejected += 1;
+                            continue;
+                        }
+                        let prepared=ready(&worker,&wake).map_err(|e|format!("surface={surface},family={family},variant={variant},side={side},result={result},all={all}: {e}"))?;
+                        let output = prepared
+                            .prepared
+                            .document()
+                            .feature(feature)
+                            .ok_or("feature output")?
+                            .outputs();
+                        let (a, b) = if reverse { (low, high) } else { (-high, -low) };
+                        let targets: &[(f64, f64)] = if surface || !all {
+                            &[(-3., 3.)]
+                        } else {
+                            &[(0., 1.), (-4., -2.), (2., 4.), (-3., 3.)]
+                        };
+                        let mut expected = Vec::new();
+                        if result == 0 {
+                            expected.push(b - a);
+                        } else if result == 1 {
+                            let bound = if surface || !all { 3_f64 } else { 4_f64 };
+                            expected.push(b.max(bound) - a.min(-bound));
+                        } else {
+                            for (x, y) in targets {
+                                if b.min(*y) - a.max(*x) > 1e-7 {
+                                    if a > *x + 1e-7 {
+                                        expected.push(a - *x);
+                                    }
+                                    if b < *y - 1e-7 {
+                                        expected.push(*y - b);
+                                    }
+                                }
+                            }
+                        }
+                        expected.sort_by(f64::total_cmp);
+                        let mut actual: Vec<_> = output
+                            .iter()
+                            .map(|e| {
+                                prepared
+                                    .prepared
+                                    .document()
+                                    .entity_geometry(*e)
+                                    .ok_or("result geometry")
+                                    .map(|g| g.measure / if surface { 4. } else { 1. })
+                            })
+                            .collect::<Result<_, _>>()?;
+                        actual.sort_by(f64::total_cmp);
+                        assert_eq!(
+                            actual.len(),
+                            expected.len(),
+                            "surface={surface},family={family},variant={variant},side={side},result={result},all={all}: actual={actual:?}, expected={expected:?}"
+                        );
+                        for (actual, expected) in actual.iter().zip(&expected) {
+                            assert!(
+                                (actual - expected).abs() < 1e-6,
+                                "surface={surface},family={family},variant={variant},side={side},result={result},all={all}: {actual} vs {expected}"
+                            );
+                        }
+                        assert_eq!(
+                            prepared.scene.items.len(),
+                            prepared.prepared.document().active_entities_at(None)?.len()
+                        );
+                        for item in &prepared.scene.items {
+                            assert!(!item.mesh.indices().is_empty());
+                        }
+                        assert_eq!(session.document(), &source);
+                        assert_eq!(session.version(), version);
+                        accept_fixture(&mut session, &worker, prepared)?;
+                        assert_eq!(events.try_iter().count(), 1);
+                        assert_eq!(session.revision(), version.revision + 1);
+                        accepted += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "MODIFIER_MATRIX surface={surface},family={family},accepted={accepted},deterministic_invalid={rejected}"
+        );
+        assert_eq!(accepted + rejected, count * 35);
+        Ok(())
+    }
+    #[test]
+    fn solid_blind_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(false, 0)
+    }
+    #[test]
+    fn surface_blind_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(true, 0)
+    }
+    #[test]
+    fn solid_up_to_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(false, 1)
+    }
+    #[test]
+    fn surface_up_to_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(true, 1)
+    }
+    #[test]
+    fn solid_through_all_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(false, 2)
+    }
+    #[test]
+    fn surface_through_all_modifier_crossings() -> Result<(), Box<dyn std::error::Error>> {
+        modifier_crossings(true, 2)
     }
     #[test]
     fn cancelled_work_cannot_finalize_a_document() -> Result<(), Box<dyn std::error::Error>> {

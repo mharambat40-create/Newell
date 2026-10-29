@@ -1,0 +1,1050 @@
+//! A torus cut by a plane across its axis or through it, keeping either
+//! side. Across the axis, with the plane `c` above the centre and
+//! `a = asin(c / r)` its angle up the tube, Pappus gives the part below as
+//! `2 pi R` times the tube disc's area below the chord at `c`, its torus face
+//! covers `2 pi r R (pi + 2a)` and the plane face is the annulus
+//! `4 pi R sqrt(r^2 - c^2)`. A plane parallel to the axis closer to it than
+//! `R - r` meets the tube in two loops winding around it.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::f64::consts::PI;
+
+use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use brepkit_math::mat::Mat4;
+use brepkit_math::vec::Point3;
+use brepkit_operations::boolean::{BooleanOp, boolean};
+use brepkit_operations::measure::{face_area, oriented_solid_volume, solid_volume};
+use brepkit_operations::primitives::{make_box, make_torus};
+use brepkit_operations::tessellate::{is_watertight, tessellate_solid};
+use brepkit_operations::transform::transform_solid;
+use brepkit_operations::validate::validate_solid;
+use brepkit_topology::Topology;
+use brepkit_topology::explorer::solid_faces;
+use brepkit_topology::face::FaceSurface;
+use brepkit_topology::solid::SolidId;
+
+#[test]
+fn torus_cut_across_its_axis() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    // The whole scene is also tipped over, so the torus's frame is off the axes.
+    let tips = [
+        Mat4::identity(),
+        Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+    ];
+    for c in [0.0_f64, 0.5, -1.0, 1.2] {
+        for (k, tip) in tips.iter().enumerate() {
+            for keep_below in [true, false] {
+                let label = format!(
+                    "height {c}, tip {k}, keeping {}",
+                    if keep_below { "below" } else { "above" }
+                );
+                let mut topo = Topology::new();
+                let torus = make_torus(&mut topo, big, small, 32).unwrap();
+                let lid = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+                transform_solid(&mut topo, lid, &Mat4::translation(-10.0, -10.0, c)).unwrap();
+                transform_solid(&mut topo, torus, tip).unwrap();
+                transform_solid(&mut topo, lid, tip).unwrap();
+                let op = if keep_below {
+                    BooleanOp::Cut
+                } else {
+                    BooleanOp::Intersect
+                };
+                let piece = boolean(&mut topo, op, torus, lid).unwrap();
+
+                let report = validate_solid(&topo, piece).unwrap();
+                assert!(report.is_valid(), "{label}: {:?}", report.issues);
+                let faces = solid_faces(&topo, piece).unwrap();
+                assert_eq!(faces.len(), 2, "{label}: faces");
+
+                let chord = small.mul_add(small, -(c * c)).sqrt();
+                let above = small * small * (c / small).acos() - c * chord;
+                let slice = if keep_below {
+                    PI * small * small - above
+                } else {
+                    above
+                };
+                let truth = 2.0 * PI * big * slice;
+                let volume = solid_volume(&topo, piece, 0.01).unwrap();
+                assert!(
+                    (volume - truth).abs() < 1e-9 * truth,
+                    "{label}: volume {volume}, truth {truth}"
+                );
+                let up = (c / small).asin();
+                let band = if keep_below {
+                    PI + 2.0 * up
+                } else {
+                    PI - 2.0 * up
+                };
+                for &f in &faces {
+                    let area = face_area(&topo, f, 0.01).unwrap();
+                    let truth = match topo.face(f).unwrap().surface() {
+                        FaceSurface::Torus(_) => 2.0 * PI * small * big * band,
+                        FaceSurface::Plane { .. } => 4.0 * PI * big * chord,
+                        other => panic!("{label}: a {} face", other.type_tag()),
+                    };
+                    assert!(
+                        (area - truth).abs() < 1e-9 * truth,
+                        "{label}: {} area {area}, truth {truth}",
+                        topo.face(f).unwrap().surface().type_tag()
+                    );
+                }
+
+                let at = |x: f64, y: f64, z: f64| {
+                    classify_point(
+                        &topo,
+                        piece,
+                        tip.mul_point(Point3::new(x, y, z)),
+                        &ClassifyOptions::default(),
+                    )
+                    .unwrap()
+                };
+                let (below, over) = if keep_below {
+                    (PointClassification::Inside, PointClassification::Outside)
+                } else {
+                    (PointClassification::Outside, PointClassification::Inside)
+                };
+                for (x, y) in [(big, 0.0), (0.0, -big), (-big * 0.6, big * 0.8)] {
+                    assert_eq!(at(x, y, c - 0.1), below, "{label}: below at ({x}, {y})");
+                    assert_eq!(at(x, y, c + 0.1), over, "{label}: above at ({x}, {y})");
+                }
+                assert_eq!(
+                    at(0.0, 0.0, c),
+                    PointClassification::Outside,
+                    "{label}: the hole"
+                );
+
+                let mesh = tessellate_solid(&topo, piece, 0.01).unwrap();
+                assert!(is_watertight(&mesh), "{label}: open or non-manifold mesh");
+                let meshed = oriented_solid_volume(&topo, piece, 0.01).unwrap();
+                assert!(
+                    (meshed - truth).abs() < 1e-2 * truth,
+                    "{label}: mesh volume {meshed}, truth {truth}"
+                );
+            }
+        }
+    }
+}
+
+/// A torus halved by a plane through its axis, turned about the axis: each
+/// half holds `pi^2 R r^2`, its torus face `2 pi^2 R r`, and two tube
+/// cross-sections `pi r^2` each.
+#[test]
+fn torus_halved_through_its_axis() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    for turn_deg in [0.0_f64, 60.0, 200.0] {
+        for keep_behind in [true, false] {
+            let label = format!(
+                "turned {turn_deg} degrees, keeping {}",
+                if keep_behind { "behind" } else { "ahead" }
+            );
+            let turn = Mat4::rotation_z(turn_deg.to_radians());
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            // The box fills x > 0 before the turn.
+            let lid = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+            let place = turn
+                * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)
+                * Mat4::translation(-10.0, -10.0, 0.0);
+            transform_solid(&mut topo, lid, &place).unwrap();
+            let op = if keep_behind {
+                BooleanOp::Cut
+            } else {
+                BooleanOp::Intersect
+            };
+            let piece = boolean(&mut topo, op, torus, lid).unwrap();
+
+            let report = validate_solid(&topo, piece).unwrap();
+            assert!(report.is_valid(), "{label}: {:?}", report.issues);
+            let faces = solid_faces(&topo, piece).unwrap();
+            assert_eq!(faces.len(), 3, "{label}: faces");
+
+            let truth = PI * PI * big * small * small;
+            let volume = solid_volume(&topo, piece, 0.01).unwrap();
+            assert!(
+                (volume - truth).abs() < 1e-9 * truth,
+                "{label}: volume {volume}, truth {truth}"
+            );
+            for &f in &faces {
+                let area = face_area(&topo, f, 0.01).unwrap();
+                let truth = match topo.face(f).unwrap().surface() {
+                    FaceSurface::Torus(_) => 2.0 * PI * PI * big * small,
+                    FaceSurface::Plane { .. } => PI * small * small,
+                    other => panic!("{label}: a {} face", other.type_tag()),
+                };
+                assert!(
+                    (area - truth).abs() < 1e-9 * truth,
+                    "{label}: {} area {area}, truth {truth}",
+                    topo.face(f).unwrap().surface().type_tag()
+                );
+            }
+
+            let at = |x: f64, y: f64, z: f64| {
+                classify_point(
+                    &topo,
+                    piece,
+                    turn.mul_point(Point3::new(x, y, z)),
+                    &ClassifyOptions::default(),
+                )
+                .unwrap()
+            };
+            let (behind, ahead) = if keep_behind {
+                (PointClassification::Inside, PointClassification::Outside)
+            } else {
+                (PointClassification::Outside, PointClassification::Inside)
+            };
+            for (y, z) in [(big, 0.0), (-big, 0.5), (big + 1.0, -0.3)] {
+                assert_eq!(at(-0.1, y, z), behind, "{label}: behind at ({y}, {z})");
+                assert_eq!(at(0.1, y, z), ahead, "{label}: ahead at ({y}, {z})");
+            }
+            assert_eq!(at(-big, 0.0, 1.0), behind, "{label}: far side");
+
+            let mesh = tessellate_solid(&topo, piece, 0.01).unwrap();
+            assert!(is_watertight(&mesh), "{label}: open or non-manifold mesh");
+            let meshed = oriented_solid_volume(&topo, piece, 0.01).unwrap();
+            assert!(
+                (meshed - truth).abs() < 1e-2 * truth,
+                "{label}: mesh volume {meshed}, truth {truth}"
+            );
+        }
+    }
+}
+
+/// A box over one side of a plane through the torus's axis, fused with the
+/// torus: the box, plus the half of the ring outside it.
+#[test]
+fn box_fused_over_half_a_torus() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, big, small, 32).unwrap();
+    let lid = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    let place =
+        Mat4::rotation_y(std::f64::consts::FRAC_PI_2) * Mat4::translation(-10.0, -10.0, 0.0);
+    transform_solid(&mut topo, lid, &place).unwrap();
+    let both = boolean(&mut topo, BooleanOp::Fuse, torus, lid).unwrap();
+
+    let report = validate_solid(&topo, both).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    let truth = 8000.0 + PI * PI * big * small * small;
+    let volume = solid_volume(&topo, both, 0.01).unwrap();
+    assert!(
+        (volume - truth).abs() < 1e-9 * truth,
+        "volume {volume}, truth {truth}"
+    );
+    let mesh = tessellate_solid(&topo, both, 0.01).unwrap();
+    assert!(is_watertight(&mesh), "open or non-manifold mesh");
+    let inside = |x: f64, y: f64, z: f64| {
+        classify_point(
+            &topo,
+            both,
+            Point3::new(x, y, z),
+            &ClassifyOptions::default(),
+        )
+        .unwrap()
+    };
+    assert_eq!(inside(-big, 0.0, 0.0), PointClassification::Inside);
+    assert_eq!(inside(-big, 0.0, 1.6), PointClassification::Outside);
+    assert_eq!(inside(5.0, 5.0, 5.0), PointClassification::Inside);
+}
+
+/// The volume of the `(big, small)` ring beyond the plane `x = h`, for `|h|`
+/// under `big - small`: over its height (`z = small sin t`), each annulus
+/// keeps the share `acos(h / rho) / pi` of its circle at `rho`.
+fn ring_beyond(big: f64, small: f64, h: f64) -> f64 {
+    let simpson = |n: u32, lo: f64, hi: f64, f: &dyn Fn(f64) -> f64| {
+        let step = (hi - lo) / f64::from(n);
+        let mut sum = f(lo) + f(hi);
+        for k in 1..n {
+            sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step.mul_add(f64::from(k), lo));
+        }
+        sum * step / 3.0
+    };
+    let annulus = |w: f64| {
+        simpson(800, big - w, big + w, &|rho: f64| {
+            2.0 * rho * (h / rho).acos()
+        })
+    };
+    simpson(800, -PI / 2.0, PI / 2.0, &|t: f64| {
+        let w = small * t.cos();
+        w * annulus(w)
+    })
+}
+
+/// The area of the `(big, small)` torus beyond the plane `x = h`: each
+/// latitude circle keeps the share `acos(h / rho) / pi` of itself.
+fn torus_area_beyond(big: f64, small: f64, h: f64) -> f64 {
+    let n = 800_u32;
+    let step = 2.0 * PI / f64::from(n);
+    let f = |v: f64| {
+        let rho = small.mul_add(v.cos(), big);
+        small * rho * 2.0 * (h / rho).acos()
+    };
+    let mut sum = f(0.0) + f(2.0 * PI);
+    for k in 1..n {
+        sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step * f64::from(k));
+    }
+    sum * step / 3.0
+}
+
+/// Checks a boolean piece: exactly the given faces by surface type, valid
+/// when it is one piece, `solid_volume` within `rel` of `truth`, and a
+/// closed mesh within 1% of it. The sections are fitted through their
+/// samples, which bounds `rel`: a plane's loops around the tube are sampled
+/// exactly at each tube angle and hold to 1e-8, a lobe's samples less so.
+fn check_piece(
+    topo: &Topology,
+    piece: SolidId,
+    census: &[(&str, usize)],
+    one_piece: bool,
+    (truth, rel): (f64, f64),
+    label: &str,
+) {
+    let mut found: Vec<(&str, usize)> = Vec::new();
+    for face in solid_faces(topo, piece).unwrap() {
+        let tag = topo.face(face).unwrap().surface().type_tag();
+        match found.iter_mut().find(|(t, _)| *t == tag) {
+            Some((_, n)) => *n += 1,
+            None => found.push((tag, 1)),
+        }
+    }
+    found.sort_unstable();
+    let mut census = census.to_vec();
+    census.sort_unstable();
+    assert_eq!(found, census, "{label}: faces");
+    // Two pieces share one shell, which the Euler check reads as one: check
+    // that every edge bounds exactly two faces instead.
+    if one_piece {
+        let report = validate_solid(topo, piece).unwrap();
+        assert!(report.is_valid(), "{label}: {:?}", report.issues);
+    } else {
+        let mut uses: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for face in solid_faces(topo, piece).unwrap() {
+            let face = topo.face(face).unwrap();
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wire).unwrap().edges() {
+                    *uses.entry(oe.edge().index()).or_default() += 1;
+                }
+            }
+        }
+        assert!(
+            uses.values().all(|&n| n == 2),
+            "{label}: edge uses {:?}",
+            uses.values().filter(|&&n| n != 2).collect::<Vec<_>>()
+        );
+    }
+    let volume = solid_volume(topo, piece, 0.01).unwrap();
+    assert!(
+        (volume - truth).abs() < rel * truth,
+        "{label}: volume {volume}, truth {truth}"
+    );
+    let mesh = tessellate_solid(topo, piece, 0.01).unwrap();
+    assert!(is_watertight(&mesh), "{label}: open or non-manifold mesh");
+    let meshed = oriented_solid_volume(topo, piece, 0.005).unwrap();
+    assert!(
+        (meshed - truth).abs() < 1e-2 * truth,
+        "{label}: mesh volume {meshed}, truth {truth}"
+    );
+}
+
+fn at(topo: &Topology, piece: SolidId, p: Point3) -> PointClassification {
+    classify_point(topo, piece, p, &ClassifyOptions::default()).unwrap()
+}
+
+/// A 20 x 20 x 10 slab over `x > 1` with the torus, upright and with the
+/// whole scene tipped over.
+#[test]
+fn slab_over_one_side_of_the_ring() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let beyond = ring_beyond(big, small, 1.0);
+    let tips = [
+        Mat4::identity(),
+        Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+    ];
+    let sector: &[(&str, usize)] = &[("plane", 2), ("torus", 1)];
+    let fused: &[(&str, usize)] = &[("plane", 6), ("torus", 1)];
+    for (k, tip) in tips.iter().enumerate() {
+        for (op, census, truth, kept) in [
+            (
+                BooleanOp::Intersect,
+                sector,
+                beyond,
+                [Inside, Outside, Outside],
+            ),
+            (
+                BooleanOp::Cut,
+                sector,
+                ring - beyond,
+                [Outside, Inside, Outside],
+            ),
+            (
+                BooleanOp::Fuse,
+                fused,
+                4000.0 + ring - beyond,
+                [Inside, Inside, Inside],
+            ),
+        ] {
+            let label = format!("tip {k}, {op:?}");
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            let slab = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+            transform_solid(&mut topo, slab, &Mat4::translation(1.0, -10.0, -5.0)).unwrap();
+            transform_solid(&mut topo, torus, tip).unwrap();
+            transform_solid(&mut topo, slab, tip).unwrap();
+            let piece = boolean(&mut topo, op, torus, slab).unwrap();
+            check_piece(&topo, piece, census, true, (truth, 1e-8), &label);
+            let tube = solid_faces(&topo, piece)
+                .unwrap()
+                .into_iter()
+                .find(|&f| topo.face(f).unwrap().surface().type_tag() == "torus")
+                .unwrap();
+            let beyond_area = torus_area_beyond(big, small, 1.0);
+            let area_truth = if op == BooleanOp::Intersect {
+                beyond_area
+            } else {
+                4.0 * PI * PI * big * small - beyond_area
+            };
+            let area = face_area(&topo, tube, 0.01).unwrap();
+            assert!(
+                (area - area_truth).abs() < 1e-8 * area_truth,
+                "{label}: tube area {area}, truth {area_truth}"
+            );
+            // The ring past the plane, the ring behind it, the slab alone.
+            let probes = [(big, 0.0, 0.0), (-big, 0.0, 0.0), (10.0, 5.0, 4.0)];
+            for ((x, y, z), class) in probes.into_iter().zip(kept) {
+                let p = tip.mul_point(Point3::new(x, y, z));
+                assert_eq!(at(&topo, piece, p), class, "{label}: ({x}, {y}, {z})");
+            }
+            assert_eq!(
+                at(&topo, piece, tip.mul_point(Point3::new(0.0, 0.0, 0.0))),
+                Outside
+            );
+        }
+    }
+}
+
+/// A 2 x 20 x 4 bar through the ring's hole and across its tube at
+/// `|x| < 1`: its cut and its common part are each two pieces.
+#[test]
+fn bar_through_the_ring() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let within = ring_beyond(big, small, -1.0) - ring_beyond(big, small, 1.0);
+    let sectors: &[(&str, usize)] = &[("plane", 4), ("torus", 2)];
+    let fused: &[(&str, usize)] = &[("plane", 6), ("torus", 2)];
+    for (op, census, one_piece, truth, kept) in [
+        (
+            BooleanOp::Intersect,
+            sectors,
+            false,
+            within,
+            [Outside, Inside, Outside],
+        ),
+        (
+            BooleanOp::Cut,
+            sectors,
+            false,
+            ring - within,
+            [Inside, Outside, Outside],
+        ),
+        (
+            BooleanOp::Fuse,
+            fused,
+            true,
+            160.0 + ring - within,
+            [Inside, Inside, Inside],
+        ),
+    ] {
+        let label = format!("{op:?}");
+        let mut topo = Topology::new();
+        let torus = make_torus(&mut topo, big, small, 32).unwrap();
+        let bar = make_box(&mut topo, 2.0, 20.0, 4.0).unwrap();
+        transform_solid(&mut topo, bar, &Mat4::translation(-1.0, -10.0, -2.0)).unwrap();
+        let piece = boolean(&mut topo, op, torus, bar).unwrap();
+        check_piece(&topo, piece, census, one_piece, (truth, 1e-8), &label);
+        // The ring clear of the bar, the ring in it, the bar alone.
+        let probes = [(-big, 0.0, 0.5), (0.0, big, 0.0), (0.0, 0.0, 0.0)];
+        for ((x, y, z), class) in probes.into_iter().zip(kept) {
+            assert_eq!(
+                at(&topo, piece, Point3::new(x, y, z)),
+                class,
+                "{label}: ({x}, {y}, {z})"
+            );
+        }
+        assert_eq!(at(&topo, piece, Point3::new(big, 0.0, 1.6)), Outside);
+    }
+}
+
+/// A slab tipped `tilt` about y through `(1, 0, 0)`: its plane still winds
+/// around the tube. The ring past it, over the tube's cross-section (point
+/// `rho` out from the core at angle `phi`), where each circle about the axis
+/// keeps `2 acos(q)` of itself, `q` the plane's offset from that circle over
+/// its radius.
+fn ring_past_tilted_plane(big: f64, small: f64, tilt: f64) -> f64 {
+    let simpson = |n: u32, lo: f64, hi: f64, f: &dyn Fn(f64) -> f64| {
+        let step = (hi - lo) / f64::from(n);
+        let mut sum = f(lo) + f(hi);
+        for k in 1..n {
+            sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step.mul_add(f64::from(k), lo));
+        }
+        sum * step / 3.0
+    };
+    let (sin_t, cos_t) = tilt.sin_cos();
+    simpson(200, 0.0, small, &|rho: f64| {
+        simpson(200, 0.0, 2.0 * PI, &|phi: f64| {
+            let circle = rho.mul_add(phi.cos(), big);
+            let q = sin_t.mul_add(rho * phi.sin(), cos_t) / (cos_t * circle);
+            rho * circle * 2.0 * q.clamp(-1.0, 1.0).acos()
+        })
+    })
+}
+
+/// A slab tipped 0.15 rad off the axis: its plane still winds around the
+/// tube. The common part is checked against [`ring_past_tilted_plane`]; the
+/// cut and the common part make up the ring, and the fuse is the cut plus
+/// the slab.
+#[test]
+fn slab_tilted_off_the_axis() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let past = ring_past_tilted_plane(big, small, 0.15);
+    let mut volumes = Vec::new();
+    for (op, truth, kept) in [
+        (BooleanOp::Intersect, past, [Inside, Outside, Outside]),
+        (BooleanOp::Cut, ring - past, [Outside, Inside, Outside]),
+        (
+            BooleanOp::Fuse,
+            4000.0 + ring - past,
+            [Inside, Inside, Outside],
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let torus = make_torus(&mut topo, big, small, 32).unwrap();
+        let slab = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        let place = Mat4::translation(1.0, 0.0, 0.0)
+            * Mat4::rotation_y(0.15)
+            * Mat4::translation(0.0, -10.0, -5.0);
+        transform_solid(&mut topo, slab, &place).unwrap();
+        let piece = boolean(&mut topo, op, torus, slab).unwrap();
+        let census: &[(&str, usize)] = if op == BooleanOp::Fuse {
+            &[("plane", 6), ("torus", 1)]
+        } else {
+            &[("plane", 2), ("torus", 1)]
+        };
+        let label = format!("{op:?}");
+        check_piece(&topo, piece, census, true, (truth, 1e-8), &label);
+        // The ring past the plane, the ring behind it, the hole's middle.
+        let probes = [(big, 0.0, 0.0), (-big, 0.0, 0.0), (0.0, 0.0, 0.0)];
+        for ((x, y, z), class) in probes.into_iter().zip(kept) {
+            assert_eq!(
+                at(&topo, piece, Point3::new(x, y, z)),
+                class,
+                "{label}: ({x}, {y}, {z})"
+            );
+        }
+        volumes.push(solid_volume(&topo, piece, 0.01).unwrap());
+    }
+    let (common, cut, fused) = (volumes[0], volumes[1], volumes[2]);
+    assert!(
+        (common + cut - ring).abs() < 1e-9 * ring,
+        "{common} + {cut}"
+    );
+    assert!(
+        (fused - cut - 4000.0).abs() < 1e-9 * fused,
+        "{fused} - {cut}"
+    );
+}
+
+/// A 4-cube over `x` in `[3, 7]`, `|y|, |z| < 2`, with the torus, upright
+/// and tipped over. Its `x = 3` wall cuts a lobe of the tube that does not
+/// wind around it, and its `y = ±2` walls cut loops around the tube that
+/// its edges trim, so the common part is a disc of the torus closed by the
+/// three walls. The cut and the common part make up the ring and the fuse
+/// is the cut plus the cube; the common part is checked against a Simpson
+/// integral, which the kinks where the walls take over hold to 1e-5.
+#[test]
+fn cube_over_the_rings_side() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let simpson = |n: u32, lo: f64, hi: f64, f: &dyn Fn(f64) -> f64| {
+        let step = (hi - lo) / f64::from(n);
+        let mut sum = f(lo) + f(hi);
+        for k in 1..n {
+            sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step.mul_add(f64::from(k), lo));
+        }
+        sum * step / 3.0
+    };
+    // Each annulus keeps the angles within both walls: `rho cos > 3` and
+    // `|rho sin| < 2`.
+    let share = |rho: f64| {
+        if rho <= 3.0 {
+            0.0
+        } else {
+            2.0 * (3.0 / rho).acos().min((2.0 / rho).min(1.0).asin())
+        }
+    };
+    let common_truth = simpson(800, -PI / 2.0, PI / 2.0, &|t: f64| {
+        let w = small * t.cos();
+        w * simpson(800, big - w, big + w, &|rho: f64| rho * share(rho))
+    });
+    let tips = [
+        Mat4::identity(),
+        Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+    ];
+    for (k, tip) in tips.iter().enumerate() {
+        let mut volumes = Vec::new();
+        for (op, kept) in [
+            (BooleanOp::Intersect, [Inside, Outside, Outside]),
+            (BooleanOp::Cut, [Outside, Inside, Outside]),
+            (BooleanOp::Fuse, [Inside, Inside, Inside]),
+        ] {
+            let label = format!("tip {k}, {op:?}");
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            let cube = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+            transform_solid(&mut topo, cube, &Mat4::translation(3.0, -2.0, -2.0)).unwrap();
+            transform_solid(&mut topo, torus, tip).unwrap();
+            transform_solid(&mut topo, cube, tip).unwrap();
+            let piece = boolean(&mut topo, op, torus, cube).unwrap();
+            let census: &[(&str, usize)] = if op == BooleanOp::Fuse {
+                &[("plane", 7), ("torus", 1)]
+            } else {
+                &[("plane", 3), ("torus", 1)]
+            };
+            let volume = solid_volume(&topo, piece, 0.01).unwrap();
+            check_piece(&topo, piece, census, true, (volume, 1e-8), &label);
+            // The ring in the cube, the ring across from it, the cube alone.
+            let probes = [(big, 0.0, 0.0), (-big, 0.0, 0.0), (6.0, 0.0, 1.8)];
+            for ((x, y, z), class) in probes.into_iter().zip(kept) {
+                let p = tip.mul_point(Point3::new(x, y, z));
+                assert_eq!(at(&topo, piece, p), class, "{label}: ({x}, {y}, {z})");
+            }
+            volumes.push(volume);
+        }
+        let (common, cut, fused) = (volumes[0], volumes[1], volumes[2]);
+        assert!(
+            (common - common_truth).abs() < 1e-5 * common_truth,
+            "tip {k}: common {common}, truth {common_truth}"
+        );
+        assert!(
+            (common + cut - ring).abs() < 1e-9 * ring,
+            "tip {k}: {common} + {cut}"
+        );
+        assert!(
+            (fused - cut - 64.0).abs() < 1e-9 * fused,
+            "tip {k}: {fused} - {cut}"
+        );
+    }
+}
+
+/// A 0.6-cube inside the tube: the cut leaves the whole ring around a box
+/// cavity, the common part is the cube, and the fuse is the ring.
+#[test]
+fn cube_inside_the_tube() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let cube = 0.6_f64.powi(3);
+    let cavity: &[(&str, usize)] = &[("plane", 6), ("torus", 1)];
+    let cube_faces: &[(&str, usize)] = &[("plane", 6)];
+    let ring_face: &[(&str, usize)] = &[("torus", 1)];
+    for (op, census, truth) in [
+        (BooleanOp::Cut, cavity, ring - cube),
+        (BooleanOp::Intersect, cube_faces, cube),
+        (BooleanOp::Fuse, ring_face, ring),
+    ] {
+        let mut topo = Topology::new();
+        let torus = make_torus(&mut topo, big, small, 32).unwrap();
+        let tool = make_box(&mut topo, 0.6, 0.6, 0.6).unwrap();
+        transform_solid(&mut topo, tool, &Mat4::translation(3.7, -0.3, -0.3)).unwrap();
+        let piece = boolean(&mut topo, op, torus, tool).unwrap();
+        let mut found: Vec<(&str, usize)> = Vec::new();
+        for face in solid_faces(&topo, piece).unwrap() {
+            let tag = topo.face(face).unwrap().surface().type_tag();
+            match found.iter_mut().find(|(t, _)| *t == tag) {
+                Some((_, n)) => *n += 1,
+                None => found.push((tag, 1)),
+            }
+        }
+        found.sort_unstable();
+        assert_eq!(found, census, "{op:?}: faces");
+        let report = validate_solid(&topo, piece).unwrap();
+        assert!(report.is_valid(), "{op:?}: {:?}", report.issues);
+        let volume = solid_volume(&topo, piece, 0.01).unwrap();
+        assert!(
+            (volume - truth).abs() < 1e-9 * truth,
+            "{op:?}: volume {volume}, truth {truth}"
+        );
+        let mesh = tessellate_solid(&topo, piece, 0.01).unwrap();
+        assert!(is_watertight(&mesh), "{op:?}: open or non-manifold mesh");
+    }
+}
+
+/// The disc of radius `rho` about the axis within `x` in `[x_lo, x_hi]`,
+/// `y > y0`, in closed form: `under` is the area under its upper arc and
+/// `span` the width, each over `[a, b]` within the walls.
+fn disc_past(rho: f64, (x_lo, x_hi): (f64, f64), y0: f64) -> f64 {
+    let g = |x: f64| {
+        0.5 * x.mul_add(
+            (rho * rho - x * x).max(0.0).sqrt(),
+            rho * rho * (x / rho).clamp(-1.0, 1.0).asin(),
+        )
+    };
+    let span = |a: f64, b: f64| (b.min(x_hi) - a.max(x_lo)).max(0.0);
+    let under = |a: f64, b: f64| {
+        let (l, h) = (a.max(x_lo), b.min(x_hi));
+        if h > l { g(h) - g(l) } else { 0.0 }
+    };
+    let up = y0.max(0.0);
+    let mut area = 0.0;
+    if rho > up {
+        let q = rho.mul_add(rho, -up * up).sqrt();
+        area += up.mul_add(-span(-q, q), under(-q, q));
+    }
+    if y0 < 0.0 {
+        let depth = -y0;
+        let q = if rho > depth {
+            rho.mul_add(rho, -depth * depth).sqrt()
+        } else {
+            0.0
+        };
+        area += depth.mul_add(span(-q, q), under(-rho, rho) - under(-q, q));
+    }
+    area
+}
+
+/// The ring within a box over `x` in `[x_lo, x_hi]`, `y > y0`, reaching past
+/// the ring in `+y`: over the tube's cross-section, the area of the annulus
+/// between the circles about the axis at `big ∓ w`, each clipped to the box
+/// in closed form. The integral splits where a circle meets a wall's end
+/// (`rho` one of `|x_lo|`, `|x_hi|`, `|y0|` and their corners with `y0`), so
+/// Simpson converges fast.
+fn ring_in_box(big: f64, small: f64, (x_lo, x_hi): (f64, f64), y0: f64) -> f64 {
+    let simpson = |n: u32, lo: f64, hi: f64, f: &dyn Fn(f64) -> f64| {
+        let step = (hi - lo) / f64::from(n);
+        let mut sum = f(lo) + f(hi);
+        for k in 1..n {
+            sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step.mul_add(f64::from(k), lo));
+        }
+        sum * step / 3.0
+    };
+    let disc = |rho: f64| disc_past(rho, (x_lo, x_hi), y0);
+    let f = |t: f64| {
+        let w = small * t.cos();
+        w * (disc(big + w) - disc(big - w))
+    };
+    let mut cuts = vec![-PI / 2.0, PI / 2.0];
+    for rho in [
+        x_lo.abs(),
+        x_hi.abs(),
+        y0.abs(),
+        x_lo.hypot(y0),
+        x_hi.hypot(y0),
+    ] {
+        for c in [(big - rho) / small, (rho - big) / small] {
+            if c > 0.0 && c < 1.0 {
+                cuts.extend([c.acos(), -c.acos()]);
+            }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.windows(2).map(|w| simpson(800, w[0], w[1], &f)).sum()
+}
+
+/// A 6-cube over `|x| < 3`, `y` in `[0, 6]` with the torus, upright and
+/// tipped over. Its `x = ±3` walls cut lobes of the tube and its `y = 0`
+/// wall the tube's cross-sections, joined into two loops that wind round the
+/// tube, so the torus splits into two sectors of about half the ring each.
+#[test]
+fn box_over_half_the_ring() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let inside = ring_in_box(big, small, (-3.0, 3.0), 0.0);
+    let sector: &[(&str, usize)] = &[("plane", 4), ("torus", 1)];
+    let fused: &[(&str, usize)] = &[("plane", 6), ("torus", 1)];
+    let tips = [
+        Mat4::identity(),
+        Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+    ];
+    for (k, tip) in tips.iter().enumerate() {
+        for (op, census, truth, kept) in [
+            (
+                BooleanOp::Intersect,
+                sector,
+                inside,
+                [Inside, Outside, Outside],
+            ),
+            (
+                BooleanOp::Cut,
+                sector,
+                ring - inside,
+                [Outside, Inside, Outside],
+            ),
+            (
+                BooleanOp::Fuse,
+                fused,
+                216.0 + ring - inside,
+                [Inside, Inside, Inside],
+            ),
+        ] {
+            let label = format!("tip {k}, {op:?}");
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            let cube = make_box(&mut topo, 6.0, 6.0, 6.0).unwrap();
+            transform_solid(&mut topo, cube, &Mat4::translation(-3.0, 0.0, -3.0)).unwrap();
+            transform_solid(&mut topo, torus, tip).unwrap();
+            transform_solid(&mut topo, cube, tip).unwrap();
+            let piece = boolean(&mut topo, op, torus, cube).unwrap();
+            check_piece(&topo, piece, census, true, (truth, 1e-6), &label);
+            // The ring in the box, the ring across from it, the box alone.
+            let probes = [(0.0, big, 0.0), (0.0, -big, 0.0), (0.0, 1.0, 2.5)];
+            for ((x, y, z), class) in probes.into_iter().zip(kept) {
+                let p = tip.mul_point(Point3::new(x, y, z));
+                assert_eq!(at(&topo, piece, p), class, "{label}: ({x}, {y}, {z})");
+            }
+        }
+    }
+}
+
+/// The box's `y` wall moved off the ring's axis, to either side, and one side
+/// wall moved out. Each side wall's section turns back on the tube at
+/// `y = 0`. With the wall at `y0 > 0` the turn lies outside the box and the
+/// loops wind round the tube monotonically; with the side walls at different
+/// distances from the axis, the loops' corners sit at different tube angles
+/// and every seam between them slopes. With `y0 < 0` the turn lies inside
+/// the box and each loop folds; that case may fall back to a mesh, but must
+/// never come out exact and wrong.
+#[test]
+fn box_wall_on_either_side_of_the_ring_axis() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let sector: &[(&str, usize)] = &[("plane", 4), ("torus", 1)];
+    let fused: &[(&str, usize)] = &[("plane", 6), ("torus", 1)];
+    for (x_hi, y0) in [(3.0, 0.5), (3.3, 0.5), (3.0, -0.5)] {
+        let inside = ring_in_box(big, small, (-3.0, x_hi), y0);
+        let cube = 6.0 * (3.0 + x_hi) * (6.0 - y0);
+        for (op, census, truth) in [
+            (BooleanOp::Intersect, sector, inside),
+            (BooleanOp::Cut, sector, ring - inside),
+            (BooleanOp::Fuse, fused, cube + ring - inside),
+        ] {
+            let label = format!("x_hi {x_hi}, y0 {y0}, {op:?}");
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            let box_ = make_box(&mut topo, 3.0 + x_hi, 6.0 - y0, 6.0).unwrap();
+            transform_solid(&mut topo, box_, &Mat4::translation(-3.0, y0, -3.0)).unwrap();
+            let piece = boolean(&mut topo, op, torus, box_).unwrap();
+            let exact = solid_faces(&topo, piece)
+                .unwrap()
+                .into_iter()
+                .any(|f| !topo.face(f).unwrap().surface().is_planar());
+            if y0 > 0.0 || exact {
+                check_piece(&topo, piece, census, true, (truth, 1e-6), &label);
+            } else {
+                let volume = solid_volume(&topo, piece, 0.01).unwrap();
+                assert!(
+                    (volume - truth).abs() < 0.03 * truth,
+                    "{label}: mesh volume {volume}, truth {truth}"
+                );
+            }
+        }
+    }
+}
+
+/// The ring within the block over `x`, `y` and `z` in the given ranges: over
+/// the tube's cross-section from the block's floor to its top, the annulus
+/// between the circles about the axis at `big ∓ w`, each clipped to the
+/// block's footprint in closed form, split where a circle meets a wall's end.
+fn ring_in_block(
+    big: f64,
+    small: f64,
+    (x_lo, x_hi): (f64, f64),
+    (y_lo, y_hi): (f64, f64),
+    (z_lo, z_hi): (f64, f64),
+) -> f64 {
+    let simpson = |n: u32, lo: f64, hi: f64, f: &dyn Fn(f64) -> f64| {
+        let step = (hi - lo) / f64::from(n);
+        let mut sum = f(lo) + f(hi);
+        for k in 1..n {
+            sum += if k % 2 == 1 { 4.0 } else { 2.0 } * f(step.mul_add(f64::from(k), lo));
+        }
+        sum * step / 3.0
+    };
+    let disc = |rho: f64| disc_past(rho, (x_lo, x_hi), y_lo) - disc_past(rho, (x_lo, x_hi), y_hi);
+    let f = |t: f64| {
+        let w = small * t.cos();
+        w * (disc(big + w) - disc(big - w))
+    };
+    let (t_lo, t_hi) = (
+        (z_lo / small).clamp(-1.0, 1.0).asin(),
+        (z_hi / small).clamp(-1.0, 1.0).asin(),
+    );
+    let mut cuts = vec![t_lo, t_hi];
+    for rho in [
+        x_lo.abs(),
+        x_hi.abs(),
+        y_lo.abs(),
+        y_hi.abs(),
+        x_lo.hypot(y_lo),
+        x_hi.hypot(y_lo),
+        x_lo.hypot(y_hi),
+        x_hi.hypot(y_hi),
+    ] {
+        for c in [(big - rho) / small, (rho - big) / small] {
+            if c > 0.0 && c < 1.0 {
+                cuts.extend(
+                    [c.acos(), -c.acos()]
+                        .into_iter()
+                        .filter(|t| *t > t_lo && *t < t_hi),
+                );
+            }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.windows(2).map(|w| simpson(800, w[0], w[1], &f)).sum()
+}
+
+/// A cube through the tube's wall, centred inside the tube off every
+/// symmetry, upright, tipped over and mirrored. Its walls meet the torus in
+/// arcs of plane sections that turn where their two branches meet; small,
+/// they close into a loop on the ring (the common part a disc of the torus
+/// closed by the walls); spanning the tube's height, its side walls cut
+/// loops around the tube and its far wall a lobe beside them, which stays a
+/// hole of the sector between those loops. Off to the side, a wall's oval
+/// section is cut where the box's edges cross the torus, each arc starting
+/// on its exact crossing. Each op is exact and meshes watertight against the
+/// ring in the block, the cut and the common part making up the ring.
+#[test]
+fn cube_through_the_tube_wall() {
+    use PointClassification::{Inside, Outside};
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    let poses = [
+        Mat4::identity(),
+        Mat4::rotation_x(0.7) * Mat4::rotation_z(0.3),
+        Mat4::scale(-1.0, 1.0, 1.0),
+    ];
+    // Each box's centre (inside the tube), half-size, and a point of the box
+    // clear of the torus.
+    for (centre, h, box_only) in [
+        ((0.1, 3.05, 0.37), 0.9, (0.1, 2.2, 0.37)),
+        ((0.1, 3.05, 0.37), 1.3, (0.1, 2.2, 0.37)),
+        ((0.1, 3.05, 0.37), 1.7, (0.1, 2.2, 0.37)),
+        ((0.1, 3.05, 0.37), 2.2, (0.1, 2.2, 0.37)),
+        ((1.3, 3.05, 0.37), 1.7, (0.0, 1.5, 0.37)),
+        ((1.3, 5.2, -0.4), 0.9, (2.1, 6.0, 0.4)),
+    ] {
+        let common_truth = ring_in_block(
+            big,
+            small,
+            (centre.0 - h, centre.0 + h),
+            (centre.1 - h, centre.1 + h),
+            (centre.2 - h, centre.2 + h),
+        );
+        let cube = 8.0 * h * h * h;
+        for (k, pose) in poses.iter().enumerate() {
+            let mut volumes = Vec::new();
+            for (op, kept) in [
+                (BooleanOp::Intersect, [Inside, Outside, Outside]),
+                (BooleanOp::Cut, [Outside, Inside, Outside]),
+                (BooleanOp::Fuse, [Inside, Inside, Inside]),
+            ] {
+                let label = format!("{centre:?} h {h}, pose {k}, {op:?}");
+                let mut topo = Topology::new();
+                let torus = make_torus(&mut topo, big, small, 32).unwrap();
+                let block = make_box(&mut topo, 2.0 * h, 2.0 * h, 2.0 * h).unwrap();
+                let corner = Mat4::translation(centre.0 - h, centre.1 - h, centre.2 - h);
+                transform_solid(&mut topo, block, &corner).unwrap();
+                transform_solid(&mut topo, torus, pose).unwrap();
+                transform_solid(&mut topo, block, pose).unwrap();
+                let piece = boolean(&mut topo, op, torus, block).unwrap();
+                let faces = solid_faces(&topo, piece).unwrap();
+                assert!(
+                    faces.len() < 20
+                        && faces.iter().any(|&f| matches!(
+                            topo.face(f).unwrap().surface(),
+                            FaceSurface::Torus(_)
+                        )),
+                    "{label}: fell back to a mesh ({} faces)",
+                    faces.len()
+                );
+                let report = validate_solid(&topo, piece).unwrap();
+                assert!(report.is_valid(), "{label}: {:?}", report.issues);
+                let mesh = tessellate_solid(&topo, piece, 0.01).unwrap();
+                assert!(is_watertight(&mesh), "{label}: open or non-manifold mesh");
+                // Inside the tube and the block, across the ring, and in the
+                // block clear of the tube.
+                let probes = [centre, (-big, 0.0, 0.0), box_only];
+                for ((x, y, z), class) in probes.into_iter().zip(kept) {
+                    let p = pose.mul_point(Point3::new(x, y, z));
+                    assert_eq!(at(&topo, piece, p), class, "{label}: ({x}, {y}, {z})");
+                }
+                volumes.push(solid_volume(&topo, piece, 0.01).unwrap());
+            }
+            let (common, cut, fused) = (volumes[0], volumes[1], volumes[2]);
+            assert!(
+                (common - common_truth).abs() < 1e-6 * common_truth,
+                "{centre:?} h {h}, pose {k}: common {common}, truth {common_truth}"
+            );
+            assert!(
+                (common + cut - ring).abs() < 1e-9 * ring,
+                "h {h}, pose {k}: {common} + {cut}"
+            );
+            assert!(
+                (fused - cut - cube).abs() < 1e-9 * fused,
+                "h {h}, pose {k}: {fused} - {cut}"
+            );
+        }
+    }
+}
+
+/// A box over `x > d` whose one wall meets the torus cuts a lobe from the
+/// ring: the section's two branches meet at the lobe's two turns, and the
+/// lobe closes whether the scan lands near a turn or not. Its common part
+/// and its cut are exact and make up the ring; the common part holds to the
+/// ring past `x = d` within the fitted section's 1e-5.
+#[test]
+fn a_wall_cutting_a_lobe_from_the_ring_is_exact() {
+    let (big, small) = (4.0_f64, 1.5_f64);
+    let ring = 2.0 * PI * PI * big * small * small;
+    for d in [3.0735, 3.8135, 4.0, 4.3255, 4.5, 4.8615, 5.0, 5.3385] {
+        // The ring past `x = d`, the region `y > d` turned a quarter.
+        let common_truth = ring_in_box(big, small, (-6.0, 6.0), d);
+        let mut volumes = Vec::new();
+        for op in [BooleanOp::Intersect, BooleanOp::Cut] {
+            let label = format!("wall at x = {d}, {op:?}");
+            let mut topo = Topology::new();
+            let torus = make_torus(&mut topo, big, small, 32).unwrap();
+            let block = make_box(&mut topo, 7.0 - d, 12.0, 6.0).unwrap();
+            transform_solid(&mut topo, block, &Mat4::translation(d, -6.0, -3.0)).unwrap();
+            let piece = boolean(&mut topo, op, torus, block).unwrap();
+            let faces = solid_faces(&topo, piece).unwrap();
+            assert!(
+                faces.len() < 10
+                    && faces
+                        .iter()
+                        .any(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_))),
+                "{label}: fell back to a mesh ({} faces)",
+                faces.len()
+            );
+            let report = validate_solid(&topo, piece).unwrap();
+            assert!(report.is_valid(), "{label}: {:?}", report.issues);
+            let mesh = tessellate_solid(&topo, piece, 0.01).unwrap();
+            assert!(is_watertight(&mesh), "{label}: open or non-manifold mesh");
+            volumes.push(solid_volume(&topo, piece, 0.01).unwrap());
+        }
+        let (common, cut) = (volumes[0], volumes[1]);
+        assert!(
+            (common - common_truth).abs() < 1e-5 * common_truth,
+            "wall at x = {d}: common {common}, truth {common_truth}"
+        );
+        assert!(
+            (common + cut - ring).abs() < 1e-9 * ring,
+            "wall at x = {d}: {common} + {cut}"
+        );
+    }
+}

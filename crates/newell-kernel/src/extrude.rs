@@ -23,14 +23,40 @@ pub struct NewellGeometry {
     solids: BTreeMap<NewellShapeKey, SolidId>,
     pub(crate) surfaces: BTreeMap<NewellShapeKey, Vec<FaceId>>,
     pub(crate) surface_recipes: BTreeMap<NewellShapeKey, crate::surface::SurfaceSweepRecipe>,
+    pub(crate) surface_domains: BTreeMap<NewellShapeKey, crate::surface::SurfaceDomainRecipe>,
+    pub(crate) surface_wire_keys: BTreeMap<NewellShapeKey, u32>,
+    pub(crate) surface_seams:
+        BTreeMap<NewellShapeKey, std::collections::BTreeSet<brepkit_topology::EdgeId>>,
     provenance: BTreeMap<NewellShapeKey, BTreeMap<u32, crate::NewellFaceProvenance>>,
     next: u64,
+    cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 impl NewellGeometry {
+    /// Construction key of an uncapped connected source-wire sweep, if proven.
+    #[must_use]
+    pub fn source_wire(&self, key: NewellShapeKey) -> Option<u32> {
+        self.surface_wire_keys.get(&key).copied()
+    }
     /// Creates an empty worker-local arena, with no native data supplied by the caller.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Installs the worker request's cancellation flag for Newell-owned loops.
+    /// Native BrepKIT calls remain indivisible.
+    pub fn set_cancellation_flag(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.cancellation = Some(flag);
+    }
+    pub(crate) fn check_cancelled(&self) -> Result<(), NewellKernelError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            Err(operation_error("geometry request cancelled"))
+        } else {
+            Ok(())
+        }
     }
     fn reserve_key(&mut self) -> Result<NewellShapeKey, NewellKernelError> {
         let next = self
@@ -109,6 +135,96 @@ impl NewellGeometry {
             .collect();
         self.provenance.insert(key, roles);
         Ok(key)
+    }
+    /// Constructs an exact curved base fixture within the same native arena.
+    /// It is excluded from production builds and supplies no UI profile workflow.
+    ///
+    /// # Errors
+    /// Reports invalid fixture coordinates and native construction/transform errors.
+    #[cfg(feature = "test-support")]
+    pub fn cubic_shape_for_test(
+        &mut self,
+        control: [[f64; 2]; 4],
+        depth: f64,
+        transform: [[f64; 4]; 4],
+    ) -> Result<NewellShapeKey, NewellKernelError> {
+        use brepkit_math::{nurbs::curve::NurbsCurve, vec::Point3};
+        use brepkit_topology::{
+            edge::{Edge, EdgeCurve},
+            face::{Face, FaceSurface},
+            wire::{OrientedEdge, Wire},
+        };
+        if !depth.is_finite() || depth <= 1e-7 || !control.iter().flatten().all(|v| v.is_finite()) {
+            return Err(operation_error("invalid cubic fixture"));
+        }
+        let curve = NurbsCurve::new(
+            3,
+            vec![0., 0., 0., 0., 1., 1., 1., 1.],
+            control
+                .iter()
+                .map(|p| Point3::new(p[0], p[1], 0.))
+                .collect(),
+            vec![1.; 4],
+        )
+        .map_err(operation_error)?;
+        let edge =
+            brepkit_topology::builder::make_nurbs_edge_from_curve(&mut self.topology, &curve, 1e-7);
+        let e = self.topology.edge(edge).map_err(operation_error)?;
+        let chord = self
+            .topology
+            .add_edge(Edge::new(e.end(), e.start(), EdgeCurve::Line));
+        let wire = self.topology.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edge, true),
+                    OrientedEdge::new(chord, true),
+                ],
+                true,
+            )
+            .map_err(operation_error)?,
+        );
+        let face = self.topology.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0., 0., 1.),
+                d: 0.,
+            },
+        ));
+        let solid = brepkit_operations::extrude::extrude(
+            &mut self.topology,
+            face,
+            Vec3::new(0., 0., 1.),
+            depth,
+        )
+        .map_err(operation_error)?;
+        let key = self.insert(solid)?;
+        self.transform_shape_for_test(key, transform)?;
+        let roles = crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)?
+            .into_iter()
+            .map(|f| (f.face, crate::NewellFaceProvenance::Base(f.face)))
+            .collect();
+        self.provenance.insert(key, roles);
+        Ok(key)
+    }
+    /// Applies a fixture's exact affine map before any model reference is issued.
+    ///
+    /// # Errors
+    /// Rejects nonfinite/singular transforms and native transform failures.
+    #[cfg(feature = "test-support")]
+    pub fn transform_shape_for_test(
+        &mut self,
+        key: NewellShapeKey,
+        transform: [[f64; 4]; 4],
+    ) -> Result<(), NewellKernelError> {
+        if !transform.iter().flatten().all(|v| v.is_finite()) {
+            return Err(operation_error("invalid fixture transform"));
+        }
+        let matrix = Mat4(transform);
+        matrix.inverse().map_err(operation_error)?;
+        let solid = self.solid(key)?;
+        brepkit_operations::transform::transform_solid(&mut self.topology, solid, &matrix)
+            .map_err(operation_error)
     }
     /// Resolves and sweeps a genuine planar face of an existing generation's shape.
     ///
@@ -275,9 +391,45 @@ impl NewellGeometry {
             .into_iter()
             .find(|face| face.face == profile.1)
             .ok_or_else(|| operation_error("missing profile support"))?;
+        let faces = crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)?;
+        let point = |p: [f64; 3]| Vec3::new(p[0], p[1], p[2]);
+        let source_n = point(source.frame.normal);
+        let source_origin = point(source.frame.origin);
+        let projection = |p: [f64; 3]| {
+            let p = point(p);
+            p + d * (source_n.dot(source_origin - p) / source_n.dot(d))
+        };
+        if self.is_surface(key) && !self.surface_wire_keys.contains_key(&key) && !faces.is_empty() {
+            let keys: Vec<_> = source
+                .wires
+                .iter()
+                .filter(|wire| {
+                    faces
+                        .iter()
+                        .flat_map(|face| &face.wires)
+                        .flat_map(|wire| &wire.edges)
+                        .all(|edge| {
+                            [edge.start, edge.end].into_iter().all(|p| {
+                                let p = projection(p);
+                                wire.edges.iter().filter(|edge| edge.straight).any(|edge| {
+                                    let a = point(edge.start);
+                                    let e = point(edge.end) - a;
+                                    let t = (p - a).dot(e) / e.dot(e);
+                                    (-1e-7..=1. + 1e-7).contains(&t)
+                                        && (p - a - e * t).length() <= 1e-7
+                                })
+                            })
+                        })
+                })
+                .map(|wire| wire.wire)
+                .collect();
+            if keys.len() == 1 {
+                self.surface_wire_keys.insert(key, keys[0]);
+            }
+        }
         let mut roles = BTreeMap::new();
         let mut counts = BTreeMap::new();
-        for face in crate::profile::describe_faces(&self.topology, self.shape_faces(key)?)? {
+        for face in faces {
             let n = Vec3::new(
                 face.frame.normal[0],
                 face.frame.normal[1],
@@ -308,6 +460,16 @@ impl NewellGeometry {
                         let eps = 1e-7_f64.max(scale * 1e-10);
                         if n.dot(point(edge.start) - origin).abs() <= eps
                             && n.dot(point(edge.end) - origin).abs() <= eps
+                            && face.wires.iter().flat_map(|wire| &wire.edges).all(|wall| {
+                                [wall.start, wall.end].into_iter().all(|p| {
+                                    let p = projection(p);
+                                    let a = point(edge.start);
+                                    let e = point(edge.end) - a;
+                                    let t = (p - a).dot(e) / e.dot(e);
+                                    (-eps..=1. + eps).contains(&t)
+                                        && (p - a - e * t).length() <= eps
+                                })
+                            })
                         {
                             matches.push(Role::Wall {
                                 wire: wire.wire,
@@ -506,13 +668,14 @@ impl NewellGeometry {
                 .map_err(operation_error)?
                 .add_inner_shell(shell);
         }
-        components
+        let keys = components
             .into_iter()
             .map(|solid| {
                 self.validate_native(solid)?;
                 self.insert(solid)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        self.order_components(keys)
     }
     /// Applies regular solid union/difference and reports only targets actually changed.
     ///
@@ -524,6 +687,28 @@ impl NewellGeometry {
         targets: &[NewellShapeKey],
         mode: NewellBooleanMode,
     ) -> Result<NewellBodyResult, NewellKernelError> {
+        self.combine_bodies_cancellable(tool, targets, mode, || false)
+    }
+    /// Performs the same exact operation, checking cancellation between operands.
+    /// An individual native Boolean call still runs to completion.
+    ///
+    /// # Errors
+    /// Returns the ordinary operation errors or cancellation without publishing geometry.
+    pub fn combine_bodies_cancellable(
+        &mut self,
+        tool: NewellShapeKey,
+        targets: &[NewellShapeKey],
+        mode: NewellBooleanMode,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<NewellBodyResult, NewellKernelError> {
+        let mut check = || {
+            if cancelled() {
+                Err(operation_error("geometry request cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
         let mut changed = Vec::new();
         let mut outputs = Vec::new();
         let mut union = tool;
@@ -534,6 +719,7 @@ impl NewellGeometry {
                     let mut progress = false;
                     let mut remaining = Vec::new();
                     for index in pending {
+                        check()?;
                         let merged = self
                             .boolean(union, targets[index], mode)?
                             .ok_or_else(|| operation_error("empty union"))?;
@@ -555,6 +741,7 @@ impl NewellGeometry {
             }
             NewellBooleanMode::Remove => {
                 for (index, target) in targets.iter().copied().enumerate() {
+                    check()?;
                     let old = self.volume(target)?;
                     let result = self.boolean(target, tool, mode)?;
                     let measure = result
@@ -587,6 +774,7 @@ impl NewellGeometry {
             }
             outputs.push(union);
         }
+        check()?;
         Ok(NewellBodyResult {
             outputs,
             changed_targets: changed,

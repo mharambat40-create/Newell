@@ -1,150 +1,176 @@
 # Selection and Formula reference alignment
 
-Revision 2 — proposed, 2026-10-27. Architect / Codex.
-Task: selection-formula-reference-alignment. Intended Executor: Luna with medium
-reasoning effort, only after human approval of this revision and an implementation
-request. This stage does not start another role.
+Revision 3 — proposed implementation plan, 2026-10-28. Architect / Codex.
+Task: selection-formula-reference-alignment, production Selection layout correction.
+Intended Executor: Luna with medium reasoning, after explicit human approval of
+revision 3 and an implementation request. No other role or agent is started.
 
-This is the single targeted Architect correction of revision 1 for the two
-human-requested Challenger findings. C1 corrects the Selection footer divider,
-button spans and hover boundaries; C2 specifies focus restoration when the
-management control disappears and rejects stale empty-field management opens.
-No other behavior or product policy is redesigned. Revision 2 is not approved
-for implementation by this documentation correction.
+This remains the single active plan; revision 3 supersedes revisions 1–2. The
+current request authorizes the Selection diagnosis/plan and narrow canonical
+documentation amendments only. Formula §5 and Formula-specific tests below
+are retained verbatim from revision 2 as pending work, not newly implemented or
+expanded. A Selection-only execution of this revision excludes Formula source,
+Formula snapshot changes and Formula implementation step 5; a request to execute
+the entire combined plan includes the unchanged Formula work. Selection work
+must preserve current Formula behavior in either case.
 
-## 1. Contract, evidence and boundaries
+## 1. Contract, current state and authority
 
-Work sequentially in `/Users/martin/Desktop/Newell` on `main`. Preserve existing
-work and the Git index. No branches, worktrees, checkouts, source snapshots,
-commits, pulls, publication or additional agents. The human explicitly permits
-targeted README_UI amendments for this task, overriding Architect's ordinary
-plan-only write scope. This stage changes only this plan and those amendments.
+Checkout: `/Users/martin/Desktop/Newell`, branch `main`, no staged entries.
+At entry these existing unstaged inputs were present: app `geometry_worker.rs`,
+kernel `extrude.rs` and `surface.rs`, model `geometry.rs`. During read-only
+inspection kernel `boolean.rs` and `termination.rs`, then `Description.md` and
+`docs/backlog.md`, also became modified.
+These geometry/context changes are external work and are preserved; no affected UI or
+plan write conflict was found. No source snapshot, branch, worktree, index
+mutation, commit, build, test, application launch or agent dispatch is permitted
+in this Architect stage. Executor must reread current diffs before writing.
 
-Primary evidence: current `Interface_Elements.txt` Selection, Profile Selection
-and “☰ variants” sections and their unstaged diff; canonical README_UI §§5.5–5.12,
-12.1, 14.1–14.2, 18–22, 25/25.1 and 36; architecture §§1,3.0–3.6,4; accepted ADRs
-0002,0003,0006; current source paths below. Historical contracts: M4.3 shared
-selection; M4.4 units/parameter binding, especially §§6–7; selection-box-scrollbar
-revision 2; M4.5–M4.10 Extrude pipeline revision 2, especially I3/I4 and §8.
-Current source takes priority over historical implementation descriptions.
+Primary sources inspected: AGENTS.md, shared README, Architect role,
+ARCHITECTURE §§2–3.6/4; accepted ADRs 0002, 0003 and 0006; README_UI §§5.5–5.12,
+12.1,14.1–14.2,18–22,25/25.1,28.3; Interface_Elements Selection/Profile and scroll
+references; current UI/app implementation and tests identified in §2. The
+attachment is text only: the reported screenshot is not independently visible.
+No screenshot/executable provenance or present test-suite pass is claimed.
 
-No screenshot image is accessible in the supplied attachment: it contains the
-request text only. The reported oversized dialog is corroborated by source;
-no claim of screenshot inspection or screen-position measurement is made.
-Unrelated prose at the end of Interface_Elements, especially navigation, was
-excluded from design authority for this task.
+The human explicitly authorizes narrow canonical UI/architecture amendments,
+overriding Architect's ordinary plan-only documentation restriction for this
+task. This stage changes only this plan, README_UI and Interface_Elements.
+Architecture already delegates UI contracts to README_UI (§3.0); its modal,
+hover and semantic-palette rules do not require legacy Selection chrome. No
+architecture or ADR amendment is needed. README_UI now explicitly binds every
+Selection production path to §§19–21, clarifies purpose mapping and placement,
+and cross-references contextual selection `☰` from §5.6. The second duplicate
+Profile artwork in Interface_Elements now points to its first occurrence and
+the canonical rules. No Formula prose/artwork is changed.
 
-Starting state: main; no staged entries. Existing unstaged files:
-`ARCHITECTURE.md`; app `app.rs`, `geometry_worker.rs`, `lib.rs`, `parameters.rs`,
-`selection.rs`; kernel `lib.rs`; model `geometry.rs`, `lib.rs`, `parameters.rs`;
-render `lib.rs`, `renderer.rs`, `scene.rs`; UI docs `Application_Menu_Bar.txt`,
-`Interface_Elements.txt`, `README_UI.md`. Untracked inputs:
-`crates/newell-app/src/extrude_session.rs`,
-`docs/adr/0007-viewport-navigation-widgets.md`,
-`docs/plans/viewport-navigation-gizmos.md`.
-Relevant existing app changes add typed Extrude candidate/reference plumbing;
-README changes concern View Navigator/§41. Preserve them intact. Do not roll
-back to pre-M4.5 app or spec files. No concrete write conflict was found for
-this documentation stage. During inspection, other work changed shared inputs:
-app app/controller/document/navigation/camera and camera tests; UI lib/menu and
-shell compose/data/mod/tests; render error/lib/renderer; new app/UI/render
-navigation-widget files/shaders. App start-command now calls begin_geometry_command,
-and selection opening also cancels nav_interaction. Rereading panel_rows,
-open_field_selection, handle_selection_ui, controller publish, shell composition
-and the existing two-slot field writer confirmed the selection contracts used
-here still apply. Preserve those new lifecycle calls; the allowlist grants no
-navigation rewrite. This is a moving-checkout limitation: Executor must reread
-all shared affected paths when this stage has exclusive access. No parallel
-agent was started by this Architect, and no external work was modified.
+Excluded: geometry repair, model transactions, candidate eligibility/cardinality
+changes, new CAD capabilities, unrelated controls/navigation, renderer/shaders,
+fonts, dependencies, licensing and public integration. Existing Rust 1.88/MSRV,
+AGPL-3.0-or-later, MVC and one batched ASCII UI draw remain unchanged.
 
-Revision-2 entry: still main with an empty index; revision 1 is the untracked
-assigned plan. Relevant existing modified inputs include README_UI (also its
-unrelated placeholder and navigation amendments), Interface_Elements, app
-app/controller and UI shell mod/compose/tests/lib. Other existing dirty work
-includes geometry/kernel/model/render, navigation files/tests and snapshots;
-input-placeholder-behavior.md is also untracked. Re-inspected the exact footer
-reference, draw_ok_cancel, SelectionPanel::sync_focus, ActionBoxUi::live_control,
-ShellState::sync and set_selection_fields. The reported paths still apply.
-Only this plan and README §§19.1–19.2 are changed in this correction; preserve
-all unrelated work and existing reference artwork verbatim.
+## 2. Confirmed diagnosis and affected paths
 
-Excluded: new CAD commands/topology, geometry/kernel/model changes, expression
-language/parser/units, navigation widgets, tree scrolling, unrelated modals,
-renderer/palette/shader/font changes, dependencies, public publication/integration.
-No build, test or application command was run. Static document/whitespace checks
-are the only completed verification; all test cases below are future work.
+The prior plan's Selection correction is **not implemented in this checkout**.
+Shared selection/session/scroll infrastructure is present from earlier work,
+but the required dynamic chrome, presentation payload, ordered subcontrols and
+command-path composed-cell tests are absent. The plan's existence is not
+implementation evidence or approval. Formula's requested revision2 changes also
+remain absent: overlays/formula.rs still has AREA_CELLS=2*ROW_CELLS (62), calls
+caret_window without a prefix, and open truncates at MAX_LEN. This static status
+observation does not authorize Formula changes in the Selection-only task.
+No evidence proves that anyone intentionally
+bypassed an approved plan; history/authorization is not inferred from source.
 
-## 2. Mismatch inventory and canonical amendments
-
-| Current evidence | Required correction / canonical authority |
+| File and symbol | Confirmed production behavior / implication |
 |---|---|
-| `overlays/selection.rs` generic SIZE=(30,12), `Geometry::of`, `draw_content`: double frame, separate title row, surplus body | 31×(V+6) rounded titled outer frame, framed list, separator and shared footer; empty 31×7; README §19.1 |
-| Profile fixture PROFILE_SIZE=(31,11) and Action Box art already closer; fixed height | Same variable compact height for all presentations, based on rendered dataset, not candidate/selected count interchangeably |
-| `SelectionPanel::open_with` always chooses Generic | Explicit presentation supplied by app; purpose derived from semantic descriptor and field part, not label or universal K_PROFILE shortcut |
-| Runtime draws every candidate as a checkbox; fixture draws handles/× but both share item activation | Candidate chooser versus selected ordered manager; separate stable row/handle/remove targets; real draft reorder/remove |
-| All five panel descriptors currently have ordered=false; Loft Profile/Sweep Profile/Path max_count=Some(1) | Enable ordered management only for those semantic inputs; preserve current max_count and all filters. A singleton handle cannot reorder anything |
-| `SelectionOpen.rows` contains eligible candidates; `draft_order` contains selected ids | Retain both: manager iterates draft_order; chooser iterates candidate rows. Empty selected set does not blank a chooser with candidates |
-| §20 formerly depicted N=9 offset=0 `┃  ` | Newly edited exact artwork has `╻╹ `, N=9 offset=1; copy it without changing significant spaces |
-| §21 says retain old footprint and excludes reorder/remove | Compact §19/20 footprint; unchanged half-slot scroll model; scoped §20 reorder/remove |
-| Formula 35×8 already correct, but `draw_art` calls caret_window with 62 cells and no prefix | Compose fixed five-cell prefix plus 57 expression/caret slots; README §22.1 |
-| `FormulaEditor::open` takes only first 256 chars | Preserve supplied source verbatim; keep typed-growth cap, allow non-growing edits of longer supplied source |
-| M4.4 deferred-open/apply and controller publication already present | Preserve those paths; prefix is composed display only, never an input transformation |
+| `newell-ui/src/shell/mod.rs::activate_widget` | Model-backed activation emits `OpenField(descriptor)` for both field slots. Its `open_profiles` branch is in the mock fallback, not the live model path. |
+| `newell-app/src/app.rs::finish_shell_input`, `handle_selection_ui`, `open_field_selection` | Real field intent creates application-supplied candidates/applied membership and opens `SelectionOpen` through the controller. There is no purpose/presentation field. |
+| `newell-app/src/controller.rs::open_selection`, `newell-ui/src/shell/tree.rs::open_selection` | Controller publishes/certifies the modal; shell validates document and qualified geometry rows, then calls `SelectionPanel::open_with`. Preserve these boundaries. |
+| `newell-ui/src/overlays/selection.rs::open_with` | Unconditionally `open_kind(..., SelectionKind::Generic)` for every runtime request. Thus typed Extrude, other command fields and Window API all reach the legacy Generic writer. |
+| Same file `SIZE`, `Geometry::of`, `Geometry::from_interior`, `draw_content` | Fixed 30×12; `modal_layout` reserves a title body row, then a generic checkbox list and footer. No inner list frame or separator is drawn. Even zero/one/three candidates retain excess empty rows. |
+| `newell-ui/src/overlays/mod.rs::draw_frame` | `OverlayKind::Modal` supplies a double border. Generic content does not overwrite it. Color mode only maps same-cell contour strokes; it cannot add the missing frame/title/separator or fix height. |
+| `overlays/selection.rs::PROFILE_SIZE`, `draw_in_action_box`, `draw_action_content`, `draw_selected_items`, `draw_profile_rows` | A second 31×11 fixture path has rounded title/list/separator. It stays fixed-height, derives logical art after clipping, and gives ☰/× the same item ID and toggle semantics. Copying its art alone cannot provide runtime ordering/removal. |
+| `shell/mod.rs::profile_selection_frame`, `sync`, `activate_modal`, `route_modal`; `shell/compose.rs::compose`, `draw_overlays` | Placement, key/activation, scroll/thumb geometry and suppression of underlying Action Box depend on the legacy profile-kind split. They must consume the same new layout/projection, not receive an isolated drawing fix. |
+| `create_box.rs::is_profile_selection_field` | Classifies every shared K_PROFILE as ordered in the fixture branch, including single-reference Extrude/Revolve. Remove this inference. All five live descriptor implementations currently say ordered=false. |
+| `overlays/selection.rs::len`, `labels`, `activate_in`, `ring`, `reconcile_rows` | Runtime dataset is all candidates; draft_order is separately retained. Current item activation toggles membership; no distinct remove/handle routes exist. Candidate count must not size an ordered selected-list manager. |
 
-Amendments applied to README_UI in this stage: §§19–20 (exact art, geometry,
-purpose/dataset, proposed placement, ordered input), §21.1/21.3 (compact empty
-height, runtime data, narrowly scoped reorder exception), §22.1 (empty art,
-fixed prefix and exact viewport/editing/transaction rules). Other sections and
-Interface_Elements were not edited. §§18 and 5.5–5.12 remain authoritative for
-field dimensions, contextual controls, existing keys, roles and hover.
+Repository-root paths above are under `crates/`. This chain explains all five
+reported chrome defects without a geometry failure: construction selects legacy
+Generic, geometry reserves the old size/title, overlay adds the double frame,
+content lacks list/separator, and interaction uses the matching old geometry.
+The source predicts the screenshot's appearance; whether a stale installed app
+was also launched is unverified. Do not diagnose application provenance from art.
 
-No architecture amendment is needed. Architecture §3.5 already permits documented
-ASCII state structures, plain Controller state and text caret. Fixed prefix slots
-are equivalent to numeric direction-prefix exclusion; the caret still uses its
-own cell and the same linear scrolling formula. O(1) routing remains cell-ID
-routing, never a scan of row bounding boxes. Exactly one ASCII draw remains.
+### 2.1 Tests currently protecting the wrong path
+
+- `newell-ui/tests/it/snapshots.rs::selection_panel_open` uses `ShellState::new`
+  fixture data. Its committed `it__snapshots__selection_panel_open.snap` explicitly
+  stores the large double frame/body title/blank area. It must change against
+  canonical §19, not be treated as authority.
+- `shell/tests.rs::profile_field_opens_the_exact_profile_selection_box` and
+  `every_profile_field_opens_the_profile_selection_box` inspect exact cells but
+  use the fixture shell and incorrectly demand Profiles for every Profile field.
+- `overlays/selection.rs` has useful transaction/reconciliation/scroll tests;
+  `profile_writer_matches_every_state...` directly exercises the alternate
+  writer. Neither proves that a command opens that writer in production.
+- `app.rs::shared_selection_tests::field_transaction_latches_and_updates_only_originating_input`
+  starts a command but calls `app.open_field_selection(d)` directly, asserting
+  rows/counts/transactions rather than exact composed chrome. Its neighboring
+  Window test fabricates a `SelectionOpen`. Retain their behavioral coverage;
+  add the full activation-to-composition tests in §7.1.
+
+No higher-precedence Selection prose currently mandates obsolete art: README_UI
+§§19–21 already require the requested shared frame. The contradiction found is
+**semantic**: revision 2/§19.2 assigned ordered managers to Sweep Profile/Path
+although §§14.1–14.2 define one section/trajectory and source limits both to one.
+Revision 3 corrects that overreach; only Loft Profile has the ordered-set contract
+(§12.1). Loft's existing max1 implementation limitation remains explicit.
+
+The diagnostic `invalid or stale geometry reference` is the display string of
+`newell-model/src/lib.rs::ModelError::InvalidGeometryReference`. It is a separate model/typed-reference
+validation matter. No causal link from it to the chrome was found. Preserve
+GeometryPicker version/session/field/reference validation; do not fix or suppress
+that error in this task. Geometry files already dirty are outside this scope.
 
 ## 3. Reference geometry and placement
 
-Implement the normative spans in README §§19.1,20,22.1, using zero-based local
-coordinates and half-open ranges. Summary for Executor's arithmetic checks:
+README_UI §§19.1/20 are the only normative cell-coordinate contract; §21
+owns scrollbar math. Use those tables directly, including width31, heightV+6,
+V=max(1,min(N,5)), divider15 and rounded chrome in all four Theme/Color states.
+Expected footprints for counts0,1,3,5,6+ are respectively31×7,31×7,31×9,31×11,
+31×11. Titles/content/control positions and ink roles come from those canonical
+sections, not copies of modal_layout or a snapshot. Formula geometry remains
+unchanged by Selection execution; its pending work is in §5.
 
-- Selection N rendered rows; V=max(1,min(N,5)); width31, heightV+6.
-  Title Selection at x2..11, or Profils x2..9, y0. Side frames x0/30.
-  Inner frame x1/29, top1, bottomV+2. List x[2,29), y[2,V+2).
-  Separator yV+3. Footer yV+4: OK [1,15), shared15, Cancel[16,30).
-  Column14 is OK padding. OK hover boundaries are x0/15; Cancel x15/30.
-  Bottom yV+5. Empty 7 rows; 3 items 9 rows; 5 or more 11 rows.
-- Membership row: padding2, checkbox3, gap4, name[5,29) with no bar;
-  with bar name[5,28), gutter28. Widths24/23 respectively.
-- Ordered row: padding2, handle3, gap4; with bar name[5,26), remove26,
-  gap27, gutter28; without bar name[5,27), remove27, gap28.
-  Widths21/22 respectively. Never truncate controls to fit names.
-- Formula width35, height8; outer0/34; title[2,9), inner1/33; text rows2/3;
-  prefix[2,7) on row2; editable slots[7,33) row2 and[2,33) row3.
-  Separator5; footer6: OK[1,17), shared17, Cancel[18,34); bottom7.
+Create one private `SelectionLayout` value in overlays/selection.rs, replacing
+Selection-specific use of Geometry::of/from_interior/from_action_box and both
+size constants. Inputs: logical origin, clip allocation, active projection count
+and presentation. Value contains logical outer/title/inner/content/separator/
+footer/OK/SharedBorder/Cancel/gutter rects plus clipped allocation and existing
+SelectionListGeometry. Compute with full logical dimensions before intersecting.
+All draw, sync_overlay, keyboard/ensure-visible, wheel/arrows, thumb/item-grab
+validation and drag-target methods consume this value (or accessors on it).
+An empty list reserves one **visual** row but has zero items/focus/item targets;
+do not change shared SelectionListGeometry's zero-item window to a fake item.
 
-The new artwork gives no global coordinates. Proposed policy P1 preserves the
-current modal/Action Box split: candidates centered within current shell overlay
-bounds, ordered manager at the originating Action Box's existing action_panel
-anchor, Formula centered. `profile_selection_frame` must become presentation-
-aware and use dynamic height, not all fields named Profile. This is an explicit
-proposal awaiting approval with this revision, not evidence from a screenshot.
+Keep existing center_modal origin/allocation for candidate/window choosers.
+Ordered management uses existing Layout::action_panel at its top/right anchor
+with dynamic height. Keep logical width31 even if that allocation is cropped.
+Use the returned origin and separately retain the full logical layout; never
+infer footer/right edge from cropped width/height. No global place.rs change.
 
-Keep existing center_modal allocation behavior and modal outside-input blocking.
-Derive logical art before clipping: place a fixed logical frame at the helper's
-origin, then intersect writes with allocated rect/grid/surface. Never derive a
-new footer/right border from a constrained rect's width/height. Even if the
-right border is cropped, the logical gutter does not slide left onto a name.
-Use clipped Canvas writes and the existing overlay callback to overwrite the
-initial generic frame, as Formula already does. Do not change global placement
-or OverlayKind to fix Selection-specific artwork. Full shell composition clears
-old/new footprint and invalidated controls. Empty inner cells own the surface;
-inner frame/chrome own surface; actual item spans own their stable row controls.
-Formula inner outline and fixed prefix keep the existing text target. Shared
-footer strokes keep Contour ink and use vertical sub-cell modulo routing.
+One shared chrome writer clears the clipped allocation to surface-owned blank
+cells, writes rounded outer frame, embedded title, inner frame, separator and
+footer at the logical positions, then variant rows. `draw` and retained public
+`draw_in_action_box` are thin placement adapters calling that writer. Remove
+legacy Selection `draw_content`/`draw_profile_rows` chrome alternatives; a fixture
+may supply explicit data but must use the same frame and variant row writer.
+No second independent selection-frame implementation may survive.
 
-§21 arithmetic is unchanged: N>5 uses M=N-5, L=max(1,11-N), T=6-L,
-p=round_half_up(T*s/M), six half slots, existing glyphs and u64 arithmetic.
+Continue compose_overlays modal blocking. Its callback must overwrite the
+**whole Selection frame**, including the default double border, and report footer
+hover consistently with Formula. Do not alter OverlayKind::Modal globally or
+change unrelated dialogs. Canvas writes must be intersected with allocation,
+bounds and grid; inert inner frames/empty rows remain surface-owned. Full shell
+recomposition clears obsolete glyphs/roles/IDs/shared borders after shrink/move.
+Suppression of the underlying Action Box follows ordered-manager placement;
+candidate choosers retain the command box beneath the modal as today.
+
+Keep draw_ok_cancel's existing button styling and SharedBorder semantics, but
+write the Selection footer through the shared frame writer's clipped Canvas,
+using existing owned_blank/shared cell constructors and the exact §19.1 literal.
+Its labels/ownership use the full logical layout; do not pass a cropped rect to
+draw_ok_cancel, which would recenter captions and recompute the divider. No
+change to the global footer primitive is needed. Rendering, hover and hit
+testing share these spans:
+column14 remains OK padding, divider15 routes vertical modulo low=OK/high=Cancel,
+outer boundaries remain surface-owned. Roles are semantic: title/name/caption
+Text; frames/separator/divider Contour; checkbox, handle, remove, arrows/thumb
+Action. No focus tint, new hover visual, palette/shader/atlas change or UI draw.
+
+Reuse §21.2 arithmetic unchanged through existing SelectionThumb and
+round_half_up: six half slots, current glyphs, saturation and widened arithmetic.
 Chooser N=eligible rows; manager N=draft_order.len(). Offset clamps after changes;
 N<=5 removes all bar routing. Initial offset0; no implicit jump after growth.
 A captured thumb survives its own scroll publication and is invalidated by
@@ -170,12 +196,15 @@ SelectionUiRequest::OpenField {
 // Existing open/completion payload identities and outcome stay unchanged.
 ```
 
-`SelectionFieldDescriptor.ordered` becomes true only for Loft K_PROFILE and Sweep
-K_PROFILE/K_PATH. All other roles, max_count values and candidate filters remain
-unchanged. Profiles=true only for the two Profile fields. Sweep Path uses title
-Selection. This exposes selected-item management without falsely making Extrude
-or Revolve single geometry profiles into a reorderable multi-profile command.
-Do not raise Loft or Sweep cardinality here; record their existing limitation.
+`SelectionFieldDescriptor.ordered` becomes true only for Loft K_PROFILE.
+All other descriptor flags, roles, max_count values and filters remain unchanged.
+Current manager requests use OrderedItems { profiles: true }; retain the explicit
+false case for an unrestricted non-profile ordered UI request, not an invented
+command route. README_UI §19.2's table is the exhaustive production-purpose map.
+Sweep Profile/Path remain single-reference candidates. Do not raise any limit.
+Only an ordered descriptor may request ManageSelected, enforced shell/app-side.
+The accepted singleton Loft manager may remove; its handle starts no effective
+move. A single-reference chooser never displays handle/×, whatever its label.
 
 In `ShellState::activate_widget`, existing decoded slot0 (body) requests Candidates;
 slot1 (populated ☰) requests ManageSelected only for descriptor.ordered, otherwise
@@ -183,8 +212,10 @@ Candidates. Empty fields have no manager target. `Row::select` already provides
 two slots: preserve its dimensions, glyphs and activation. Keep historical mock
 shell tests explicit; live `ShellState::with_model` always uses SelectionOpen,
 never SelectionPanel::reference or fallback labels. Remove the universal profile
-helper from runtime decision-making; retain legacy fixture behavior only where
-its test explicitly asks for it.
+helper from runtime and fixture decision-making. Reference fixtures must choose
+presentation explicitly; remove/update tests that infer Profiles from every
+K_PROFILE. Fixtures share the runtime writer and may not preserve an obsolete
+private rendering branch.
 
 For C2, normalize restored selection-field focus in
 `ShellState::reconcile_selection_focus(&mut self)` (pub(super), shell/mod.rs).
@@ -393,6 +424,8 @@ that no prefixed payload crosses existing boundaries.
 ## 6. Exact Executor allowlist and ordered work
 
 Only the following paths may change; existing unrelated hunks must survive.
+Formula-specific rows apply only to an explicit combined-plan execution (revision scope above);
+they are excluded from the Selection-only correction.
 No new production file/dependency is needed. New test functions belong in the
 listed existing files. Changes to other paths require a concrete scope issue
 reported to the human, not an automatic wider refactor.
@@ -406,8 +439,8 @@ reported to the human, not an automatic wider refactor.
 | `crates/newell-ui/src/shell/mod.rs` | slot-aware open intent, dynamic manager frame, forwarding item capture, request fixtures |
 | `crates/newell-ui/src/shell/tree.rs` | C2 only: invoke selection-focus normalization after accepted field counts are installed; no tree behavior changes |
 | `crates/newell-ui/src/shell/compose.rs` | propagate Selection footer hover result consistently with Formula; preserve overlay precedence |
-| `crates/newell-ui/src/create_box.rs` | replace misleading universal Profile presentation helper with semantic/purpose dispatch if needed; no field geometry changes |
-| `crates/newell-ui/src/loft.rs`, `crates/newell-ui/src/sweep.rs` | ordered descriptor flags only, matching embedded expectations |
+| `crates/newell-ui/src/create_box.rs` | remove universal Profile presentation inference from runtime/fixture dispatch; no field geometry changes |
+| `crates/newell-ui/src/loft.rs` | ordered=true only for K_PROFILE, matching embedded expectations |
 | `crates/newell-app/src/controller.rs` | certified purpose requests, item capture, generation/publication lifecycle and embedded tests |
 | `crates/newell-app/src/app.rs` | purpose-aware open, nonempty accepted-membership guard for ManageSelected, presentation selection, manager-subset validation and embedded app/Formula regression tests; preserve existing geometry candidate hunks |
 | `crates/newell-ui/src/shell/tests.rs` | actual chooser/manager paths, selection fixtures and formula/hover integration |
@@ -421,8 +454,9 @@ reported to the human, not an automatic wider refactor.
 `overlays/list.rs`, `overlays/place.rs`, `widgets/edit.rs`, `action_box.rs`,
 app `selection.rs`, `parameters.rs`, `navigation.rs` and M4.5 plans are integration
 references, not edit targets. Existing scroll geometry/math and field two-slot
-composition suffice. If a literal request fixture elsewhere now needs the added
-presentation field, report that exact compile-only path before widening scope.
+composition suffice. Current SelectionOpen literals are in app.rs and overlays/selection.rs, both
+allowed. Audit all OpenField matches and request constructors in these files
+when changing the payload; do not leave a default Generic runtime branch.
 No wildcard snapshot allowlist and no new bulk snapshot files. Additional
 states use explicit cell assertions/inline expected literals in listed tests.
 
@@ -431,8 +465,8 @@ Small implementation increments, each complete before the next:
 1. Record required verification baseline without snapshot updates. Re-read this
    revision/current spec/source diff. Confirm no incompatible concurrent edits.
 2. Add purpose/presentation types and update listed constructors/matches.
-   Set only the three ordered flags. Keep app candidates, destination/session,
-   cardinality and typed-reference contracts. Test data projection/transactions.
+   Set only Loft K_PROFILE ordered=true; Sweep/Extrude/Revolve stay false.
+   Keep app candidates, destination/session, cardinality and typed-reference contracts. Test data projection/transactions.
 3. Unify Selection logical geometry/chrome for candidate and manager, add dynamic
    height/placement and stable subslots. Use divider15 and the corrected hover
    boundaries; verify empty/short/long cells and roles.
@@ -442,13 +476,65 @@ Small implementation increments, each complete before the next:
 5. Add fixed Formula prefix/57-slot mapping and source-preserving opening/edit
    predicate. Verify source-origin and transaction regression tests before any
    snapshot adjustment.
-6. Review only the two allowed snapshot diffs against §§19–22; deliberately edit
+6. Review the Selection snapshot against §§19–21 (plus the Formula snapshot
+   against §22 only for combined execution); deliberately edit
    their expected cells after inspecting actual output. Run focused then required
    workspace checks. Report manual checks separately; do not claim them from tests.
 
 No stage starts another agent/role; this is a work sequence for one Executor.
 
 ## 7. Required evidence and acceptance tests (future Executor)
+
+### 7.1 Required production-command composed-cell regression
+
+Extend app.rs::shared_selection_tests with its existing document fixture and
+input helpers (click/key call the controller and finish_shell_input). Create
+**real document outputs** with distinct identities/names; do not populate mock
+MOCK_ITEMS/PROFILE_ITEMS or bypass the app with a selection-frame-only test.
+For an Extrude merge test, drive Create → [E]xtrude → Add → disable Merge with
+all → hit-test/click the actual Targets field. Finish normal request delivery;
+assert the published controller grid equals last_ui_publication and inspect the
+entire popup rectangle from that grid, including glyph/role/routing metadata.
+Do not call open_field_selection directly in this new test.
+
+Run this path with0,1,3,5,6,9 eligible bodies from document data; zero selected
+with candidates must still show every eligible candidate. Compare independent
+literal rows and exact height/title/list/separator/footer, not production layout
+helper output. Scroll N=9 to offset1 to check ╻╹ , then to both endpoints.
+Hit-test arrow, thumb, blank track, content, footer column14, both pixel halves
+of divider15, and Cancel; assert matching draft/completion/session effects.
+Repeat representative empty/three/long command states across Light/Dark × Color
+off/on, checking canonical semantic roles and that Color cannot mask bad chrome.
+
+Add command-route cases for typed Extrude Profile (real kernel-backed source via
+existing Extrude fixture helpers, retaining captured support references),
+Revolve Profile, Loft Profile body and populated ☰, Sweep Profile and Path,
+Boolean Target/Tools/Faces, plus optional-field activation for each descriptor
+family. Table-drive all current field_descriptors per operation by making each
+conditional field visible, clicking each live slot, then cancelling. Compare
+presentation/count/cardinality against README_UI §19.2. No field may silently
+fall back to the old writer. Unsupported Boolean Faces is an actual empty case.
+Use valid document data for eligible entities; don't weaken candidate filters.
+
+Current max1 Loft means real-command manager counts are1 and0 after removal;
+cover both and focus repair through normal app publication. For manager counts
+3/5/6/9, supplement with unrestricted explicit SelectionOpen containing real
+document identities through ShellController::open_selection and its composed
+published grid. Cover profile and non-profile ordered content/title there,
+reorder/removal and Cancel/OK. This is runtime UI-contract coverage, clearly
+labelled **not** evidence of a multi-profile command. Do not increase a command's
+cardinality to manufacture command coverage. Window destination has no observed
+menu opener; test its existing controller API with real data and report that
+limit instead of inventing a command.
+
+Regression sensitivity: assert the command-generated request has explicit
+presentation; the legacy forced Generic path, either old size constant, a
+missing inner frame/separator, wrong dataset, or private fixture writer must
+fail these tests even if direct writer unit tests still pass. Existing mock
+snapshots remain supplemental. The actual-command matrix is required acceptance,
+not replaceable by updating the old snapshot or opening a fabricated request.
+
+### 7.2 Additional state/geometry coverage
 
 Use independent expected literals from the canonical reference, not the production
 geometry/formatting helper to compute test expectations. Verify glyph, ink,
@@ -461,7 +547,7 @@ WidgetId/shared-border and state invariants in addition to text snapshots.
 | Empty manager, nonempty eligible universe | Exactly one blank row, no checkbox candidates; OK empty vector or Cancel unchanged applied vector |
 | N=1,3,5,6,9,10,>10 | Heights7,9,11,11,11,11,11; no bar at <=5; five-row viewport otherwise. Retain full §21 offset/glyph table tests |
 | New profile reference | N=9 offset1 gives track `╻╹ `; every row31 cells, handle3, remove26, gutter28. Exact empty/membership art matches byte-for-byte spaces |
-| Purpose types | Merge fields always chooser; Loft Profile, Sweep Profile/Path body chooser vs populated ☰ manager; Extrude/Revolve profile stays single-candidate selection; Boolean tools remains unordered membership |
+| Purpose types | Merge fields always chooser; Loft Profile body chooser vs populated ☰ manager; Extrude/Revolve/Sweep Profile and Sweep Path stay single-candidate selection; Boolean tools remains unordered membership |
 | Cardinality/filter | Existing max_count=1 replacement still works; unrestricted manager fixtures preserve supplied order; role filters/insertion boundaries unchanged; unsupported/absent data produces no fake rows |
 | Stable identity | Two identical names with distinct ids: reorder second past another row, remove exactly first, retain correct survivors. Labels never identify rows. Change labels without changing ids; stale removed slot does nothing |
 | Transaction | Before OK field/window/count unchanged; OK replaces exact owning destination once; duplicate close does nothing; Cancel/Escape after combined reorder/remove restore accepted vector and focus; no feature/revision/notification |
@@ -530,6 +616,15 @@ passes: Architect ran none of these commands.
 
 ## 8. Separate manual acceptance checklist (not yet performed)
 
+Executor/manual tester must build and launch the current executable from this
+checkout, not an installed app chosen by name. From `/Users/martin/Desktop/Newell`
+use `cargo build -p newell-app --bin newell --locked`, then launch the absolute
+resulting executable (normally `/Users/martin/Desktop/Newell/target/debug/newell`;
+if CARGO_TARGET_DIR is set, resolve and record the actual output first). Record
+source checkout, build result/time and launched absolute path. Never use
+`open -a Newell`, Spotlight or the obsolete OneDrive application. This Architect
+has not built or launched either executable.
+
 Record device, display and actual effective_k as well as the UI Scale label.
 Repeat representative empty, short, long and Formula states in Light/Dark,
 Color off/on, UI Scale80/100/120/140, on Retina and Full HD when available.
@@ -541,10 +636,10 @@ available; report unreachable sizes rather than claiming physical coverage.
   where eligible data exists despite zero selection. Check centered placement.
 - Open actual merge scope: checkbox states reflect draft membership; Cancel
   leaves targets/count unchanged; OK affects the originating field only.
-- Open Loft/Sweep selected manager via ☰ and chooser via body; verify title,
+- Open Loft Profile selected manager via ☰ and chooser via body; verify title,
   candidate/selected distinction, singleton limitation and no indiscriminate
   profile checkboxes. Multi-item reordering may require a controlled UI test
-  fixture because current runtime descriptors retain max1: label that evidence
+  fixture because the current Loft descriptor retains max1: label that evidence
   explicitly, never present mock data as real runtime geometry.
 - Remove the singleton manager's last item and OK: the accepted empty field
   restores focus to its visible body and Enter opens candidate selection. Repeat
@@ -563,41 +658,29 @@ available; report unreachable sizes rather than claiming physical coverage.
   unchanged ink. Check Text/Contour/Action across four palettes;
   no focus tint, generic inversion or changed drag/scene behavior under modals.
 
-## 9. Proposed policy and concrete limitations
+## 9. Handoff, approval and remaining limits
 
-One product policy remains for approval with this plan: **P1 placement**, as
-specified in §3/README §19.1. The artwork alone does not decide global position.
-The body-versus-☰ distinction is the concrete proposed implementation of the
-existing contextual field semantics, using already separate targets so candidate
-admission and ordered management both remain reachable. Approval of revision2
-includes that explicit behavior; do not silently choose a different interaction.
+Revision 3 is implementation-ready for Selection. Its canonical purpose mapping
+supersedes revision2's Sweep ordered-manager proposal; placement retains centered
+choosers versus anchored ordered management. Formula work is unchanged/pending
+as described at the top. No unresolved architecture decision or additional
+review gate is introduced. Human approval of revision3 plus an implementation
+request authorizes Executor; Challenger remains optional and human-initiated.
+This Architect stage stops after delivering these documents.
 
-No cardinality expansion is proposed. Current Loft Profile and Sweep Profile/Path
-are max1 in source despite Loft's canonical ordered-set semantics. This plan
-makes their management presentation correct while preserving that limit; it
-does not claim a runtime multi-profile Loft/Sweep pipeline. Relaxing it or adding
-typed topology for those commands requires a separate functional request. Tests
-with explicit unrestricted SelectionOpen values prove the generic ordered editor
-without implying those unsupported CAD operations exist.
+No candidate filter, identity, cardinality, supporting-reference lifetime or
+model transaction is changed by this plan. Loft max1 and lack of a standalone
+window-selection menu entry remain limitations, with the exact test distinction
+in §7.1. The stale-geometry diagnostic and installed-app provenance remain
+uninvestigated beyond the source observations in §2. Physical display and
+running executable acceptance are pending.
 
-Reference-only names are not source data, the screenshot is unavailable, and
-runtime/visual/physical-device acceptance remains pending. Architecture and ADRs
-were not amended. This documentation stage ends here. Recommended next stage:
-human approval of this revision (including P1), then Executor if requested;
-Challenger review is optional and only human-initiated.
-
-Completed Architect verification: exact empty Selection, membership, ordered,
-empty Formula and populated Formula blocks in README match Interface_Elements
-character-for-character; row widths are31/35 as applicable. Checked actual
-ordered remove/gutter columns26/28, five-character prefix and26+31=57 capacity,
-balanced document code fences and existence of cited explicit crate paths.
-`git diff --check -- docs/ui_design/README_UI.md` reported no whitespace errors;
-Git index remains empty/unchanged. These are documentation checks only.
-
-Revision-2 verification is limited to documentation consistency and whitespace:
-the footer literal and both button spans agree with divider15; hover boundaries
-and C1 acceptance assertions match. C2 specifies close-time and accepted-count
-focus repair, nonempty app admission, Cancel preservation and publication/lifetime
-regressions within the explicit allowlist. Reference artwork and Formula rules
-are unchanged. No builds, tests, application runs, code edits or agent dispatch
-were performed. P1 and the prior runtime/manual limitations remain pending.
+Completed documentation verification: canonical Selection/Formula reference
+blocks match Interface_Elements verbatim and retain31/35-cell widths; Formula
+§5 and Formula-specific tests equal HEAD verbatim, as does README_UI §22;
+duplicate reference removed; all allowlisted paths exist; document code fences
+balance. Scoped `git diff --check` passed. `git diff --name-only --cached` remains
+empty. These checks
+cannot establish build, test, runtime, GPU or manual acceptance. No production
+code/tests were edited, no implementation checks were run, and the index and
+external geometry changes are preserved.

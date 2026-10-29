@@ -79,6 +79,29 @@ impl Quaternion {
     pub fn norm(self) -> f64 {
         self.0.iter().map(|v| v * v).sum::<f64>().sqrt()
     }
+    /// Interpolates unit orientations along the shortest arc on the quaternion sphere.
+    #[must_use]
+    pub fn slerp(self, mut target: Self, amount: f64) -> Self {
+        let amount = amount.clamp(0.0, 1.0);
+        let mut cosine = self.0.iter().zip(target.0).map(|(a, b)| a * b).sum::<f64>();
+        if cosine < 0.0 {
+            target = Self(target.0.map(|value| -value));
+            cosine = -cosine;
+        }
+        if cosine > 0.9995 {
+            return Self::normalized(std::array::from_fn(|i| {
+                self.0[i] + (target.0[i] - self.0[i]) * amount
+            }));
+        }
+        let angle = cosine.clamp(-1.0, 1.0).acos();
+        let sine = angle.sin();
+        if sine.abs() <= f64::EPSILON {
+            return self;
+        }
+        let a = ((1.0 - amount) * angle).sin() / sine;
+        let b = (amount * angle).sin() / sine;
+        Self::normalized(std::array::from_fn(|i| self.0[i] * a + target.0[i] * b))
+    }
     /// Inverse of a unit quaternion.
     #[must_use]
     pub fn inverse(self) -> Self {
@@ -564,6 +587,59 @@ impl Camera {
         self.last_heading = heading;
         self.eye = eye;
         true
+    }
+
+    /// Returns an interpolated orientation while keeping `pivot` on the same pixel and depth.
+    pub(crate) fn interpolate_view_about(
+        self,
+        target: Self,
+        amount: f64,
+        pivot: Vec3,
+        screen_point: (f64, f64),
+        depth: f64,
+    ) -> Option<Self> {
+        if !finite(pivot)
+            || !screen_point.0.is_finite()
+            || !screen_point.1.is_finite()
+            || !depth.is_finite()
+            || depth <= MIN_DISTANCE
+            || self.viewport.width == 0
+            || self.viewport.height == 0
+        {
+            return None;
+        }
+        let mut camera = Self {
+            orientation: self.orientation.slerp(target.orientation, amount),
+            ..self
+        };
+        let (right, up, forward) = camera.basis();
+        let x = 2.0 * (screen_point.0 - f64::from(camera.viewport.x))
+            / f64::from(camera.viewport.width)
+            - 1.0
+            - camera.lens_shift[0];
+        let y = 1.0
+            - 2.0 * (screen_point.1 - f64::from(camera.viewport.y))
+                / f64::from(camera.viewport.height)
+            - camera.lens_shift[1];
+        let aspect = f64::from(camera.viewport.width) / f64::from(camera.viewport.height);
+        let half_height = if camera.perspective {
+            (camera.vertical_fov * 0.5).tan() * depth
+        } else {
+            camera.orthographic_height * 0.5
+        };
+        camera.eye = sub(
+            sub(
+                sub(pivot, scale(forward, depth)),
+                scale(right, x * half_height * aspect),
+            ),
+            scale(up, y * half_height),
+        );
+        camera.last_heading = if amount >= 1.0 {
+            target.last_heading
+        } else {
+            self.last_heading
+        };
+        finite(camera.eye).then_some(camera)
     }
 
     fn named_view_basis(

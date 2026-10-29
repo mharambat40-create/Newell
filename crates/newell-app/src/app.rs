@@ -95,6 +95,17 @@ struct PendingSceneClick {
     mesh_revision: u64,
     edit: SelectionEdit,
 }
+#[derive(Debug, Clone, Copy)]
+struct PendingOriginClick {
+    document: crate::DocumentInstanceId,
+    generation: newell_ui::ProjectionGeneration,
+    mesh_revision: u64,
+    navigation_revision: u64,
+    reference: newell_ui::OriginReference,
+    start: (f64, f64),
+    display_scale: f64,
+    edit: SelectionEdit,
+}
 /// A monitor change seen while the window is still being moved is applied once the window has
 /// been still this long. The OS drag loop streams `Moved` events and resizing the window under
 /// the user's hand fights it; the change is applied once, for the monitor where it comes to rest.
@@ -281,6 +292,7 @@ pub(crate) struct App {
     #[cfg(test)]
     last_ui_publication: Option<newell_ui::CellGrid>,
     selection: WindowSelection,
+    origin_selection: Vec<newell_ui::OriginReference>,
     command_inputs: Option<CommandSelectionInputs>,
     numeric_inputs: Option<crate::parameters::CommandNumericInputs>,
     numeric_cache:
@@ -316,6 +328,7 @@ pub(crate) struct App {
     scene_available: bool,
     scene_initialized: bool,
     pending_scene_click: Option<PendingSceneClick>,
+    pending_origin_click: Option<PendingOriginClick>,
     scene_selected: bool,
     modifiers: ModifiersState,
     navigation: Navigation,
@@ -481,6 +494,8 @@ impl App {
             source_generation: self.document.document().geometry_generation(),
         };
         runtime.worker.submit(PrepareGeometry {
+            #[cfg(test)]
+            kernel_probe: None,
             id,
             base: self.document.document().clone(),
             edit: newell_model::geometry::DocumentEdit::ParameterDefinitions,
@@ -710,7 +725,11 @@ impl App {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
-        if clear_diagnostic { self.geometry_status(None) } else { Update { grid: false } }
+        if clear_diagnostic {
+            self.geometry_status(None)
+        } else {
+            Update { grid: false }
+        }
     }
     fn observe_geometry_lifetime(&mut self) {
         if self.geometry.is_none() || self.numeric_committed {
@@ -1001,18 +1020,37 @@ impl App {
         }) {
             return Update::default();
         }
-        if !self.numeric_committed && self.geometry.as_ref().is_some_and(|runtime| !runtime.worker.is_alive()) {
-            let result = (|| -> Result<(),AppError> {
-                let wake = self.geometry_wake.clone().ok_or(AppError::InvalidNumericRequest)?;
-                let committed = self.geometry.as_ref().and_then(|runtime| runtime.committed_scene.clone());
-                let displayed = self.geometry.as_ref().and_then(|runtime| runtime.displayed_scene.clone());
+        if !self.numeric_committed
+            && self
+                .geometry
+                .as_ref()
+                .is_some_and(|runtime| !runtime.worker.is_alive())
+        {
+            let result = (|| -> Result<(), AppError> {
+                let wake = self
+                    .geometry_wake
+                    .clone()
+                    .ok_or(AppError::InvalidNumericRequest)?;
+                let committed = self
+                    .geometry
+                    .as_ref()
+                    .and_then(|runtime| runtime.committed_scene.clone());
+                let displayed = self
+                    .geometry
+                    .as_ref()
+                    .and_then(|runtime| runtime.displayed_scene.clone());
                 self.drop_pending_preview_scene();
                 self.enable_geometry_worker(move || wake())?;
-                if let Some(runtime) = &mut self.geometry { runtime.committed_scene = committed; runtime.displayed_scene = displayed; }
+                if let Some(runtime) = &mut self.geometry {
+                    runtime.committed_scene = committed;
+                    runtime.displayed_scene = displayed;
+                }
                 self.begin_geometry_command();
                 Ok(())
             })();
-            if let Err(error) = result { return self.geometry_status(Some(error.to_string())); }
+            if let Err(error) = result {
+                return self.geometry_status(Some(error.to_string()));
+            }
         }
         let Some(inputs) = self.numeric_inputs.as_ref().filter(|inputs| {
             inputs.document == self.document.identity()
@@ -1220,14 +1258,24 @@ impl App {
         let reply = match self.geometry.as_ref().map(|runtime| runtime.worker.drain()) {
             Some(Ok(Some(reply))) => reply,
             Some(Err(error)) => {
-                let request = self.geometry.as_mut().and_then(|runtime| runtime.coordinator.as_mut()).and_then(|coordinator| coordinator.transport_failed());
-                self.drop_pending_preview_scene(); self.restore_committed_scene();
+                let request = self
+                    .geometry
+                    .as_mut()
+                    .and_then(|runtime| runtime.coordinator.as_mut())
+                    .and_then(|coordinator| coordinator.transport_failed());
+                self.drop_pending_preview_scene();
+                self.restore_committed_scene();
                 let update = self.geometry_status(Some(error.to_string()));
-                if let Some(request) = request && let Some(inputs) = &self.numeric_inputs && let Ok(projection) = inputs.project() {
-                    return update.merge(self.queue_numeric_delivery(NumericDeliveryKind::Confirm(request,false,None,projection)));
+                if let Some(request) = request
+                    && let Some(inputs) = &self.numeric_inputs
+                    && let Ok(projection) = inputs.project()
+                {
+                    return update.merge(self.queue_numeric_delivery(
+                        NumericDeliveryKind::Confirm(request, false, None, projection),
+                    ));
                 }
                 return update;
-            },
+            }
             _ => return Update::default(),
         };
         let id = match &reply {
@@ -1371,6 +1419,7 @@ impl App {
                     .map(|id| OpaqueTreeId::new(id.get()))
                     .collect(),
             },
+            origin_references: self.origin_selection.clone(),
             fields,
         }
     }
@@ -1446,7 +1495,83 @@ impl App {
         }
     }
     fn handle_selection_request(&mut self, request: SelectionRequest) -> Update {
-        if self.selection.apply(request, &self.document) {
+        let clears_references = matches!(request.op, SelectionOp::Replace | SelectionOp::Clear)
+            && request.document == self.document.identity()
+            && self
+                .document
+                .document()
+                .active_entities_at(None)
+                .is_ok_and(|active| request.entities.iter().all(|id| active.contains(id)));
+        let mut changed = self.selection.apply(request, &self.document);
+        if clears_references && !self.origin_selection.is_empty() {
+            self.origin_selection.clear();
+            changed = true;
+        }
+        if changed {
+            self.publish_selection()
+        } else {
+            Update::default()
+        }
+    }
+    fn select_origin_reference(
+        &mut self,
+        reference: newell_ui::OriginReference,
+        edit: SelectionEdit,
+    ) -> Update {
+        let mut changed = false;
+        match edit {
+            SelectionEdit::Replace => {
+                changed |= self.selection.apply(
+                    SelectionRequest {
+                        document: self.document.identity(),
+                        op: SelectionOp::Clear,
+                        entities: Vec::new(),
+                    },
+                    &self.document,
+                );
+                if self.origin_selection != [reference] {
+                    self.origin_selection.clear();
+                    self.origin_selection.push(reference);
+                    changed = true;
+                }
+            }
+            SelectionEdit::Add => {
+                if !self.origin_selection.contains(&reference) {
+                    self.origin_selection.push(reference);
+                    changed = true;
+                }
+            }
+            SelectionEdit::Toggle => {
+                if let Some(index) = self
+                    .origin_selection
+                    .iter()
+                    .position(|value| *value == reference)
+                {
+                    self.origin_selection.remove(index);
+                } else {
+                    self.origin_selection.push(reference);
+                }
+                changed = true;
+            }
+            SelectionEdit::Remove => {
+                let old = self.origin_selection.len();
+                self.origin_selection.retain(|value| *value != reference);
+                changed |= old != self.origin_selection.len();
+            }
+            SelectionEdit::Clear => {
+                changed |= !self.origin_selection.is_empty();
+                self.origin_selection.clear();
+                changed |= self.selection.apply(
+                    SelectionRequest {
+                        document: self.document.identity(),
+                        op: SelectionOp::Clear,
+                        entities: Vec::new(),
+                    },
+                    &self.document,
+                );
+            }
+        }
+        if changed {
             self.publish_selection()
         } else {
             Update::default()
@@ -1578,6 +1703,25 @@ impl App {
             op: pending.edit.into(),
             entities,
         })
+    }
+    fn finish_origin_reference_click(&mut self, point: (f64, f64)) -> Option<Update> {
+        let pending = self.pending_origin_click.take()?;
+        let dx = (point.0 - pending.start.0) / pending.display_scale;
+        let dy = (point.1 - pending.start.1) / pending.display_scale;
+        if !point.0.is_finite()
+            || !point.1.is_finite()
+            || dx.mul_add(dx, dy * dy) > crate::navigation::CLICK_DRAG_THRESHOLD_LOGICAL_PX.powi(2)
+            || pending.document != self.document.identity()
+            || pending.mesh_revision != self.navigation.scene().revision()
+            || pending.navigation_revision != self.navigation.revision()
+            || self.shell.as_ref().is_none_or(|shell| {
+                shell.generation() != pending.generation || !shell.scene_input_enabled()
+            })
+            || self.navigation.pick_origin_reference(point) != Some(pending.reference)
+        {
+            return Some(Update::default());
+        }
+        Some(self.select_origin_reference(pending.reference, pending.edit))
     }
     fn start_command_inputs(&mut self, operation: ActionOperation) -> Update {
         if self.geometry.is_some()
@@ -1981,6 +2125,7 @@ impl App {
             #[cfg(test)]
             last_ui_publication: None,
             selection: WindowSelection::new(document_identity),
+            origin_selection: Vec::new(),
             command_inputs: None,
             numeric_inputs: None,
             numeric_cache: std::collections::BTreeMap::new(),
@@ -2014,6 +2159,7 @@ impl App {
             scene_available: false,
             scene_initialized: false,
             pending_scene_click: None,
+            pending_origin_click: None,
             scene_selected: false,
             modifiers: ModifiersState::empty(),
             navigation: Navigation::default(),
@@ -2490,8 +2636,13 @@ impl App {
             if reset_camera {
                 self.navigation.fit();
             }
-            if normal_view {
-                self.navigation.normal_to_axis();
+            if normal_view
+                && self
+                    .navigation
+                    .start_normal_to_axis_transition(Instant::now())
+                && let Some(window) = &self.window
+            {
+                window.request_redraw();
             }
             if let Some(camera) = self.navigation.snapshot() {
                 renderer.set_scene_camera(camera);
@@ -2578,7 +2729,7 @@ impl App {
             }
             self.scene_entity = None;
             self.pending_scene_click = None;
-            self.navigation.cancel();
+            self.navigation.cancel_captures();
             self.nav_interaction.cancel();
             if let Some(shell) = &mut self.shell {
                 invalidation_update = shell.invalidate_document_interactions();
@@ -2653,10 +2804,10 @@ impl App {
             }
         }
         if self.projection_sync.acknowledged_document() == Some(self.document.identity().tree())
-            && self
-                .shell
-                .as_ref()
-                .is_some_and(|s| s.shell().entity_selection() == &self.selection_view().selection)
+            && self.shell.as_ref().is_some_and(|s| {
+                s.shell().entity_selection() == &self.selection_view().selection
+                    && s.shell().origin_selection() == self.origin_selection
+            })
         {
             // The document publisher satisfies only a matching complete local view.
             let fields_match = self.shell.as_ref().is_some_and(|s| {
@@ -2960,7 +3111,12 @@ impl App {
             && intent.target().document == self.document.identity().tree()
         {
             if let newell_ui::TreeIntentKind::Select { edit } = intent.kind() {
-                if let Some(entities) = resolve_tree_selection(&self.document, intent.target()) {
+                if let newell_ui::TreeTargetKind::OriginReference(reference) = intent.target().kind
+                {
+                    update = update.merge(self.select_origin_reference(reference, *edit));
+                } else if let Some(entities) =
+                    resolve_tree_selection(&self.document, intent.target())
+                {
                     update = update.merge(self.handle_selection_request(SelectionRequest {
                         document: self.document.identity(),
                         op: (*edit).into(),
@@ -3024,7 +3180,7 @@ impl App {
         };
         let result = shell.scroll_panel(steps);
         if result.handled {
-            self.navigation.cancel();
+            self.navigation.cancel_captures();
             self.nav_interaction.cancel();
             self.apply(result.update);
         }
@@ -3554,6 +3710,7 @@ impl App {
 
     /// A left press: window control, resize zone, MenuBar drag or normal shell routing.
     fn left_pressed(&mut self) {
+        self.pending_origin_click = None;
         self.sync_navigation_widgets();
         if !self.resize.is_active()
             && !self.native_resizing
@@ -3569,7 +3726,7 @@ impl App {
             && g.reserves((pointer.x, pointer.y))
         {
             self.pending_scene_click = None;
-            self.navigation.cancel();
+            self.navigation.cancel_captures();
             self.nav_interaction.press(
                 g,
                 (pointer.x, pointer.y),
@@ -3583,7 +3740,7 @@ impl App {
             return;
         }
 
-        self.navigation.cancel();
+        self.navigation.cancel_captures();
         self.nav_interaction.cancel();
         // A press while a resize or control press is pending means its release was missed.
         self.cancel_resize(CancelReason::StateChanged);
@@ -3607,7 +3764,34 @@ impl App {
         match press {
             Press::Shell(update) => {
                 self.finish_shell_input(update);
-                if scene_input
+                let origin_reference = if scene_input && cursor.is_some() && !self.native_resizing {
+                    self.scene_pointer.and_then(|pointer| {
+                        self.navigation
+                            .pick_origin_reference((pointer.x, pointer.y))
+                            .map(|reference| (pointer, reference))
+                    })
+                } else {
+                    None
+                };
+                if let Some((pointer, reference)) = origin_reference {
+                    self.pending_scene_click = None;
+                    if let Some(shell) = &self.shell {
+                        self.pending_origin_click = Some(PendingOriginClick {
+                            document: self.document.identity(),
+                            generation: shell.generation(),
+                            mesh_revision: self.navigation.scene().revision(),
+                            navigation_revision: self.navigation.revision(),
+                            reference,
+                            start: (pointer.x, pointer.y),
+                            display_scale: window.scale_factor(),
+                            edit: SelectionEdit::modifiers(
+                                self.modifiers.shift_key(),
+                                self.modifiers.control_key()
+                                    || (cfg!(target_os = "macos") && self.modifiers.super_key()),
+                            ),
+                        });
+                    }
+                } else if scene_input
                     && cursor.is_some()
                     && !self.native_resizing
                     && let Some(pointer) = self.scene_pointer
@@ -3881,6 +4065,7 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::Focused(false) => {
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
+                self.pending_origin_click = None;
                 self.navigation.cancel();
                 self.nav_interaction.cancel();
                 self.native_resizing = false;
@@ -4015,6 +4200,7 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CursorLeft { .. } => {
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
+                self.pending_origin_click = None;
                 self.navigation.cancel();
                 self.nav_interaction.cancel();
                 if let Some(shell) = &mut self.shell {
@@ -4041,7 +4227,8 @@ impl ApplicationHandler<AppEvent> for App {
                         p,
                         self.navigation.revision(),
                     ) {
-                        self.navigation.align_view(direction);
+                        self.navigation
+                            .start_view_transition(direction, Instant::now());
                         window.request_redraw();
                     }
                     self.sync_navigation_widgets();
@@ -4052,7 +4239,9 @@ impl ApplicationHandler<AppEvent> for App {
                     .scene_pointer
                     .map_or((f64::NAN, f64::NAN), |p| (p.x, p.y));
                 let certificate = self.navigation.finish_primary(point);
-                let selection_update = self.finish_scene_selection(point, certificate);
+                let origin_selection = self.finish_origin_reference_click(point);
+                let selection_update = origin_selection
+                    .unwrap_or_else(|| self.finish_scene_selection(point, certificate));
                 self.apply(selection_update);
                 // The release that ends a managed resize is consumed.
                 if !self.resize.release() {
@@ -4371,6 +4560,9 @@ impl ApplicationHandler<AppEvent> for App {
         // macOS may not deliver Resized(0, 0) on minimise, so also ask the window.
         // Hidden windows wait for an OS event instead of refreshing unseen status cells.
         let hidden = self.occluded || window.is_minimized().unwrap_or(false);
+        if hidden {
+            self.navigation.cancel_view_transition();
+        }
         let now = Instant::now();
         let mut wake = None;
         if let Some(moved) = self.moved_at {
@@ -4392,6 +4584,13 @@ impl ApplicationHandler<AppEvent> for App {
         // No continuous redraw loop. Hidden windows wait for input instead of spinning
         // on expired status deadlines; the monotonic animation catches up when restored.
         if !hidden {
+            if self.navigation.advance_view_transition(now) {
+                self.sync_navigation_widgets();
+                window.request_redraw();
+            }
+            if let Some(deadline) = self.navigation.transition_deadline(now) {
+                wake = Some(wake.map_or(deadline, |other: Instant| other.min(deadline)));
+            }
             let trigger = if std::mem::take(&mut self.layout_retry_rearm_pending) {
                 ProjectionTrigger::LayoutPublished
             } else {
@@ -4477,6 +4676,51 @@ mod tests {
     pub(super) fn key(app: &mut App, key: ShellKey) {
         let update = app.shell.as_mut().unwrap().key(key);
         app.finish_shell_input(update);
+    }
+
+    #[test]
+    fn origin_reference_viewport_and_tree_routes_share_one_selection_identity() {
+        let mut app = App::new();
+        app.shell = Some(ShellController::new(82, 40, GridMetrics::new(4, 9).unwrap()).unwrap());
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let viewport = SceneViewport::new(0, 0, 640, 480);
+        app.navigation.set_layout(viewport, Vec::new());
+        let camera_before = app.navigation.camera();
+        let origin = camera_before.project([0.0; 3]).unwrap();
+        assert_eq!(
+            app.navigation.pick_origin_reference(origin),
+            Some(newell_ui::OriginReference::O)
+        );
+        let update =
+            app.select_origin_reference(newell_ui::OriginReference::O, SelectionEdit::Replace);
+        assert_eq!(app.navigation.camera(), camera_before);
+        app.apply(update);
+        assert_eq!(app.origin_selection, [newell_ui::OriginReference::O]);
+        assert!(app.selection.entities().is_empty());
+        let shell = app.shell.as_ref().unwrap().shell();
+        assert!(
+            shell
+                .origin_selection()
+                .contains(&newell_ui::OriginReference::O)
+        );
+        assert!(
+            shell.is_entity_target_selected(shell.tree_projection().target(
+                newell_ui::TreeTargetKind::OriginReference(newell_ui::OriginReference::O)
+            ))
+        );
+        let camera_after_selection = app.navigation.camera();
+        assert!(app.pending_scene_click.is_none());
+
+        click(&mut app, "YZ");
+        assert_eq!(app.origin_selection, [newell_ui::OriginReference::YZ]);
+        let shell = app.shell.as_ref().unwrap().shell();
+        assert!(
+            shell.is_entity_target_selected(shell.tree_projection().target(
+                newell_ui::TreeTargetKind::OriginReference(newell_ui::OriginReference::YZ)
+            ))
+        );
+        assert_eq!(app.navigation.camera(), camera_after_selection);
     }
     fn depth(app: &mut App) {
         click(app, "0.0 mm");
@@ -6464,25 +6708,59 @@ mod real_extrude_tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     #[test]
     fn dead_worker_keeps_the_document_and_explicit_ok_rebuilds_in_a_new_lifetime() -> TestResult {
-        let (mut app,wake)=runtime_app()?;
-        open(&mut app);profile(&mut app);depth(&mut app,"#Depth := 2mm",true);pump(&mut app,&wake)?;
-        let source=app.document.document().clone();let version=app.document.version();let token=app.document.geometry_token();let events=app.document.subscribe();
-        let bindings=app.numeric_inputs.as_ref().ok_or("inputs")?.bindings.clone();
-        app.geometry.as_ref().ok_or("runtime")?.worker.stop_for_test()?;
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 2mm", true);
+        pump(&mut app, &wake)?;
+        let source = app.document.document().clone();
+        let version = app.document.version();
+        let token = app.document.geometry_token();
+        let events = app.document.subscribe();
+        let bindings = app
+            .numeric_inputs
+            .as_ref()
+            .ok_or("inputs")?
+            .bindings
+            .clone();
+        app.geometry
+            .as_ref()
+            .ok_or("runtime")?
+            .worker
+            .stop_for_test()?;
         wake.recv_timeout(Duration::from_secs(10))?;
         assert!(!app.geometry.as_ref().ok_or("runtime")?.worker.is_alive());
-        let update=app.drain_worker_reply();app.apply(update);
-        app.poll_document_projection(Instant::now(),ProjectionTrigger::Notification);
-        assert_eq!(app.document.document(),&source);assert_eq!(app.document.version(),version);assert_eq!(app.document.geometry_token(),token);assert_eq!(events.try_iter().count(),0);
+        let update = app.drain_worker_reply();
+        app.apply(update);
+        app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        assert_eq!(app.document.document(), &source);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(app.document.geometry_token(), token);
+        assert_eq!(events.try_iter().count(), 0);
         assert!(app.scene_available);
-        activate(&mut app,28,0);pump(&mut app,&wake)?;
-        assert_eq!(app.geometry.as_ref().ok_or("runtime")?.epoch,2);
+        activate(&mut app, 28, 0);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.geometry.as_ref().ok_or("runtime")?.epoch, 2);
         assert!(app.geometry.as_ref().ok_or("runtime")?.worker.is_alive());
-        assert_eq!(app.document.revision(),version.revision+1);assert_eq!(app.document.document().features().len(),2);assert_eq!(events.try_iter().count(),1);
-        let newell_model::Feature::Extrude(extrude)=&app.document.document().features()[1].1 else {return Err("missing Extrude".into());};
-        let newell_model::ExtentSpec::Blind{depth:newell_model::ParameterValue::Bound(parameter),..}=extrude.spec.extent else {return Err("lost binding".into());};
-        assert!(bindings.values().any(|id|*id==parameter));
-        assert_eq!(app.document.geometry_token().ok_or("token")?.worker_epoch(),2);
+        assert_eq!(app.document.revision(), version.revision + 1);
+        assert_eq!(app.document.document().features().len(), 2);
+        assert_eq!(events.try_iter().count(), 1);
+        let newell_model::Feature::Extrude(extrude) = &app.document.document().features()[1].1
+        else {
+            return Err("missing Extrude".into());
+        };
+        let newell_model::ExtentSpec::Blind {
+            depth: newell_model::ParameterValue::Bound(parameter),
+            ..
+        } = extrude.spec.extent
+        else {
+            return Err("lost binding".into());
+        };
+        assert!(bindings.values().any(|id| *id == parameter));
+        assert_eq!(
+            app.document.geometry_token().ok_or("token")?.worker_epoch(),
+            2
+        );
         Ok(())
     }
     #[test]
@@ -7573,6 +7851,275 @@ mod real_extrude_tests {
         assert!((geometry.measure - 4.75).abs() < 1e-6);
         assert_eq!(geometry.face_count, 6);
         assert!(app.scene_available);
+        Ok(())
+    }
+    #[test]
+    fn cancel_after_real_preview_preserves_unrelated_accepted_metadata_and_formula_source()
+    -> TestResult {
+        let (mut app, wake) = runtime_app()?;
+        open(&mut app);
+        profile(&mut app);
+        depth(&mut app, "#Depth := 3.25mm", true);
+        pump(&mut app, &wake)?;
+        activate(&mut app, 4, 1);
+        assert_eq!(
+            app.shell.as_ref().ok_or("shell")?.shell().formula().draft(),
+            "#Depth := 3.25mm"
+        );
+        super::tests::key(&mut app, ShellKey::Escape);
+        let base = app.document.document().features()[0].1.outputs()[0];
+        app.document
+            .rename_entity(base, "Unrelated accepted rename".into())?;
+        let update = app.poll_document_projection(Instant::now(), ProjectionTrigger::Notification);
+        app.apply(update);
+        let accepted = app.document.document().clone();
+        let version = app.document.version();
+        let events = app.document.subscribe();
+        activate(&mut app, 28, 1);
+        pump(&mut app, &wake)?;
+        assert_eq!(app.document.document(), &accepted);
+        assert_eq!(app.document.version(), version);
+        assert_eq!(events.try_iter().count(), 0);
+        assert_eq!(app.scene_bindings.len(), 1);
+        assert!(app.scene_bindings.iter().all(|binding| matches!(
+            binding.binding,
+            crate::geometry_worker::SceneItemBinding::Committed { .. }
+        )));
+        Ok(())
+    }
+    #[test]
+    fn real_mode_termination_side_and_scope_matrix_measures_all_outputs() -> TestResult {
+        let mut cases = 0;
+        for surface in [false, true] {
+            for result in 0..3 {
+                for termination in 0..3 {
+                    for side in 0..4 {
+                        let scopes: &[bool] = if result == 0 { &[true] } else { &[true, false] };
+                        for all in scopes {
+                            let (mut app, wake) = runtime_app()?;
+                            // Both fixtures are genuine committed Extrudes from a
+                            // picker-selected seed face, not injected manifests.
+                            open(&mut app);
+                            if surface {
+                                activate(&mut app, 0, 1);
+                            }
+                            profile(&mut app);
+                            depth(&mut app, "2", false);
+                            activate(&mut app, 28, 0);
+                            pump(&mut app, &wake)?;
+                            let target = app
+                                .document
+                                .document()
+                                .features()
+                                .last()
+                                .ok_or("merge feature")?
+                                .1
+                                .outputs()[0];
+                            app.document.rename_entity(target, "Merge Target".into())?;
+                            let update = app.poll_document_projection(
+                                Instant::now(),
+                                ProjectionTrigger::Notification,
+                            );
+                            app.apply(update);
+                            open(&mut app);
+                            profile(&mut app);
+                            depth(&mut app, "5", false);
+                            activate(&mut app, 28, 0);
+                            pump(&mut app, &wake)?;
+                            let limit = app
+                                .document
+                                .document()
+                                .features()
+                                .last()
+                                .ok_or("limit feature")?
+                                .1
+                                .outputs()[0];
+                            app.document.rename_entity(limit, "Limit Body".into())?;
+                            let update = app.poll_document_projection(
+                                Instant::now(),
+                                ProjectionTrigger::Notification,
+                            );
+                            app.apply(update);
+                            let limit_face = app
+                                .document
+                                .document()
+                                .entity_geometry(limit)
+                                .ok_or("limit")?
+                                .faces
+                                .iter()
+                                .find(|f| {
+                                    (f.frame.origin[2] + 5.).abs() < 1e-7
+                                        && f.frame.normal[2].abs() > 0.99
+                                })
+                                .ok_or("limit cap")?
+                                .face;
+                            open(&mut app);
+                            if surface {
+                                activate(&mut app, 0, 1);
+                            }
+                            profile(&mut app);
+                            depth(&mut app, "6", false);
+                            if result != 0 {
+                                activate(&mut app, 1, result);
+                            }
+                            for _ in 0..termination {
+                                activate(&mut app, 3, 1);
+                            }
+                            if termination == 1 {
+                                activate(&mut app, 6, 0);
+                                let update = app.shell.as_mut().ok_or("shell")?.scroll(i32::MIN);
+                                app.finish_shell_input(update);
+                                super::tests::click(
+                                    &mut app,
+                                    &format!("Limit Body / Face {}", u64::from(limit_face) + 1),
+                                );
+                                super::tests::click(&mut app, "OK");
+                            }
+                            match side {
+                                1 => activate(&mut app, 17, 0),
+                                2 | 3 => {
+                                    activate(&mut app, 18, 0);
+                                    activate(&mut app, 20, 0);
+                                    super::tests::key(&mut app, ShellKey::Edit(EditKey::SelectAll));
+                                    for c in (if side == 2 { "3" } else { "-3" }).chars() {
+                                        super::tests::key(&mut app, ShellKey::Char(c));
+                                    }
+                                    super::tests::key(&mut app, ShellKey::Enter);
+                                }
+                                _ => {}
+                            }
+                            if !all {
+                                activate(&mut app, 26, 0);
+                                activate(&mut app, 27, 0);
+                                let picker = app
+                                    .shell
+                                    .as_ref()
+                                    .ok_or("shell")?
+                                    .shell()
+                                    .selection()
+                                    .request()
+                                    .cloned()
+                                    .ok_or("scope picker")?;
+                                for selected in &picker.applied {
+                                    if selected.get() != target.get() {
+                                        let row = picker
+                                            .rows
+                                            .iter()
+                                            .find(|row| row.entity == *selected)
+                                            .ok_or("applied scope")?;
+                                        super::tests::click(&mut app, &format!("■ {}", row.label));
+                                    }
+                                }
+                                if !picker.applied.iter().any(|id| id.get() == target.get()) {
+                                    super::tests::click(&mut app, "□ Merge Target");
+                                }
+                                super::tests::click(&mut app, "OK");
+                                let field = newell_ui::SelectionFieldKey {
+                                    operation: ActionOperation::Extrude,
+                                    key: 27,
+                                };
+                                assert_eq!(
+                                    app.command_inputs.as_ref().ok_or("inputs")?.values[&field]
+                                        .entities(),
+                                    &[target]
+                                );
+                            }
+                            pump(&mut app, &wake)?;
+                            let before = app.document.version();
+                            let events = app.document.subscribe();
+                            activate(&mut app, 28, 0);
+                            pump(&mut app, &wake)?;
+                            if app.document.revision() == before.revision {
+                                let shell = app.shell.as_ref().ok_or("shell")?;
+                                let status: String = shell
+                                    .grid()
+                                    .cells()
+                                    .iter()
+                                    .rev()
+                                    .take(shell.grid().cols() as usize)
+                                    .rev()
+                                    .map(|c| match c.content {
+                                        newell_ui::CellContent::Glyph(ch) => ch,
+                                        _ => ' ',
+                                    })
+                                    .collect();
+                                eprintln!(
+                                    "matrix failed recipe={:?}; grid={status}",
+                                    app.geometry.as_ref().map(|r| &r.latest_edit)
+                                );
+                            }
+                            assert_eq!(
+                                app.document.revision(),
+                                before.revision + 1,
+                                "surface={surface}, result={result}, termination={termination}, side={side}, all={all}"
+                            );
+                            assert_eq!(events.try_iter().count(), 1);
+                            let document = app.document.document();
+                            let newell_model::Feature::Extrude(extrude) =
+                                &document.features().last().ok_or("feature")?.1
+                            else {
+                                return Err("wrong feature".into());
+                            };
+                            if result == 2 {
+                                assert!(extrude.outputs.is_empty());
+                                assert!(extrude.consumed_inputs().contains(&target));
+                            } else {
+                                assert_eq!(extrude.outputs.len(), 1);
+                                let main = if termination == 0 {
+                                    6.
+                                } else if termination == 1 {
+                                    5.
+                                } else {
+                                    5.000001
+                                };
+                                let mut reach = match side {
+                                    1 => 2. * main,
+                                    2 => main + 3.,
+                                    _ => main,
+                                };
+                                if result == 1 && *all && !surface && (side == 0 || side == 3) {
+                                    reach += 1.;
+                                }
+                                let shape = document
+                                    .entity_geometry(extrude.outputs[0])
+                                    .ok_or("output")?;
+                                let expected = reach * if surface { 4. } else { 1. };
+                                assert!(
+                                    (shape.measure - expected).abs() < 1e-5,
+                                    "surface={surface}, result={result}, termination={termination}, side={side}, all={all}: actual={}, expected={expected}",
+                                    shape.measure
+                                );
+                                assert_eq!(
+                                    shape.kind,
+                                    if surface {
+                                        newell_model::EntityKind::Surface
+                                    } else {
+                                        newell_model::EntityKind::Body
+                                    }
+                                );
+                            }
+                            assert_eq!(
+                                app.scene_bindings.len(),
+                                document.active_entities_at(None)?.len()
+                            );
+                            assert_eq!(
+                                app.shell
+                                    .as_ref()
+                                    .ok_or("shell")?
+                                    .shell()
+                                    .tree_projection()
+                                    .elements
+                                    .len(),
+                                app.scene_bindings.len()
+                            );
+                            assert!(app.scene_available);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 120);
         Ok(())
     }
     #[test]

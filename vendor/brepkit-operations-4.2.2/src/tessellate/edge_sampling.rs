@@ -1,0 +1,581 @@
+//! Edge curve sampling and parametrization.
+
+use brepkit_math::vec::{Point3, Vec3};
+use brepkit_topology::Topology;
+
+/// Combined linear+angular segment count for a circular arc.
+///
+/// Delegates to [`brepkit_math::chord::segments_for_chord_deviation_with_angle`]
+/// with no minimum-edge-length clamp. `apply_curvature_floor` is forwarded:
+/// constant-curvature circles pass `false` (the chord formula is exact),
+/// variable/doubly-curved geometry passes `true`.
+pub(super) fn segments_for_chord_deviation_a(
+    radius: f64,
+    arc_range: f64,
+    deflection: f64,
+    angular_tol: f64,
+    apply_curvature_floor: bool,
+) -> usize {
+    brepkit_math::chord::segments_for_chord_deviation_with_angle(
+        radius,
+        arc_range,
+        deflection,
+        angular_tol,
+        0.0,
+        apply_curvature_floor,
+    )
+}
+
+/// Compute orthogonal axes for a plane given its normal.
+///
+/// Falls back to identity axes if the normal is degenerate (should not
+/// happen for valid face data).
+pub(super) fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
+    let up = if normal.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let u_axis = normal
+        .cross(up)
+        .normalize()
+        .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+    let v_axis = normal
+        .cross(u_axis)
+        .normalize()
+        .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+    (u_axis, v_axis)
+}
+
+/// Compute the number of sample points for an edge based on deflection.
+///
+/// Uses edge length and curvature to determine sampling density.
+///
+/// `circle_floor` selects whether a circular edge keeps the curvature floor.
+/// Display callers pass `false` (the chord count is exact for a constant-
+/// curvature circle); the boolean mesh-fallback passes `true` because its
+/// co-refinement robustness depends on the denser floored sampling.
+pub(super) fn edge_sample_count(
+    topo: &Topology,
+    edge: &brepkit_topology::edge::Edge,
+    deflection: f64,
+    angular_tol: f64,
+    circle_floor: bool,
+) -> usize {
+    use brepkit_topology::edge::EdgeCurve;
+
+    match edge.curve() {
+        EdgeCurve::Line => 2,
+        EdgeCurve::Circle(c) => {
+            let radius = c.radius();
+            // Use the same segments_for_chord_deviation formula that
+            // tessellate_analytic uses for the grid density. This ensures
+            // edge sample points align with the analytic grid boundary,
+            // allowing the snap path to achieve watertight stitching.
+            if let Ok((t_start, t_end)) = circle_param_range(topo, edge, c) {
+                let arc_range = (t_end - t_start).abs();
+                segments_for_chord_deviation_a(
+                    radius,
+                    arc_range,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                ) + 1
+            } else {
+                segments_for_chord_deviation_a(
+                    radius,
+                    std::f64::consts::TAU,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                ) + 1
+            }
+        }
+        EdgeCurve::Ellipse(ellipse) => {
+            // Density is driven by the LARGEST radius of curvature (a^2/b, at the
+            // minor-axis ends). Under uniform-parameter sampling the per-segment
+            // chord deviation is set by how far the parameter sweeps in arc length,
+            // which peaks where curvature is lowest; the small-radius criterion
+            // (b^2/a) satisfies pointwise sag but lets the integrated (area/volume)
+            // error grow ~15x. Using a^2/b keeps both bounded.
+            let a = ellipse.semi_major();
+            let b = ellipse.semi_minor();
+            let max_curv_radius = a * a / b;
+            let arc_range = if edge.is_closed() {
+                std::f64::consts::TAU
+            } else if let (Ok(sp), Ok(ep)) = (
+                topo.vertex(edge.start())
+                    .map(brepkit_topology::vertex::Vertex::point),
+                topo.vertex(edge.end())
+                    .map(brepkit_topology::vertex::Vertex::point),
+            ) {
+                let ts = ellipse.project(sp);
+                let mut te = ellipse.project(ep);
+                if te <= ts {
+                    te += std::f64::consts::TAU;
+                }
+                te - ts
+            } else {
+                std::f64::consts::TAU
+            };
+            segments_for_chord_deviation_a(
+                max_curv_radius,
+                arc_range,
+                deflection,
+                angular_tol,
+                true,
+            )
+            .min(4096)
+        }
+        EdgeCurve::NurbsCurve(nurbs) => {
+            // Adaptive: coarse-pass deviation measurement, then refine if the
+            // chord sag OR the per-segment turn exceeds tolerance.
+            // Endpoint-trimmed convention: a section edge can be a validated
+            // sub-span of its stored curve; measuring the FULL knot domain
+            // would size (and later sample) the whole parent curve.
+            let (u0, u1) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
+                (Ok(sv), Ok(ev)) => edge.curve().domain_with_endpoints(sv.point(), ev.point()),
+                _ => nurbs.domain(),
+            };
+            let n_spans = nurbs
+                .control_points()
+                .len()
+                .saturating_sub(nurbs.degree())
+                .max(1);
+            let coarse_n = (n_spans * 4).clamp(8, 128);
+            let max_dev = measure_max_chord_deviation(nurbs, u0, u1, coarse_n);
+            let max_turn = measure_max_segment_turn(nurbs, u0, u1, coarse_n);
+            let sag_ok = max_dev <= deflection;
+            let turn_ok = angular_tol <= 0.0 || max_turn <= angular_tol * 0.5;
+            if sag_ok && turn_ok {
+                coarse_n
+            } else {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let sag_n = if sag_ok {
+                    coarse_n
+                } else {
+                    ((coarse_n as f64) * (max_dev / deflection).sqrt()).ceil() as usize
+                };
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let turn_n = if turn_ok {
+                    coarse_n
+                } else {
+                    ((coarse_n as f64) * (max_turn / (angular_tol * 0.5))).ceil() as usize
+                };
+                sag_n.max(turn_n).clamp(8, 4096)
+            }
+        }
+    }
+}
+
+/// Measure the maximum midpoint chord deviation across `n` segments of a NURBS curve.
+///
+/// For each segment `[u_i, u_{i+1}]`, evaluates the curve at the midpoint and
+/// measures its distance from the chord midpoint. Returns the maximum deviation.
+pub(super) fn measure_max_chord_deviation(
+    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+    u0: f64,
+    u1: f64,
+    n: usize,
+) -> f64 {
+    let mut max_dev: f64 = 0.0;
+    #[allow(clippy::cast_precision_loss)]
+    for i in 0..n {
+        let t0 = u0 + (u1 - u0) * (i as f64) / (n as f64);
+        let t1 = u0 + (u1 - u0) * ((i + 1) as f64) / (n as f64);
+        let p0 = nurbs.evaluate(t0);
+        let p1 = nurbs.evaluate(t1);
+        let mid_chord = Point3::new(
+            (p0.x() + p1.x()) * 0.5,
+            (p0.y() + p1.y()) * 0.5,
+            (p0.z() + p1.z()) * 0.5,
+        );
+        let mid_curve = nurbs.evaluate((t0 + t1) * 0.5);
+        let dev = (mid_curve - mid_chord).length();
+        max_dev = max_dev.max(dev);
+    }
+    max_dev
+}
+
+/// Measure the maximum tangent turn angle (radians) at segment midpoints of a
+/// NURBS curve sampled over `n` uniform segments.
+///
+/// For each segment the curve tangent is compared at the segment endpoints; the
+/// angle between them is the swing across that segment.
+pub(super) fn measure_max_segment_turn(
+    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+    u0: f64,
+    u1: f64,
+    n: usize,
+) -> f64 {
+    let mut max_turn: f64 = 0.0;
+    #[allow(clippy::cast_precision_loss)]
+    for i in 0..n {
+        let t0 = u0 + (u1 - u0) * (i as f64) / (n as f64);
+        let t1 = u0 + (u1 - u0) * ((i + 1) as f64) / (n as f64);
+        if let (Ok(a), Ok(b)) = (nurbs.tangent(t0), nurbs.tangent(t1)) {
+            let dot = a.dot(b).clamp(-1.0, 1.0);
+            max_turn = max_turn.max(dot.acos());
+        }
+    }
+    max_turn
+}
+
+/// Get the parameter range for a circle edge.
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails.
+pub(super) fn circle_param_range(
+    topo: &Topology,
+    edge: &brepkit_topology::edge::Edge,
+    circle: &brepkit_math::curves::Circle3D,
+) -> Result<(f64, f64), crate::OperationsError> {
+    if edge.is_closed() {
+        Ok((0.0, std::f64::consts::TAU))
+    } else {
+        let sp = topo.vertex(edge.start())?.point();
+        let ep = topo.vertex(edge.end())?.point();
+        let ts = circle.project(sp);
+        let mut te = circle.project(ep);
+        if te <= ts {
+            te += std::f64::consts::TAU;
+        }
+        Ok((ts, te))
+    }
+}
+
+/// Sample an edge curve to produce a list of 3D points (start to end).
+///
+/// The sampling density is driven by `deflection`. For a `Line`, only the
+/// two endpoints are returned. For curves, the point count is proportional
+/// to curvature. `circle_floor` is forwarded to [`edge_sample_count`].
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails for edge endpoints.
+pub(super) fn sample_edge(
+    topo: &Topology,
+    edge: &brepkit_topology::edge::Edge,
+    deflection: f64,
+    angular_tol: f64,
+    circle_floor: bool,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    use brepkit_geometry::sampling::sample_uniform;
+    use brepkit_topology::edge::EdgeCurve;
+
+    let n = edge_sample_count(topo, edge, deflection, angular_tol, circle_floor);
+
+    let points = match edge.curve() {
+        EdgeCurve::Line => {
+            vec![
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+            ]
+        }
+        EdgeCurve::Circle(circle) => {
+            let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
+            sample_uniform(circle, t_start, t_end, n)
+        }
+        EdgeCurve::Ellipse(ellipse) => {
+            let (t_start, t_end) = if edge.is_closed() {
+                (0.0, std::f64::consts::TAU)
+            } else {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let ts = ellipse.project(sp);
+                let mut te = ellipse.project(ep);
+                if te <= ts {
+                    te += std::f64::consts::TAU;
+                }
+                (ts, te)
+            };
+            sample_uniform(ellipse, t_start, t_end, n)
+        }
+        EdgeCurve::NurbsCurve(nurbs) => {
+            // Endpoint-trimmed convention: a validated sub-span samples only
+            // the edge's own piece of the stored curve (already start→end);
+            // sampling the full knot domain traces the whole parent section
+            // curve and rips a crack along the un-shared part.
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (u0, u1) = nurbs.domain();
+            let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
+            let mut pts = sample_uniform(nurbs, t0, t1, n);
+            // Normalize to edge (start→end vertex) order so every consumer's
+            // `is_forward` walk holds even for section edges whose stored
+            // curve runs end→start. Sub-spans are already endpoint-ordered.
+            if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs)? {
+                pts.reverse();
+            }
+            pts
+        }
+    };
+
+    // A fitted curve's evaluated end can miss its vertex by the fit error (a
+    // marched section's end sits ~1e-8 off the pave, a fillet's contact curve
+    // 1.4e-6 off its corner), enough to land in another merge cell than the
+    // neighbouring edge's end and leave a sliver an exporter collapses: its
+    // ends are the vertices every edge meeting there shares. A hundredth of
+    // the deflection keeps the mesh within its own error. Its samples already
+    // run start to end; the analytic curves' ends are exact.
+    if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+        return Ok(points);
+    }
+    let snap = (1e-2 * deflection).max(1e-6);
+    let mut points = points;
+    let (start, end) = (
+        topo.vertex(edge.start())?.point(),
+        topo.vertex(edge.end())?.point(),
+    );
+    if let Some(first) = points.first_mut()
+        && (*first - start).length() < snap
+    {
+        *first = start;
+    }
+    if let Some(last) = points.last_mut()
+        && (*last - end).length() < snap
+    {
+        *last = end;
+    }
+
+    Ok(points)
+}
+
+/// Whether an open NURBS edge's stored curve runs from the edge's END vertex
+/// back to its START vertex. GFA section edges can store traversal-order
+/// vertices over an unreversed curve, so a sampler that walks the knot domain
+/// trusting `oe.is_forward()` alone folds the boundary polyline back on
+/// itself (a double-covered strip along the shared section curve).
+pub(super) fn nurbs_runs_end_to_start(
+    topo: &Topology,
+    edge: &brepkit_topology::edge::Edge,
+    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+) -> Result<bool, crate::OperationsError> {
+    if edge.start() == edge.end() {
+        return Ok(false);
+    }
+    let s = topo.vertex(edge.start())?.point();
+    let e = topo.vertex(edge.end())?.point();
+    let (u0, u1) = nurbs.domain();
+    let p0 = nurbs.evaluate(u0);
+    let p1 = nurbs.evaluate(u1);
+    let aligned = (p0 - s).length() + (p1 - e).length();
+    let flipped = (p0 - e).length() + (p1 - s).length();
+    Ok(flipped < aligned)
+}
+
+/// Sample a wire into a list of 3D positions, skipping consecutive duplicates.
+pub(super) fn sample_wire_positions(
+    topo: &Topology,
+    wire: &brepkit_topology::wire::Wire,
+    tol: f64,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    use brepkit_topology::edge::EdgeCurve;
+
+    let mut positions = Vec::new();
+
+    let sample_curve_into = |evaluate: &dyn Fn(f64) -> Point3,
+                             t_for_index: &dyn Fn(usize) -> f64,
+                             n_samples: usize,
+                             forward: bool,
+                             positions: &mut Vec<Point3>| {
+        let indices: Box<dyn Iterator<Item = usize>> = if forward {
+            Box::new(0..n_samples)
+        } else {
+            // Reversed traversal walks t_end -> t_start; the [traversal
+            // start, traversal end) convention therefore needs indices
+            // n..=1, not (0..n).rev(): excluding t_end here dropped the
+            // junction vertex with the PREVIOUS edge (nobody else supplies
+            // it), and the CDT outline then shortcut the polygon corner
+            // with a chord whose area bite scales with the neighbour
+            // edge's length. t_start is excluded instead - the next edge
+            // supplies it, same as the forward case.
+            Box::new((1..=n_samples).rev())
+        };
+        for i in indices {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t_for_index(i);
+            let pt = evaluate(t);
+            if positions
+                .last()
+                .is_none_or(|p: &Point3| (*p - pt).length() > tol)
+            {
+                positions.push(pt);
+            }
+        }
+    };
+
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                let (t_start, t_end) = if edge.is_closed() {
+                    (0.0, std::f64::consts::TAU)
+                } else {
+                    let sp = topo.vertex(edge.start())?.point();
+                    let ep = topo.vertex(edge.end())?.point();
+                    edge.curve().domain_with_endpoints(sp, ep)
+                };
+                let arc_range = (t_end - t_start).abs();
+                let n_samples = segments_for_chord_deviation_a(
+                    circle.radius(),
+                    arc_range,
+                    deflection,
+                    angular_tol,
+                    false,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve_into(
+                    &|t| circle.evaluate(t),
+                    &|i| t_start + (t_end - t_start) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
+            EdgeCurve::Ellipse(ellipse) => {
+                let (t_start, t_end) = if edge.is_closed() {
+                    (0.0, std::f64::consts::TAU)
+                } else {
+                    let sp = topo.vertex(edge.start())?.point();
+                    let ep = topo.vertex(edge.end())?.point();
+                    let ts = ellipse.project(sp);
+                    let mut te = ellipse.project(ep);
+                    if te <= ts {
+                        te += std::f64::consts::TAU;
+                    }
+                    (ts, te)
+                };
+                let arc_range = t_end - t_start;
+                // Largest radius of curvature (a^2/b) governs uniform-parameter
+                // sampling density; see edge_sample_count for the rationale.
+                let max_curv_radius =
+                    ellipse.semi_major() * ellipse.semi_major() / ellipse.semi_minor();
+                let n_samples = segments_for_chord_deviation_a(
+                    max_curv_radius,
+                    arc_range,
+                    deflection,
+                    angular_tol,
+                    true,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve_into(
+                    &|t| ellipse.evaluate(t),
+                    &|i| t_start + (t_end - t_start) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
+            EdgeCurve::NurbsCurve(nurbs) => {
+                // Endpoint-trimmed convention: sample only the edge's own
+                // sub-span of the stored curve (see `sample_edge`).
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (u0, u1) = edge.curve().domain_with_endpoints(sp, ep);
+                let full = nurbs.domain();
+                let is_subspan = (u0 - full.0).abs() > 1e-12 || (u1 - full.1).abs() > 1e-12;
+                let n_spans = nurbs
+                    .control_points()
+                    .len()
+                    .saturating_sub(nurbs.degree())
+                    .max(1);
+                let coarse_n = (n_spans * 4).clamp(8, 128);
+                let max_dev = measure_max_chord_deviation(nurbs, u0, u1, coarse_n);
+                let max_turn = measure_max_segment_turn(nurbs, u0, u1, coarse_n);
+                let sag_ok = max_dev <= deflection;
+                let turn_ok = angular_tol <= 0.0 || max_turn <= angular_tol * 0.5;
+                #[allow(clippy::cast_sign_loss)]
+                let n_samples = if sag_ok && turn_ok {
+                    coarse_n
+                } else {
+                    let sag_n = if sag_ok {
+                        coarse_n
+                    } else {
+                        ((coarse_n as f64) * (max_dev / deflection).sqrt()).ceil() as usize
+                    };
+                    let turn_n = if turn_ok {
+                        coarse_n
+                    } else {
+                        ((coarse_n as f64) * (max_turn / (angular_tol * 0.5))).ceil() as usize
+                    };
+                    sag_n.max(turn_n)
+                }
+                .clamp(8, 4096);
+                let forward = if is_subspan {
+                    // Sub-spans are already endpoint-ordered start→end.
+                    oe.is_forward()
+                } else {
+                    oe.is_forward() != nurbs_runs_end_to_start(topo, edge, nurbs)?
+                };
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve_into(
+                    &|t| nurbs.evaluate(t),
+                    &|i| u0 + (u1 - u0) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    forward,
+                    &mut positions,
+                );
+            }
+            EdgeCurve::Line => {
+                let vid = if oe.is_forward() {
+                    edge.start()
+                } else {
+                    edge.end()
+                };
+                let pt = topo.vertex(vid)?.point();
+                if positions
+                    .last()
+                    .is_none_or(|p: &Point3| (*p - pt).length() > tol)
+                {
+                    positions.push(pt);
+                }
+            }
+        }
+    }
+
+    if positions.len() > 2
+        && let (Some(first), Some(last)) = (positions.first(), positions.last())
+        && (*last - *first).length() < tol
+    {
+        positions.pop();
+    }
+
+    Ok(positions)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use brepkit_math::nurbs::curve::NurbsCurve;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::vertex::Vertex;
+
+    #[test]
+    fn a_fitted_edge_meshes_to_its_vertices() {
+        let mut topo = Topology::new();
+        let (a, b) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        // The curve's end misses its vertex by a fillet contact curve's fit
+        // error.
+        let curve = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![a, Point3::new(1.0, 0.0, 1.4e-6)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let (va, vb) = (
+            topo.add_vertex(Vertex::new(a, 1e-7)),
+            topo.add_vertex(Vertex::new(b, 1e-7)),
+        );
+        let edge = topo.add_edge(Edge::new(va, vb, EdgeCurve::NurbsCurve(curve)));
+        let points = sample_edge(&topo, topo.edge(edge).unwrap(), 0.01, 0.3, false).unwrap();
+        assert_eq!((points.first(), points.last()), (Some(&a), Some(&b)));
+    }
+}

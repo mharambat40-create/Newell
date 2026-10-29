@@ -491,6 +491,13 @@ pub struct NewellSurfaceResult {
     pub outputs: Vec<NewellShapeKey>,
     pub changed_targets: Vec<usize>,
 }
+#[derive(Clone)]
+struct DomainBand {
+    piece: crate::surface::SweepDomainPiece,
+    tool: bool,
+    owners: std::collections::BTreeSet<usize>,
+    common: std::collections::BTreeSet<usize>,
+}
 impl NewellGeometry {
     fn line_surface_groups(
         &self,
@@ -502,6 +509,14 @@ impl NewellGeometry {
             .ok_or_else(|| operation_error("surface target required"))?;
         let mut result: Vec<PlaneRegions> = Vec::new();
         for id in faces {
+            if !matches!(
+                self.topology.face(*id).map_err(operation_error)?.surface(),
+                brepkit_topology::face::FaceSurface::Plane { .. }
+            ) {
+                return Err(operation_error(
+                    "curved sheet trim requires a verified common-domain route",
+                ));
+            }
             let frame = crate::profile::supporting_frame(&self.topology, *id)?;
             let existing = result
                 .iter()
@@ -567,7 +582,7 @@ impl NewellGeometry {
         targets: &[NewellShapeKey],
         mode: NewellBooleanMode,
     ) -> Result<NewellSurfaceResult, NewellKernelError> {
-        if let Some(result) = self.combine_common_sweeps(tools, targets, mode)? {
+        if let Some(result) = self.combine_partitioned_sweeps(tools, targets, mode)? {
             return Ok(result);
         }
         let mut tool = Vec::new();
@@ -648,165 +663,327 @@ impl NewellGeometry {
             changed_targets: changed,
         })
     }
-    fn combine_common_sweeps(
+    fn domain_recipe(
+        &self,
+        key: NewellShapeKey,
+    ) -> Result<Option<crate::surface::SurfaceDomainRecipe>, NewellKernelError> {
+        use crate::surface::{SurfaceDomainRecipe, SweepDomainPiece, SweepStation};
+        if let Some(recipe) = self.surface_domains.get(&key) {
+            return Ok(Some(recipe.clone()));
+        }
+        let Some(support) = self.surface_recipes.get(&key).copied() else {
+            return Ok(None);
+        };
+        let curves = self.selected_boundary_curves(support.profile, support.boundary)?;
+        Ok(Some(SurfaceDomainRecipe {
+            support,
+            pieces: (0..curves.len())
+                .map(|curve| SweepDomainPiece {
+                    curve,
+                    interval: [0., 1.],
+                    low: SweepStation {
+                        gradient: vector(support.start_gradient),
+                        constant: support.start,
+                    },
+                    high: SweepStation {
+                        gradient: vector(support.end_gradient),
+                        constant: support.end,
+                    },
+                })
+                .collect(),
+        }))
+    }
+    /// Exact arrangement on generated ruled supports. Every switch is a root of
+    /// a rational curve/plane equation; display tessellation is never an input.
+    fn combine_partitioned_sweeps(
         &mut self,
         tools: &[NewellShapeKey],
         targets: &[NewellShapeKey],
         mode: NewellBooleanMode,
     ) -> Result<Option<NewellSurfaceResult>, NewellKernelError> {
-        let Some(mut tool) = tools
-            .iter()
-            .map(|key| self.surface_recipes.get(key).copied())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(None);
-        };
-        let Some(mut target) = targets
-            .iter()
-            .map(|key| self.surface_recipes.get(key).copied())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(None);
-        };
-        let mut canonical = Vec::<crate::surface::SurfaceSweepRecipe>::new();
-        for recipe in tool.iter_mut().chain(target.iter_mut()) {
-            let mut matched = false;
-            for reference in &canonical {
-                if recipe.same_support(*reference) { matched = true; break; }
-                if let Some((offset, reversed)) = self.equivalent_sweep_support(*reference,*recipe)? {
-                    recipe.profile = reference.profile; recipe.boundary = reference.boundary;
-                    recipe.start += offset; recipe.end += offset; recipe.reversed ^= reversed;
-                    matched = true; break;
+        use crate::surface::{SweepDomainPiece, SweepStation};
+        let mut input = Vec::new();
+        for key in tools.iter().chain(targets) {
+            let Some(recipe) = self.domain_recipe(*key)? else {
+                return Ok(None);
+            };
+            input.push(recipe);
+        }
+        let mut templates = Vec::<crate::surface::SurfaceSweepRecipe>::new();
+        for recipe in &mut input {
+            self.check_cancelled()?;
+            let mut canonical = None;
+            for reference in &templates {
+                if recipe.support.same_support(*reference) {
+                    canonical = Some((*reference, 0., false));
+                    break;
+                }
+                if let Some((offset, reverse)) =
+                    self.equivalent_sweep_support(*reference, recipe.support)?
+                {
+                    canonical = Some((*reference, offset, reverse));
+                    break;
                 }
             }
-            if !matched { canonical.push(*recipe); }
+            if let Some((reference, offset, reverse)) = canonical {
+                let count = self
+                    .selected_boundary_curves(reference.profile, reference.boundary)?
+                    .len();
+                for piece in &mut recipe.pieces {
+                    for station in [&mut piece.low, &mut piece.high] {
+                        station.constant +=
+                            offset * (1. + station.gradient.dot(vector(reference.direction)));
+                    }
+                    if reverse {
+                        piece.curve = count - 1 - piece.curve;
+                        piece.interval = [1. - piece.interval[1], 1. - piece.interval[0]];
+                    }
+                }
+                recipe.support = reference;
+            } else {
+                templates.push(recipe.support);
+            }
         }
-        let Some(first) = tool.first().copied() else {
+        if templates.is_empty() {
             return Err(operation_error("missing surface tool"));
-        };
-        // Different wires of one valid source face sweep disjoint supports. For edges,
-        // use this route only when the complete generating occurrence is identical.
-        if tool.iter().chain(&target).any(|recipe| {
-            recipe.profile != first.profile
-                || recipe.direction != first.direction
-                || (!recipe.same_support(first)
-                    && !matches!(
-                        (recipe.boundary, first.boundary),
+        }
+        let mut bounds = Vec::new();
+        for recipe in &input {
+            let curves =
+                self.selected_boundary_curves(recipe.support.profile, recipe.support.boundary)?;
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for piece in &recipe.pieces {
+                let curve = &curves[piece.curve];
+                let (a, b) = curve.domain();
+                let curve = crate::termination::trimmed_curve(
+                    curve,
+                    a + (b - a) * piece.interval[0],
+                    a + (b - a) * piece.interval[1],
+                )?;
+                for p in curve.control_points() {
+                    for station in [piece.low, piece.high] {
+                        let p = station.point(*p, vector(recipe.support.direction));
+                        for (axis, value) in [p.x(), p.y(), p.z()].iter().enumerate() {
+                            lo[axis] = lo[axis].min(*value);
+                            hi[axis] = hi[axis].max(*value);
+                        }
+                    }
+                }
+            }
+            bounds.push((lo, hi));
+        }
+        for (i, a) in input.iter().enumerate() {
+            for (j, b) in input.iter().enumerate().skip(i + 1) {
+                if a.support.same_support(b.support) {
+                    continue;
+                }
+                if a.support.profile == b.support.profile
+                    && a.support.direction == b.support.direction
+                    && matches!(
+                        (a.support.boundary, b.support.boundary),
                         (
                             crate::NewellBoundary::Wire(_),
                             crate::NewellBoundary::Wire(_)
                         )
-                    ))
-        }) {
-            return Ok(None);
-        }
-        let mut templates = Vec::new();
-        for recipe in tool.iter().chain(&target) {
-            if !templates
-                .iter()
-                .any(|other: &crate::surface::SurfaceSweepRecipe| other.same_support(*recipe))
-            {
-                templates.push(*recipe);
+                    )
+                {
+                    continue;
+                }
+                // Disjoint exact control hull bounds are a culling certificate, not
+                // replacement model geometry. Unknown overlaps retain the general
+                // planar route and must never be silently called disjoint.
+                if (0..3).any(|axis| {
+                    bounds[i].1[axis] < bounds[j].0[axis] - EPS
+                        || bounds[j].1[axis] < bounds[i].0[axis] - EPS
+                }) {
+                    continue;
+                }
+                return Ok(None);
             }
         }
-        let mut changed = std::collections::BTreeSet::new();
         let mut outputs = Vec::new();
-        for template in templates {
-            let cutters: Vec<_> = tool
-                .iter()
-                .filter(|recipe| recipe.same_support(template))
-                .map(|recipe| (recipe.start, recipe.end))
-                .collect();
-            let subjects: Vec<_> = target
+        let mut changed = std::collections::BTreeSet::new();
+        for support in templates {
+            self.check_cancelled()?;
+            let curves = self.selected_boundary_curves(support.profile, support.boundary)?;
+            let frame = self
+                .profile_faces(support.profile.0)?
+                .into_iter()
+                .find(|f| f.face == support.profile.1)
+                .ok_or_else(|| operation_error("missing sweep support"))?
+                .frame;
+            let relevant: Vec<_> = input
                 .iter()
                 .enumerate()
-                .filter(|(_, recipe)| recipe.same_support(template))
-                .map(|(index, recipe)| (index, *recipe))
+                .filter(|(_, r)| r.support.same_support(support))
                 .collect();
-            let mut spans = Vec::new();
-            match mode {
-                NewellBooleanMode::Remove => {
-                    for (index, subject) in subjects {
-                        let mut remaining = vec![(subject.start, subject.end)];
-                        for (low, high) in &cutters {
-                            let mut next = Vec::new();
-                            for (a, b) in remaining {
-                                if b.min(*high) - a.max(*low) > EPS {
-                                    changed.insert(index);
-                                    if *low > a + EPS {
-                                        next.push((a, low.min(b)));
-                                    }
-                                    if *high < b - EPS {
-                                        next.push((high.max(a), b));
-                                    }
-                                } else {
-                                    next.push((a, b));
-                                }
-                            }
-                            remaining = next;
-                        }
-                        if changed.contains(&index) {
-                            spans.extend(remaining);
-                        }
+            let mut bands = Vec::<DomainBand>::new();
+            for (curve_index, curve) in curves.iter().enumerate() {
+                self.check_cancelled()?;
+                let (lo, hi) = curve.domain();
+                let pieces: Vec<_> = relevant
+                    .iter()
+                    .flat_map(|(owner, r)| {
+                        r.pieces
+                            .iter()
+                            .filter(move |p| p.curve == curve_index)
+                            .map(move |p| (*owner, *p))
+                    })
+                    .collect();
+                let stations: Vec<_> = pieces.iter().flat_map(|(_, p)| [p.low, p.high]).collect();
+                let mut breaks = vec![0., 1.];
+                breaks.extend(pieces.iter().flat_map(|(_, p)| p.interval));
+                for (i, a) in stations.iter().enumerate() {
+                    self.check_cancelled()?;
+                    for b in &stations[i + 1..] {
+                        let diff = SweepStation {
+                            gradient: a.gradient - b.gradient,
+                            constant: a.constant - b.constant,
+                        };
+                        breaks.extend(
+                            self.side_crossings(curve, frame, diff)?
+                                .into_iter()
+                                .map(|t| (t - lo) / (hi - lo)),
+                        );
                     }
                 }
-                NewellBooleanMode::Add => {
-                    let mut intervals: Vec<_> =
-                        cutters
+                breaks.sort_by(f64::total_cmp);
+                breaks.dedup_by(|a, b| (*a - *b).abs() <= 1e-11);
+                for interval in breaks.windows(2) {
+                    self.check_cancelled()?;
+                    if interval[1] - interval[0] <= 1e-12 {
+                        continue;
+                    }
+                    let middle = (interval[0] + interval[1]) * 0.5;
+                    let part = crate::termination::trimmed_curve(
+                        curve,
+                        lo + (hi - lo) * interval[0],
+                        lo + (hi - lo) * interval[1],
+                    )?;
+                    let active: Vec<_> = pieces
+                        .iter()
+                        .filter(|(_, p)| p.interval[0] <= middle && middle <= p.interval[1])
+                        .collect();
+                    let point = curve.evaluate(lo + (hi - lo) * middle);
+                    let mut endpoints: Vec<_> =
+                        active.iter().flat_map(|(_, p)| [p.low, p.high]).collect();
+                    endpoints.sort_by(|a, b| a.value(point).total_cmp(&b.value(point)));
+                    endpoints.dedup_by(|a, b| (a.value(point) - b.value(point)).abs() <= 1e-10);
+                    for pair in endpoints.windows(2) {
+                        let diff = SweepStation {
+                            gradient: pair[0].gradient - pair[1].gradient,
+                            constant: pair[0].constant - pair[1].constant,
+                        };
+                        if crate::termination::curve_station_max(&part, diff)? > 1e-7 {
+                            return Err(operation_error("uncertified sweep domain ordering"));
+                        }
+                    }
+                    let mut cells = Vec::new();
+                    for pair in endpoints.windows(2) {
+                        let t = (pair[0].value(point) + pair[1].value(point)) * 0.5;
+                        if pair[1].value(point) - pair[0].value(point) <= 1e-10 {
+                            continue;
+                        }
+                        let within = |p: &SweepDomainPiece| {
+                            p.low.value(point) < t && t < p.high.value(point)
+                        };
+                        let tool = active.iter().any(|(i, p)| *i < tools.len() && within(p));
+                        let owners: std::collections::BTreeSet<_> = active
                             .iter()
-                            .map(|(a, b)| (*a, *b, None, true))
-                            .chain(subjects.iter().map(|(index, recipe)| {
-                                (recipe.start, recipe.end, Some(*index), false)
-                            }))
+                            .filter(|(i, p)| *i >= tools.len() && within(p))
+                            .map(|(i, _)| *i - tools.len())
                             .collect();
-                    intervals.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-                    let mut cursor = 0;
-                    while cursor < intervals.len() {
-                        let low = intervals[cursor].0;
-                        let mut high = intervals[cursor].1;
-                        let mut owners = Vec::new();
-                        let mut has_tool = false;
-                        while cursor < intervals.len() && intervals[cursor].0 <= high + EPS {
-                            let entry = intervals[cursor];
-                            high = high.max(entry.1);
-                            has_tool |= entry.3;
-                            if let Some(index) = entry.2 {
-                                owners.push(index);
+                        if tool && !owners.is_empty() && mode == NewellBooleanMode::Remove {
+                            changed.extend(&owners);
+                        }
+                        cells.push((pair[0], pair[1], tool, owners));
+                    }
+                    let owner_sets: Vec<Option<usize>> = if mode == NewellBooleanMode::Add {
+                        vec![None]
+                    } else {
+                        relevant
+                            .iter()
+                            .filter(|(i, _)| *i >= tools.len())
+                            .map(|(i, _)| Some(*i - tools.len()))
+                            .collect()
+                    };
+                    for owner in owner_sets {
+                        let mut current: Option<DomainBand> = None;
+                        for (low, high, tool, owners) in &cells {
+                            let keep = owner.map_or(*tool || !owners.is_empty(), |i| {
+                                !tool && owners.contains(&i)
+                            });
+                            if keep {
+                                if let Some(band) = &mut current {
+                                    band.piece.high = *high;
+                                    band.tool |= *tool;
+                                    band.owners.extend(owners);
+                                    band.common.retain(|i| owners.contains(i));
+                                } else {
+                                    current = Some(DomainBand {
+                                        piece: SweepDomainPiece {
+                                            curve: curve_index,
+                                            interval: [interval[0], interval[1]],
+                                            low: *low,
+                                            high: *high,
+                                        },
+                                        tool: *tool,
+                                        owners: owner.map_or_else(
+                                            || owners.clone(),
+                                            |i| [i].into_iter().collect(),
+                                        ),
+                                        common: owners.clone(),
+                                    });
+                                }
+                            } else if let Some(band) = current.take() {
+                                bands.push(band);
                             }
-                            cursor += 1;
                         }
-                        if !has_tool {
-                            continue;
+                        if let Some(band) = current {
+                            bands.push(band);
                         }
-                        let unchanged = owners.len() == 1
-                            && target[owners[0]].start <= low + EPS
-                            && target[owners[0]].end >= high - EPS;
-                        if unchanged {
-                            continue;
-                        }
-                        changed.extend(owners);
-                        spans.push((low, high));
                     }
                 }
             }
-            let template = target
-                .iter()
-                .copied()
-                .find(|recipe| recipe.same_support(template))
-                .unwrap_or(template);
-            for (start, end) in spans {
-                let (direction, start, end) = if template.reversed {
-                    (template.direction.map(|v| -v), -end, -start)
-                } else {
-                    (template.direction, start, end)
-                };
-                outputs.extend(self.sweep_surface(
-                    template.profile,
-                    template.boundary,
-                    direction,
-                    start,
-                    end,
-                )?);
+            if mode == NewellBooleanMode::Remove {
+                for owner in changed.iter().copied().collect::<Vec<_>>() {
+                    let subset: Vec<_> = bands
+                        .iter()
+                        .filter(|b| b.owners.contains(&owner))
+                        .cloned()
+                        .collect();
+                    for (key, _) in self.assemble_domain_bands(support, &curves, &subset)? {
+                        outputs.push(key);
+                    }
+                }
+            } else {
+                for (key, indices) in self.assemble_domain_bands(support, &curves, &bands)? {
+                    let mut owners = std::collections::BTreeSet::new();
+                    let mut common: Option<std::collections::BTreeSet<usize>> = None;
+                    let mut tool = false;
+                    for i in indices {
+                        tool |= bands[i].tool;
+                        owners.extend(&bands[i].owners);
+                        if let Some(common) = &mut common {
+                            common.retain(|o| bands[i].common.contains(o));
+                        } else {
+                            common = Some(bands[i].common.clone());
+                        }
+                    }
+                    if !tool {
+                        continue;
+                    }
+                    let unchanged = owners.len() == 1
+                        && common
+                            .as_ref()
+                            .is_some_and(|c| c.contains(owners.first().unwrap_or(&usize::MAX)));
+                    if unchanged {
+                        continue;
+                    }
+                    changed.extend(owners);
+                    outputs.push(key);
+                }
             }
         }
         if changed.is_empty() {
@@ -816,6 +993,147 @@ impl NewellGeometry {
             outputs,
             changed_targets: changed.into_iter().collect(),
         }))
+    }
+    fn assemble_domain_bands(
+        &mut self,
+        support: crate::surface::SurfaceSweepRecipe,
+        curves: &[brepkit_math::nurbs::curve::NurbsCurve],
+        bands: &[DomainBand],
+    ) -> Result<Vec<(NewellShapeKey, Vec<usize>)>, NewellKernelError> {
+        use crate::surface::SurfaceDomainRecipe;
+        use std::collections::{BTreeMap, BTreeSet};
+        if bands.is_empty() {
+            return Ok(Vec::new());
+        }
+        let d = vector(support.direction);
+        let mut faces = Vec::new();
+        let mut artificial = Vec::new();
+        for band in bands {
+            self.check_cancelled()?;
+            let curve = &curves[band.piece.curve];
+            let (lo, hi) = curve.domain();
+            let [a, b] = band.piece.interval;
+            let part =
+                crate::termination::trimmed_curve(curve, lo + (hi - lo) * a, lo + (hi - lo) * b)?;
+            let (direction, low, high) = if support.reversed {
+                (
+                    d * (-1.),
+                    crate::surface::SweepStation {
+                        gradient: band.piece.high.gradient * (-1.),
+                        constant: -band.piece.high.constant,
+                    },
+                    crate::surface::SweepStation {
+                        gradient: band.piece.low.gradient * (-1.),
+                        constant: -band.piece.low.constant,
+                    },
+                )
+            } else {
+                (d, band.piece.low, band.piece.high)
+            };
+            faces.push(self.sweep_curve_piece(&part, direction, low, high)?);
+            for t in [a, b] {
+                if t > 1e-11 && t < 1. - 1e-11 {
+                    let p = curve.evaluate(lo + (hi - lo) * t);
+                    artificial.push([band.piece.low.point(p, d), band.piece.high.point(p, d)]);
+                }
+            }
+        }
+        let wire = match support.boundary {
+            crate::NewellBoundary::Wire(w) | crate::NewellBoundary::Edge { wire: w, .. } => w,
+            crate::NewellBoundary::Face => return Err(operation_error("missing domain wire")),
+        };
+        let all = self.weld_sweep_pieces(faces, wire, &artificial)?;
+        let faces = self.shape_faces(all)?;
+        let mut uses = BTreeMap::<_, Vec<usize>>::new();
+        let mut vertices = BTreeMap::<_, BTreeSet<usize>>::new();
+        for (i, id) in faces.iter().enumerate() {
+            let face = self.topology.face(*id).map_err(operation_error)?;
+            for occurrence in self
+                .topology
+                .wire(face.outer_wire())
+                .map_err(operation_error)?
+                .edges()
+            {
+                uses.entry(occurrence.edge()).or_default().push(i);
+                let edge = self
+                    .topology
+                    .edge(occurrence.edge())
+                    .map_err(operation_error)?;
+                for vertex in [edge.start(), edge.end()] {
+                    vertices.entry(vertex).or_default().insert(i);
+                }
+            }
+        }
+        let mut adjacency = vec![BTreeSet::new(); faces.len()];
+        for list in uses.values() {
+            let unique: BTreeSet<_> = list.iter().copied().collect();
+            if list.len() > 2 {
+                return Err(operation_error("nonmanifold domain edge"));
+            }
+            for a in &unique {
+                adjacency[*a].extend(unique.iter().filter(|b| *b != a));
+            }
+        }
+        // A point contact without an incident connecting edge is not a manifold
+        // sheet. A collapsed endpoint of one disk (two curved bounds) is valid.
+        for (vertex, incident) in vertices {
+            let Some(first) = incident.first().copied() else {
+                continue;
+            };
+            let mut reached = BTreeSet::from([first]);
+            let mut work = vec![first];
+            while let Some(i) = work.pop() {
+                for (edge, list) in &uses {
+                    let native = self.topology.edge(*edge).map_err(operation_error)?;
+                    if native.start() != vertex && native.end() != vertex {
+                        continue;
+                    }
+                    if list.contains(&i) {
+                        for j in list {
+                            if reached.insert(*j) {
+                                work.push(*j);
+                            }
+                        }
+                    }
+                }
+            }
+            if !incident.is_subset(&reached) {
+                return Err(operation_error("nonmanifold pinched sheet vertex"));
+            }
+        }
+        let mut pending: BTreeSet<_> = (0..faces.len()).collect();
+        let mut result = Vec::new();
+        while let Some(first) = pending.pop_first() {
+            let mut indices = vec![first];
+            let mut cursor = 0;
+            while cursor < indices.len() {
+                for j in &adjacency[indices[cursor]] {
+                    if pending.remove(j) {
+                        indices.push(*j);
+                    }
+                }
+                cursor += 1;
+            }
+            indices.sort_unstable();
+            let key = if indices.len() == faces.len() {
+                all
+            } else {
+                self.insert_surface(indices.iter().map(|i| faces[*i]).collect())?
+            };
+            self.surface_wire_keys.insert(key, wire);
+            if let Some(seams) = self.surface_seams.get(&all).cloned() {
+                self.surface_seams.insert(key, seams);
+            }
+            self.surface_domains.insert(
+                key,
+                SurfaceDomainRecipe {
+                    support,
+                    pieces: indices.iter().map(|i| bands[*i].piece).collect(),
+                },
+            );
+            result.push((key, indices));
+        }
+        Ok(result)
     }
     pub(crate) fn rebuild_line_surfaces(
         &mut self,
@@ -1011,10 +1329,11 @@ impl NewellGeometry {
                     .set_reversed(true);
             }
         }
-        groups
+        let keys = groups
             .into_iter()
             .map(|faces| self.insert_surface(faces))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        self.order_components(keys)
     }
 }
 

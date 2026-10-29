@@ -1000,8 +1000,9 @@ Button:
 - No additional rendering passes.
 
 The M2.24 StatusBar progress animation remains the only
-authorized animation. M2.25 hover is instantaneous and
-does not constitute an animation.
+authorized UI animation. The focused M3 camera-view transition in §3.7 is a
+camera-pose transition, not a UI hover or decoration animation. M2.25 hover is
+instantaneous and does not constitute an animation.
 
 No other hover visual effects are authorized.
 - **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The approved additions include the tree selection glyph structures of §26 in `docs/ui_design/README_UI.md` and the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness, or state-dependent colour, intensity or alpha levels. The fixed semantic palette of §3.6 is permitted when View > Color is checked; roles are assigned by structural/control semantics, never by focus, selection, press, disabled state, hover or glyph identity. Widget-level inversion remains forbidden; palette selection is global to the window. Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
@@ -1147,7 +1148,7 @@ only for this scope. The decision is recorded in new ADR 0007; prior ADRs are
 preserved as historical records.
 
 - These are window-local navigation graphics, never document entities,
-  construction planes, model selection targets or BrepKIT geometry.
+  construction planes, model entity selection targets or BrepKIT geometry.
 - The origin marker, positive-only dashed reference axes and positive-quadrant
   XY/XZ/YZ reference planes are renderer-owned graphics anchored at world origin
   `(0, 0, 0)`. `newell-render::Scene` derives a uniform world scale from the main
@@ -1161,16 +1162,35 @@ preserved as historical records.
   Invalid/behind-camera/out-of-depth-range origins are omitted, never clamped.
   Their explicit pixel dimensions, plane insets and neutral plane material, as
   well as axis colors, are specified in README_UI.md §41.2. They are excluded
-  from document geometry, picking, history
+  from document geometry, model picking, history
   and model-fitting bounds. The live Features presentation adds a built-in
   Origin folder with seven immutable semantic reference rows; these are separate
-  from operation IDs and Elements, and have no insertion, modeling, selection,
-  visibility or rename actions. Existing folder expansion infrastructure is used. The corner Gizmo remains screen-space and retains only its
+  from operation IDs and Elements. Each `OriginReference` is selectable from
+  either its tree row or projected viewport geometry, with one stable semantic
+  identity shared by both routes. Selection uses the existing modifiers and
+  tree-row selection visual; reference geometry gains no new selection
+  material. A reference hit consumes input before model picking and camera
+  navigation. Resolve overlap in order origin sphere, axes, then planes; within
+  axes/planes choose nearest camera depth and stable order. Faint depth-occluded
+  fragments remain selectable, but clipped or undrawn references do not.
+  Selection expands Origin and minimally scrolls its row into view. References
+  have no insertion, modeling-input, visibility, rename or delete action.
+  Existing folder expansion infrastructure is used. The corner Gizmo remains screen-space and retains only its
   directional stems, caps, rings and labels; it does not duplicate the origin
   marker or reference planes.
 - `newell-app` retains sole mutable scene-camera and input authority.
   `newell-ui` may provide pure fixed geometry/projection/hit mathematics and
   layout values; `newell-render` consumes immutable derived data only.
+- Automatic named-view requests from the navigation cube, Gizmo, and Normal to
+  use a 250 ms smooth ease-in/ease-out transition. The Controller interpolates
+  orientation by shortest-path quaternion slerp and continuously preserves the
+  captured contextual pivot's screen position and camera depth. Projection,
+  apparent zoom and deterministic destination/up rules remain unchanged.
+  Repeated requests begin at the displayed pose. Direct orbit, pan or zoom
+  interrupts without a jump; focus loss or invalid camera/window context
+  cancels. Redraws are scheduled only while a transition is active. Direct
+  pointer navigation remains immediate; no tracking animation or inertia is
+  added.
 - The exact visual/interaction contract is `docs/ui_design/README_UI.md` §41.
   It permits fixed corner-axis colors, matte and translucent shading,
   restrained spatial line fading, beveled cube surfaces, face-local cube labels,
@@ -1281,13 +1301,42 @@ The integration of the `brepkit` kernel must strictly follow the Anti-Corruption
 - **Version Pinning:** Each direct BrepKIT dependency MUST be strictly pinned to an exact version in `Cargo.toml` (for example, `brepkit-operations = "=x.y.z"`). Implicit minor/patch updates are forbidden. The selected M3.1 version is recorded in ADR 0004.
 - **Golden File Validation:** Kernel updates must be validated against "Golden Files" (reference 3D models stored in `tests/fixtures/`). Any update to `brepkit` requires running geometric regression tests to ensure boolean and meshing algorithms remain mathematically consistent with the reference files.
 
+### 5.2 Controlled M5.0 third-party sources (2026-10-29)
+
+The human explicitly approved M5 revision 4 and V0 documentation followed by
+experimental V1–V4 execution. ADR 0009 records this narrow source exception.
+`vendor/faer-0.22.6`, `vendor/brepkit-math-4.2.2` and
+`vendor/brepkit-operations-4.2.2` are third-party dependencies, not Newell-authored
+code or new workspace members. Root Cargo path patches are source-resolution
+directives only; kernel dependency declarations remain isolated and exactly pinned.
+The installed registry and accepted ADR 0004 remain unchanged. Its original
+registry source selection is superseded only for these experimental candidates.
+
+Retain original licenses, notices and published-source provenance. Existing
+upstream unsafe code may be retained unchanged as dependency code; new correction
+and extension code must be safe Rust. No new unsafe block, FFI, C/Fortran build or
+BLAS dependency is authorized. Newell-authored code retains the §5 prohibition
+and workspace `unsafe_code=forbid`. Editing existing upstream unsafe requires
+separate explicit authority, not an interpretation of this exception.
+
+Candidate APIs are non-default, feature-isolated and not selected by production
+call sites. Default behavior requires upstream parity and golden regression
+checks. Experimental vendoring does not authorize production adoption, M5.1,
+external publication, license-policy weakening or unrelated dependency updates.
+
 ## 6. Licensing Standard
 Newell is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version (**SPDX: `AGPL-3.0-or-later`**). The `LICENSE` file contains the full text of AGPL version 3; the project-specific notice below expressly permits later versions.
 
 - **Cargo metadata:** Each applicable `Cargo.toml` package license declaration MUST use `license = "AGPL-3.0-or-later"`.
 - **Changes to licensing:** Agents MUST NOT change the project's licensing terms without explicit human approval. Third-party dependency licenses MUST be checked independently.
 
-**Auditor Rule:** Every `.rs` file MUST begin with the following header:
+Third-party source under the three §5.2 vendor directories retains its actual
+package licenses and original headers (faer MIT; BrepKIT AGPL-3.0-only). Do not
+apply Newell's license declaration or copyright header to those dependency files.
+This scoped exclusion does not change Newell's license or remove third-party
+license/advisory audits.
+
+**Auditor Rule:** Every Newell-authored `.rs` file MUST begin with the following header:
 
 ```rust
 // Newell - Parametric CAD Software

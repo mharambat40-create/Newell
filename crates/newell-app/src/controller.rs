@@ -716,6 +716,7 @@ impl ShellController {
         }
         let mut changed = candidate.set_tree_projection(projection)?;
         changed |= candidate.set_entity_selection(view.selection)?;
+        changed |= candidate.set_origin_selection(view.origin_references)?;
         changed |= candidate.set_selection_fields(&view.fields)?;
         if let Some(rows) = rows {
             changed |= candidate.reconcile_selection_rows(rows)?;

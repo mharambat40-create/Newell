@@ -1,0 +1,63 @@
+[package]
+categories.workspace = true
+description = "CAD modeling operations (booleans, fillets, extrusions) for brepkit"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "brepkit-operations"
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+# Pass-through to brepkit-algo's deterministic work counters, enabled by the
+# complexity-regression scaling guard (`boolean::tests::scaling_*`).
+perf-counters = ["brepkit-algo/perf-counters"]
+
+[dependencies]
+brepkit-algo.workspace = true
+brepkit-blend.workspace = true
+brepkit-check.workspace = true
+brepkit-geometry.workspace = true
+brepkit-heal.workspace = true
+brepkit-math.workspace = true
+brepkit-offset.workspace = true
+brepkit-sketch.workspace = true
+brepkit-topology.workspace = true
+log.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+brepkit-topology = {workspace = true, features = ["test-utils"]}
+criterion.workspace = true
+env_logger.workspace = true
+proptest.workspace = true
+
+[[bench]]
+harness = false
+name = "cad_operations"
+
+[[bench]]
+harness = false
+name = "boolean_perf"
+
+[[bench]]
+harness = false
+name = "compound_cut_perf"
+
+[[bench]]
+harness = false
+name = "fuse_perf"
+
+[[bench]]
+harness = false
+name = "boolean_tracking"
+
+[lints]
+workspace = true

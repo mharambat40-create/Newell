@@ -195,7 +195,14 @@ fn nonconic_sheet_overlap_retains_exact_support_and_uncapped_boundaries() -> Tes
     let a = NewellSurface::sweep_cubic(control, 0., 3.)?;
     let b = NewellSurface::sweep_cubic(control, 1., 4.)?;
     // Independent composite Simpson oracle, using the fixture polynomial derivative.
+    // For q=9-24t+9t²: |q|<=9, |q'|<=24, q''=18.
+    // With r=36+q², r>=36 and the chain rule bounds
+    // |(sqrt(r))''''| < 250_000 on [0,1]. Simpson truncation is
+    // therefore <=250_000/(180*N^4). Sequential positive summation
+    // adds <1e-10 mm rounding error (N*epsilon bound, speed<11).
     let count = 16384;
+    let error_bound = 250_000. / (180. * f64::from(count).powi(4)) + 1e-10;
+    assert!(error_bound < 1e-9);
     let speed = |t: f64| (36. + (9. - 24. * t + 9. * t * t).powi(2)).sqrt();
     let mut integral = speed(0.) + speed(1.);
     for i in 1..count {

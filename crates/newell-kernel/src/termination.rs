@@ -13,6 +13,34 @@ fn invalid(parameter: &'static str) -> NewellKernelError {
     NewellKernelError::InvalidParameter { parameter }
 }
 impl NewellGeometry {
+    /// Orders connected components by exact B-Rep coordinate extrema, then the
+    /// arena's deterministic construction key. Display tessellation is irrelevant.
+    pub(crate) fn order_components(
+        &self,
+        keys: Vec<NewellShapeKey>,
+    ) -> Result<Vec<NewellShapeKey>, NewellKernelError> {
+        let mut ordered = Vec::with_capacity(keys.len());
+        for key in keys {
+            let faces = self.shape_faces(key)?;
+            let mut minimum = [0.; 3];
+            for (axis, coordinate) in minimum.iter_mut().enumerate() {
+                let mut direction = [0.; 3];
+                direction[axis] = -1.;
+                *coordinate = -self.face_set_projection_max(&faces, xyz_vector(direction))?;
+            }
+            ordered.push((minimum, key));
+        }
+        ordered.sort_by(|a, b| {
+            a.0[0]
+                .total_cmp(&b.0[0])
+                .then(a.0[1].total_cmp(&b.0[1]))
+                .then(a.0[2].total_cmp(&b.0[2]))
+                .then(a.1.cmp(&b.1))
+        });
+        Ok(ordered.into_iter().map(|(_, key)| key).collect())
+    }
+}
+impl NewellGeometry {
     fn planar_face(
         &self,
         shape: NewellShapeKey,
@@ -198,10 +226,25 @@ impl NewellGeometry {
                 return Ok(end);
             }
         }
-        match self.curved_through_all_station(profile,crate::NewellBoundary::Face,d,start,targets,true) {
-            Ok(end)=>return Ok(end),
-            Err(NewellKernelError::InvalidParameter{parameter:"ThroughAll curved target needs a certified intersection route"})=>{},
-            Err(error)=>return Err(error),
+        match self.curved_through_all_station(
+            profile,
+            crate::NewellBoundary::Face,
+            d,
+            start,
+            targets,
+            true,
+        ) {
+            Ok(end) => return Ok(end),
+            Err(NewellKernelError::InvalidParameter {
+                parameter: "ThroughAll curved target needs a certified intersection route",
+            }) => {
+                if targets.iter().any(|target| self.is_surface(*target)) {
+                    return Err(invalid(
+                        "ThroughAll curved target needs a certified intersection route",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
         }
         let origin = Vec3::new(frame.origin[0], frame.origin[1], frame.origin[2]);
         let n = Vec3::new(frame.normal[0], frame.normal[1], frame.normal[2]);
@@ -265,12 +308,7 @@ impl NewellGeometry {
                     if normal.cross(n).length() > 1e-10 {
                         continue;
                     }
-                    match self.curved_through_all_station(profile,crate::NewellBoundary::Face,d,start,targets,true) {
-            Ok(end)=>return Ok(end),
-            Err(NewellKernelError::InvalidParameter{parameter:"ThroughAll curved target needs a certified intersection route"})=>{},
-            Err(error)=>return Err(error),
-        }
-        let origin = Vec3::new(frame.origin[0], frame.origin[1], frame.origin[2]);
+                    let origin = Vec3::new(frame.origin[0], frame.origin[1], frame.origin[2]);
                     if (axis.dot(origin) - reference - far).abs() > eps {
                         continue;
                     }
@@ -632,218 +670,1152 @@ fn clip_parameter(
     *high = high.min(a.max(b));
     *high >= *low
 }
-fn coincident_parameterized_curves(a:&brepkit_math::nurbs::curve::NurbsCurve,b:&brepkit_math::nurbs::curve::NurbsCurve,reverse:bool)->Result<bool,NewellKernelError> {
-    use brepkit_math::nurbs::{curve::NurbsCurve,decompose::curve_degree_elevate,knot_ops::curve_knot_insert};
-    let normalize=|curve:&NurbsCurve,reverse:bool|->Result<NurbsCurve,NewellKernelError>{
-        let (lo,hi)=curve.domain();let mut points=curve.control_points().to_vec();let mut weights=curve.weights().to_vec();let mut knots:Vec<_>=curve.knots().iter().map(|k|(k-lo)/(hi-lo)).collect();
-        if reverse {points.reverse();weights.reverse();knots=knots.iter().rev().map(|k|1.-k).collect();}
-        NurbsCurve::new(curve.degree(),knots,points,weights).map_err(operation_error)
+fn coincident_parameterized_curves(
+    a: &brepkit_math::nurbs::curve::NurbsCurve,
+    b: &brepkit_math::nurbs::curve::NurbsCurve,
+    reverse: bool,
+) -> Result<bool, NewellKernelError> {
+    use brepkit_math::nurbs::{
+        curve::NurbsCurve, decompose::curve_degree_elevate, knot_ops::curve_knot_insert,
     };
-    let degree=a.degree().max(b.degree());
-    let mut a=normalize(&curve_degree_elevate(a,degree-a.degree()).map_err(operation_error)?,false)?;
-    let mut b=normalize(&curve_degree_elevate(b,degree-b.degree()).map_err(operation_error)?,reverse)?;
-    let mut knots:Vec<_>=a.knots().iter().chain(b.knots()).copied().filter(|k|*k>0. && *k<1.).collect();knots.sort_by(f64::total_cmp);knots.dedup();
+    let normalize = |curve: &NurbsCurve, reverse: bool| -> Result<NurbsCurve, NewellKernelError> {
+        let (lo, hi) = curve.domain();
+        let mut points = curve.control_points().to_vec();
+        let mut weights = curve.weights().to_vec();
+        let mut knots: Vec<_> = curve.knots().iter().map(|k| (k - lo) / (hi - lo)).collect();
+        if reverse {
+            points.reverse();
+            weights.reverse();
+            knots = knots.iter().rev().map(|k| 1. - k).collect();
+        }
+        NurbsCurve::new(curve.degree(), knots, points, weights).map_err(operation_error)
+    };
+    let degree = a.degree().max(b.degree());
+    let mut a = normalize(
+        &curve_degree_elevate(a, degree - a.degree()).map_err(operation_error)?,
+        false,
+    )?;
+    let mut b = normalize(
+        &curve_degree_elevate(b, degree - b.degree()).map_err(operation_error)?,
+        reverse,
+    )?;
+    let mut knots: Vec<_> = a
+        .knots()
+        .iter()
+        .chain(b.knots())
+        .copied()
+        .filter(|k| *k > 0. && *k < 1.)
+        .collect();
+    knots.sort_by(f64::total_cmp);
+    knots.dedup();
     for knot in knots {
-        let ac=a.knots().iter().filter(|k|**k==knot).count();let bc=b.knots().iter().filter(|k|**k==knot).count();
-        if ac<bc {a=curve_knot_insert(&a,knot,bc-ac).map_err(operation_error)?;}
-        if bc<ac {b=curve_knot_insert(&b,knot,ac-bc).map_err(operation_error)?;}
+        let ac = a.knots().iter().filter(|k| **k == knot).count();
+        let bc = b.knots().iter().filter(|k| **k == knot).count();
+        if ac < bc {
+            a = curve_knot_insert(&a, knot, bc - ac).map_err(operation_error)?;
+        }
+        if bc < ac {
+            b = curve_knot_insert(&b, knot, ac - bc).map_err(operation_error)?;
+        }
     }
-    if a.knots()!=b.knots() || a.control_points().len()!=b.control_points().len(){return Ok(false);}
-    let scale=a.weights()[0]/b.weights()[0];
-    Ok(a.control_points().iter().zip(b.control_points()).zip(a.weights().iter().zip(b.weights())).all(|((a,b),(wa,wb))|(*a-*b).length()<=1e-10 && (*wa-*wb*scale).abs()<=1e-12*wa.abs().max(1.)))
+    if a.knots() != b.knots() || a.control_points().len() != b.control_points().len() {
+        return Ok(false);
+    }
+    let scale = a.weights()[0] / b.weights()[0];
+    Ok(a.control_points()
+        .iter()
+        .zip(b.control_points())
+        .zip(a.weights().iter().zip(b.weights()))
+        .all(|((a, b), (wa, wb))| {
+            (*a - *b).length() <= 1e-10 && (*wa - *wb * scale).abs() <= 1e-12 * wa.abs().max(1.)
+        }))
 }
 
 #[derive(Default)]
-struct CurveIntersections { hits: Vec<[f64;2]>, overlaps: Vec<[f64;4]> }
+struct CurveIntersections {
+    hits: Vec<[f64; 2]>,
+    overlaps: Vec<[f64; 4]>,
+}
 /// Queries exact rational curves by their certified positive-weight control
 /// hulls. This replaces pinned 4.2.2's missed circle/line Bezier-clip hits.
-fn exact_curve_intersections(a:&brepkit_math::nurbs::curve::NurbsCurve,b:&brepkit_math::nurbs::curve::NurbsCurve)->Result<CurveIntersections,NewellKernelError> {
-    use brepkit_math::nurbs::{curve::NurbsCurve,decompose::{curve_to_bezier_segments,curve_degree_elevate},knot_ops::curve_split};
-    fn bounds(curve:&NurbsCurve)->([f64;3],[f64;3]) {
-        let mut low=[f64::INFINITY;3];let mut high=[f64::NEG_INFINITY;3];
-        for p in curve.control_points(){for (i,v) in [p.x(),p.y(),p.z()].into_iter().enumerate(){low[i]=low[i].min(v);high[i]=high[i].max(v);}}(low,high)
+fn exact_curve_intersections(
+    a: &brepkit_math::nurbs::curve::NurbsCurve,
+    b: &brepkit_math::nurbs::curve::NurbsCurve,
+) -> Result<CurveIntersections, NewellKernelError> {
+    use brepkit_math::nurbs::{
+        curve::NurbsCurve,
+        decompose::{curve_degree_elevate, curve_to_bezier_segments},
+        knot_ops::curve_split,
+    };
+    fn bounds(curve: &NurbsCurve) -> ([f64; 3], [f64; 3]) {
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for p in curve.control_points() {
+            for (i, v) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                low[i] = low[i].min(v);
+                high[i] = high[i].max(v);
+            }
+        }
+        (low, high)
     }
-    fn parameter(curve:&NurbsCurve,fraction:f64)->f64 {
-        let (lo,hi)=curve.domain();let weights=curve.weights();let t=fraction*weights[0]/(weights[1]*(1.-fraction)+fraction*weights[0]);lo+(hi-lo)*t
+    fn parameter(curve: &NurbsCurve, fraction: f64) -> f64 {
+        let (lo, hi) = curve.domain();
+        let weights = curve.weights();
+        let t = fraction * weights[0] / (weights[1] * (1. - fraction) + fraction * weights[0]);
+        lo + (hi - lo) * t
     }
-    fn same(a:&NurbsCurve,b:&NurbsCurve,reverse:bool)->Result<bool,NewellKernelError> {
-        let degree=a.degree().max(b.degree());let aa=curve_degree_elevate(a,degree-a.degree()).map_err(operation_error)?;let bb=curve_degree_elevate(b,degree-b.degree()).map_err(operation_error)?;
-        if aa.control_points().len()!=bb.control_points().len(){return Ok(false);}
-        let last=bb.control_points().len()-1;let scale=aa.weights()[0]/bb.weights()[if reverse {last} else {0}];
-        Ok(aa.control_points().iter().zip(aa.weights()).enumerate().all(|(i,(p,w))| {let j=if reverse {last-i} else {i};(*p-bb.control_points()[j]).length()<=1e-10 && (*w-bb.weights()[j]*scale).abs()<=1e-12*w.abs().max(1.)}))
+    fn same(a: &NurbsCurve, b: &NurbsCurve, reverse: bool) -> Result<bool, NewellKernelError> {
+        let degree = a.degree().max(b.degree());
+        let aa = curve_degree_elevate(a, degree - a.degree()).map_err(operation_error)?;
+        let bb = curve_degree_elevate(b, degree - b.degree()).map_err(operation_error)?;
+        if aa.control_points().len() != bb.control_points().len() {
+            return Ok(false);
+        }
+        let last = bb.control_points().len() - 1;
+        let scale = aa.weights()[0] / bb.weights()[if reverse { last } else { 0 }];
+        Ok(aa
+            .control_points()
+            .iter()
+            .zip(aa.weights())
+            .enumerate()
+            .all(|(i, (p, w))| {
+                let j = if reverse { last - i } else { i };
+                (*p - bb.control_points()[j]).length() <= 1e-10
+                    && (*w - bb.weights()[j] * scale).abs() <= 1e-12 * w.abs().max(1.)
+            }))
     }
-    let mut result=CurveIntersections::default();
-    let (a0,a1)=a.domain();let (b0,b1)=b.domain();
-    if coincident_parameterized_curves(a,b,false)? {result.overlaps.push([a0,a1,b0,b1]);return Ok(result);}
-    if coincident_parameterized_curves(a,b,true)? {result.overlaps.push([a0,a1,b1,b0]);return Ok(result);}
-    let mut work=Vec::new();
-    for aa in curve_to_bezier_segments(a).map_err(operation_error)? {for bb in curve_to_bezier_segments(b).map_err(operation_error)? {work.push((aa.clone(),bb,0u32));}}
-    let mut visits=0usize;
-    while let Some((a,b,depth))=work.pop() {
-        visits+=1;if visits>262144 || depth>96 {return Err(invalid("exact curve intersection complexity"));}
-        if a.weights().iter().chain(b.weights()).any(|w|!w.is_finite()||*w<=0.) {return Err(invalid("rational curve bound"));}
-        let (al,ah)=bounds(&a);let (bl,bh)=bounds(&b);
-        if (0..3).any(|i|al[i]>bh[i]+1e-10 || bl[i]>ah[i]+1e-10) {continue;}
-        if a.degree()==1 && b.degree()==1 {
-            let p=a.control_points()[0];let q=b.control_points()[0];let u=a.control_points()[1]-p;let v=b.control_points()[1]-q;let w=q-p;let normal=u.cross(v);let square=normal.dot(normal);
-            if square>1e-24*u.dot(u)*v.dot(v) {
-                let t=w.cross(v).dot(normal)/square;let s=w.cross(u).dot(normal)/square;
-                if (-1e-10..=1.+1e-10).contains(&t) && (-1e-10..=1.+1e-10).contains(&s) && ((p+u*t)-(q+v*s)).length()<=1e-8 {result.hits.push([parameter(&a,t.clamp(0.,1.)),parameter(&b,s.clamp(0.,1.))]);}
-            } else if u.dot(u)>0. && v.dot(v)>0. && w.cross(u).length()<=1e-9*u.length() {
-                let x=w.dot(u)/u.dot(u);let y=(w+v).dot(u)/u.dot(u);let low=x.min(y).max(0.);let high=x.max(y).min(1.);
-                if high>=low {let point_low=p+u*low;let point_high=p+u*high;result.overlaps.push([parameter(&a,low),parameter(&a,high),parameter(&b,((point_low-q).dot(v)/v.dot(v)).clamp(0.,1.)),parameter(&b,((point_high-q).dot(v)/v.dot(v)).clamp(0.,1.))]);}
+    let mut result = CurveIntersections::default();
+    let (a0, a1) = a.domain();
+    let (b0, b1) = b.domain();
+    if coincident_parameterized_curves(a, b, false)? {
+        result.overlaps.push([a0, a1, b0, b1]);
+        return Ok(result);
+    }
+    if coincident_parameterized_curves(a, b, true)? {
+        result.overlaps.push([a0, a1, b1, b0]);
+        return Ok(result);
+    }
+    let mut work = Vec::new();
+    for aa in curve_to_bezier_segments(a).map_err(operation_error)? {
+        for bb in curve_to_bezier_segments(b).map_err(operation_error)? {
+            work.push((aa.clone(), bb, 0u32));
+        }
+    }
+    let mut visits = 0usize;
+    while let Some((a, b, depth)) = work.pop() {
+        visits += 1;
+        if visits > 262144 || depth > 96 {
+            return Err(invalid("exact curve intersection complexity"));
+        }
+        if a.weights()
+            .iter()
+            .chain(b.weights())
+            .any(|w| !w.is_finite() || *w <= 0.)
+        {
+            return Err(invalid("rational curve bound"));
+        }
+        let (al, ah) = bounds(&a);
+        let (bl, bh) = bounds(&b);
+        if (0..3).any(|i| al[i] > bh[i] + 1e-10 || bl[i] > ah[i] + 1e-10) {
+            continue;
+        }
+        if a.degree() == 1 && b.degree() == 1 {
+            let p = a.control_points()[0];
+            let q = b.control_points()[0];
+            let u = a.control_points()[1] - p;
+            let v = b.control_points()[1] - q;
+            let w = q - p;
+            let normal = u.cross(v);
+            let square = normal.dot(normal);
+            if square > 1e-24 * u.dot(u) * v.dot(v) {
+                let t = w.cross(v).dot(normal) / square;
+                let s = w.cross(u).dot(normal) / square;
+                if (-1e-10..=1. + 1e-10).contains(&t)
+                    && (-1e-10..=1. + 1e-10).contains(&s)
+                    && ((p + u * t) - (q + v * s)).length() <= 1e-8
+                {
+                    result.hits.push([
+                        parameter(&a, t.clamp(0., 1.)),
+                        parameter(&b, s.clamp(0., 1.)),
+                    ]);
+                }
+            } else if u.dot(u) > 0. && v.dot(v) > 0. && w.cross(u).length() <= 1e-9 * u.length() {
+                let x = w.dot(u) / u.dot(u);
+                let y = (w + v).dot(u) / u.dot(u);
+                let low = x.min(y).max(0.);
+                let high = x.max(y).min(1.);
+                if high >= low {
+                    let point_low = p + u * low;
+                    let point_high = p + u * high;
+                    result.overlaps.push([
+                        parameter(&a, low),
+                        parameter(&a, high),
+                        parameter(&b, ((point_low - q).dot(v) / v.dot(v)).clamp(0., 1.)),
+                        parameter(&b, ((point_high - q).dot(v) / v.dot(v)).clamp(0., 1.)),
+                    ]);
+                }
             }
             continue;
         }
-        let (a0,a1)=a.domain();let (b0,b1)=b.domain();
-        if same(&a,&b,false)? {result.overlaps.push([a0,a1,b0,b1]);continue;}
-        if same(&a,&b,true)? {result.overlaps.push([a0,a1,b1,b0]);continue;}
-        let ad=(0..3).map(|i|(ah[i]-al[i]).powi(2)).sum::<f64>().sqrt();let bd=(0..3).map(|i|(bh[i]-bl[i]).powi(2)).sum::<f64>().sqrt();
-        if ad.max(bd)<=1e-9 {
-            let ta=a0+(a1-a0)*0.5;let tb=b0+(b1-b0)*0.5;
-            if (a.evaluate(ta)-b.evaluate(tb)).length()<=4e-9 {result.hits.push([ta,tb]);}continue;
+        let (a0, a1) = a.domain();
+        let (b0, b1) = b.domain();
+        if same(&a, &b, false)? {
+            result.overlaps.push([a0, a1, b0, b1]);
+            continue;
         }
-        if ad>=bd {let (left,right)=curve_split(&a,a0+(a1-a0)*0.5).map_err(operation_error)?;work.push((left,b.clone(),depth+1));work.push((right,b,depth+1));}
-        else {let (left,right)=curve_split(&b,b0+(b1-b0)*0.5).map_err(operation_error)?;work.push((a.clone(),left,depth+1));work.push((a,right,depth+1));}
+        if same(&a, &b, true)? {
+            result.overlaps.push([a0, a1, b1, b0]);
+            continue;
+        }
+        let ad = (0..3).map(|i| (ah[i] - al[i]).powi(2)).sum::<f64>().sqrt();
+        let bd = (0..3).map(|i| (bh[i] - bl[i]).powi(2)).sum::<f64>().sqrt();
+        if ad.max(bd) <= 1e-9 {
+            let ta = a0 + (a1 - a0) * 0.5;
+            let tb = b0 + (b1 - b0) * 0.5;
+            if (a.evaluate(ta) - b.evaluate(tb)).length() <= 4e-9 {
+                result.hits.push([ta, tb]);
+            }
+            continue;
+        }
+        if ad >= bd {
+            let (left, right) = curve_split(&a, a0 + (a1 - a0) * 0.5).map_err(operation_error)?;
+            work.push((left, b.clone(), depth + 1));
+            work.push((right, b, depth + 1));
+        } else {
+            let (left, right) = curve_split(&b, b0 + (b1 - b0) * 0.5).map_err(operation_error)?;
+            work.push((a.clone(), left, depth + 1));
+            work.push((a, right, depth + 1));
+        }
     }
-    result.hits.sort_by(|a,b|a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));result.hits.dedup_by(|a,b|(a[0]-b[0]).abs()<=1e-9 && (a[1]-b[1]).abs()<=1e-9);Ok(result)
+    result
+        .hits
+        .sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    result
+        .hits
+        .dedup_by(|a, b| (a[0] - b[0]).abs() <= 1e-9 && (a[1] - b[1]).abs() <= 1e-9);
+    Ok(result)
 }
 
-fn trimmed_curve(curve:&brepkit_math::nurbs::curve::NurbsCurve,lo:f64,hi:f64)->Result<brepkit_math::nurbs::curve::NurbsCurve,NewellKernelError> {
-    let mut result=curve.clone();let (a,b)=curve.domain();
-    if lo>a {result=brepkit_math::nurbs::knot_ops::curve_split(&result,lo).map_err(operation_error)?.1;}
-    if hi<b {result=brepkit_math::nurbs::knot_ops::curve_split(&result,hi).map_err(operation_error)?.0;}Ok(result)
+pub(crate) fn trimmed_curve(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    lo: f64,
+    hi: f64,
+) -> Result<brepkit_math::nurbs::curve::NurbsCurve, NewellKernelError> {
+    let mut result = curve.clone();
+    let (a, b) = curve.domain();
+    if lo > a {
+        result = brepkit_math::nurbs::knot_ops::curve_split(&result, lo)
+            .map_err(operation_error)?
+            .1;
+    }
+    if hi < b {
+        result = brepkit_math::nurbs::knot_ops::curve_split(&result, hi)
+            .map_err(operation_error)?
+            .0;
+    }
+    Ok(result)
 }
-fn curve_station_max(curve:&brepkit_math::nurbs::curve::NurbsCurve,station:crate::surface::SweepStation)->Result<f64,NewellKernelError> {
-    let mut work=vec![(curve.clone(),0u32)];let mut best=f64::NEG_INFINITY;let mut certified=f64::NEG_INFINITY;let mut visits=0usize;
-    while let Some((curve,depth))=work.pop() {
-        visits+=1;if visits>65536||depth>64 {return Err(invalid("curve extremum complexity"));}
-        if curve.weights().iter().any(|w|!w.is_finite()||*w<=0.) {return Err(invalid("rational curve bound"));}
-        let upper=curve.control_points().iter().map(|p|station.value(*p)).fold(f64::NEG_INFINITY,f64::max);
-        let (lo,hi)=curve.domain();let mid=lo+(hi-lo)*0.5;
-        for t in [lo,mid,hi] {best=best.max(station.value(curve.evaluate(t)));}
-        if upper<=best+1e-9 {certified=certified.max(upper);continue;}
-        let (left,right)=brepkit_math::nurbs::knot_ops::curve_split(&curve,mid).map_err(operation_error)?;work.push((left,depth+1));work.push((right,depth+1));
+pub(crate) fn curve_station_max(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    station: crate::surface::SweepStation,
+) -> Result<f64, NewellKernelError> {
+    let mut work = vec![(curve.clone(), 0u32)];
+    let mut best = f64::NEG_INFINITY;
+    let mut certified = f64::NEG_INFINITY;
+    let mut visits = 0usize;
+    while let Some((curve, depth)) = work.pop() {
+        visits += 1;
+        if visits > 65536 || depth > 64 {
+            return Err(invalid("curve extremum complexity"));
+        }
+        if curve.weights().iter().any(|w| !w.is_finite() || *w <= 0.) {
+            return Err(invalid("rational curve bound"));
+        }
+        let upper = curve
+            .control_points()
+            .iter()
+            .map(|p| station.value(*p))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let (lo, hi) = curve.domain();
+        let mid = lo + (hi - lo) * 0.5;
+        for t in [lo, mid, hi] {
+            best = best.max(station.value(curve.evaluate(t)));
+        }
+        if upper <= best + 1e-9 {
+            certified = certified.max(upper);
+            continue;
+        }
+        let (left, right) =
+            brepkit_math::nurbs::knot_ops::curve_split(&curve, mid).map_err(operation_error)?;
+        work.push((left, depth + 1));
+        work.push((right, depth + 1));
     }
     Ok(certified.max(best))
 }
-impl NewellGeometry {
-    fn parallel_sheet_boundaries(&self,face:FaceId,d:Vec3)->Result<Option<(brepkit_math::nurbs::curve::NurbsCurve,brepkit_math::nurbs::curve::NurbsCurve)>,NewellKernelError> {
-        use brepkit_topology::{edge::EdgeCurve,face::FaceSurface};
-        let face=self.topology.face(face).map_err(operation_error)?;
-        if !face.inner_wires().is_empty() {return Ok(None);}
-        match face.surface() {
-            FaceSurface::Nurbs(surface) if surface.degree_v()==1 && surface.control_points().iter().all(|row|row.len()==2)=>{
-                let low:Vec<_>=surface.control_points().iter().map(|row|row[0]).collect();let high:Vec<_>=surface.control_points().iter().map(|row|row[1]).collect();
-                if low.iter().zip(&high).any(|(a,b)|(*b-*a).cross(d).length()>1e-9) {return Ok(None);}
-                let curve=|points:Vec<_>,index|brepkit_math::nurbs::curve::NurbsCurve::new(surface.degree_u(),surface.knots_u().to_vec(),points,surface.weights().iter().map(|row|row[index]).collect()).map_err(operation_error);
-                let low=curve(low,0)?;let high=curve(high,1)?;
-                // A full ruled patch must still have the original four bounds.
-                // Trimmed boolean faces cannot be treated as untrimmed supports.
-                let edges=self.topology.wire(face.outer_wire()).map_err(operation_error)?.edges();
-                if edges.len()!=4 {return Ok(None);}
-                let mut bounds=Vec::new();
-                for occurrence in edges {
-                    let edge=self.topology.edge(occurrence.edge()).map_err(operation_error)?;
-                    if matches!(edge.curve(),EdgeCurve::Line) {continue;}
-                    let a=self.topology.vertex(edge.start()).map_err(operation_error)?.point();let b=self.topology.vertex(edge.end()).map_err(operation_error)?.point();
-                    if let Some(curve)=crate::surface::boundary_curve(edge.curve(),a,b,true)? {bounds.push(curve);}
-                }
-                if bounds.len()!=2 {return Ok(None);}
-                let covered=|a:&brepkit_math::nurbs::curve::NurbsCurve,b:&brepkit_math::nurbs::curve::NurbsCurve|->Result<bool,NewellKernelError>{let hits=exact_curve_intersections(a,b)?;let (lo,hi)=a.domain();let mut intervals:Vec<_>=hits.overlaps.into_iter().map(|p|(p[0].min(p[1]),p[0].max(p[1]))).collect();intervals.sort_by(|a,b|a.0.total_cmp(&b.0));let mut cursor=lo;for (a,b) in intervals {if a>cursor+1e-9 {return Ok(false);}cursor=cursor.max(b);}Ok(cursor>=hi-1e-9)};
-                if !(covered(&low,&bounds[0])? && covered(&high,&bounds[1])? || covered(&low,&bounds[1])? && covered(&high,&bounds[0])?) {return Ok(None);}
-                Ok(Some((low,high)))
-            }
-            FaceSurface::Cylinder(cylinder) if cylinder.axis().cross(d).length()<=1e-12=>{
-                let mut curves=Vec::new();
-                for occurrence in self.topology.wire(face.outer_wire()).map_err(operation_error)?.edges() {
-                    let edge=self.topology.edge(occurrence.edge()).map_err(operation_error)?;if matches!(edge.curve(),EdgeCurve::Line){continue;}
-                    let a=self.topology.vertex(edge.start()).map_err(operation_error)?.point();let b=self.topology.vertex(edge.end()).map_err(operation_error)?.point();
-                    if let Some(curve)=crate::surface::boundary_curve(edge.curve(),a,b,true)? {curves.push(curve);}
-                }
-                if curves.len()==2 {Ok(Some((curves.remove(0),curves.remove(0))))} else {Ok(None)}
-            }
-            _=>Ok(None),
+/// Positive-weight control hull of a source curve in its supporting plane.
+fn control_polygon(mut points: Vec<brepkit_math::vec::Point2>) -> Vec<brepkit_math::vec::Point2> {
+    points.sort_by(|a, b| a.x().total_cmp(&b.x()).then(a.y().total_cmp(&b.y())));
+    points.dedup_by(|a, b| (*a - *b).length() <= 1e-12);
+    if points.len() < 3 {
+        return points;
+    }
+    let cross =
+        |a: brepkit_math::vec::Vec2, b: brepkit_math::vec::Vec2| a.x() * b.y() - a.y() * b.x();
+    let mut lower = Vec::<brepkit_math::vec::Point2>::new();
+    for p in &points {
+        while lower.len() >= 2
+            && cross(
+                lower[lower.len() - 1] - lower[lower.len() - 2],
+                *p - lower[lower.len() - 1],
+            ) <= 0.
+        {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper = Vec::<brepkit_math::vec::Point2>::new();
+    for p in points.iter().rev() {
+        while upper.len() >= 2
+            && cross(
+                upper[upper.len() - 1] - upper[upper.len() - 2],
+                *p - upper[upper.len() - 1],
+            ) <= 0.
+        {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+/// Linear programming bound on the actual target control hull clipped to the
+/// source control polygon's beam. At most two independent projected constraints
+/// can be active; a weight-space vertex therefore uses at most three controls.
+/// Enumerating those vertices is complete, including degenerate line/point hulls.
+fn clipped_hull_station(
+    points: &[brepkit_math::vec::Point3],
+    polygon: &[brepkit_math::vec::Point2],
+    frame: crate::NewellProfileFrame,
+    direction: Vec3,
+    station: crate::surface::SweepStation,
+) -> Option<f64> {
+    use brepkit_math::vec::{Point2, Vec2};
+    if polygon.is_empty() {
+        return None;
+    }
+    let project = |p| crate::boolean::project(frame, p - direction * station.value(p));
+    let projected: Vec<_> = points.iter().map(|p| project(*p)).collect();
+    let dot = |n: Vec2, p: Point2| n.x() * p.x() + n.y() * p.y();
+    let mut planes = Vec::<(Vec2, f64)>::new();
+    if polygon.len() >= 3 {
+        for (a, b) in polygon
+            .iter()
+            .zip(polygon.iter().cycle().skip(1))
+            .take(polygon.len())
+        {
+            let delta = *b - *a;
+            let n = Vec2::new(-delta.y(), delta.x()) * (1. / delta.length());
+            planes.push((n, -dot(n, *a)));
+        }
+    } else if polygon.len() == 2 {
+        let delta = polygon[1] - polygon[0];
+        let u = delta * (1. / delta.length());
+        let n = Vec2::new(-u.y(), u.x());
+        planes.extend([
+            (n, -dot(n, polygon[0])),
+            (n * (-1.), dot(n, polygon[0])),
+            (u, -dot(u, polygon[0])),
+            (u * (-1.), dot(u, polygon[1])),
+        ]);
+    } else {
+        let p = polygon[0];
+        planes.extend([
+            (Vec2::new(1., 0.), -p.x()),
+            (Vec2::new(-1., 0.), p.x()),
+            (Vec2::new(0., 1.), -p.y()),
+            (Vec2::new(0., -1.), p.y()),
+        ]);
+    }
+    let feasible = |p: Point2| planes.iter().all(|(n, c)| dot(*n, p) + c >= -1e-10);
+    let mut best = f64::NEG_INFINITY;
+    for (p, q) in points.iter().zip(&projected) {
+        if feasible(*q) {
+            best = best.max(station.value(*p));
         }
     }
-    fn curved_through_all_station(&self,profile:(NewellShapeKey,u32),boundary:crate::NewellBoundary,d:Vec3,start:f64,targets:&[NewellShapeKey],filled:bool)->Result<f64,NewellKernelError> {
-        use brepkit_math::nurbs::curve::NurbsCurve;
-        use crate::surface::SweepStation as Station;
-        let source_face=self.planar_face(profile.0,profile.1)?;let source_frame=crate::profile::supporting_frame(&self.topology,source_face)?;
-        let curves=self.selected_boundary_curves(profile,boundary)?;let normal=xyz_vector(source_frame.normal);let denominator=normal.dot(d);
-        if denominator.abs()<=1e-12 {return Err(invalid("tangential Along"));}
-        let global=Station{gradient:normal*(1./denominator),constant:-normal.dot(xyz_vector(source_frame.origin))/denominator};
-        let source_trim=self.exact_planar_trim(NewellFaceTarget{shape:profile.0,face:profile.1,clearance:0.})?;
-        let projected=|curve:&NurbsCurve|->Result<NurbsCurve,NewellKernelError>{NurbsCurve::new(curve.degree(),curve.knots().to_vec(),curve.control_points().iter().map(|p|*p-d*global.value(*p)).collect(),curve.weights().to_vec()).map_err(operation_error)};
-        let mut farthest=f64::NEG_INFINITY;let mut unresolved=false;
-        for target in targets {
-            for (ordinal,face) in self.shape_faces(*target)?.into_iter().enumerate() {
-                if matches!(self.topology.face(face).map_err(operation_error)?.surface(),brepkit_topology::face::FaceSurface::Plane{..}) {
-                    let reference=NewellFaceTarget{shape:*target,face:u32::try_from(ordinal).map_err(operation_error)?,clearance:0.};
-                    let trim=self.exact_planar_trim(reference)?;let n=xyz_vector(trim.frame.normal);
-                    if n.dot(d).abs()<=1e-12 {
-                        farthest=farthest.max(self.parallel_plane_chain_hit(&trim,&curves,source_frame,d,start,global)?);
-                        if filled {for curve in trim.loops.iter().flatten() {let hit=projected(curve)?;for (lo,hi) in source_trim.covered_intervals(&hit)? {farthest=farthest.max(curve_station_max(&trimmed_curve(curve,lo,hi)?,global)?);}}}
-                        continue;
+    for i in 0..points.len() {
+        for j in i + 1..points.len() {
+            for (n, c) in &planes {
+                let a = dot(*n, projected[i]) + c;
+                let b = dot(*n, projected[j]) + c;
+                if (a - b).abs() <= 1e-24 {
+                    continue;
+                }
+                let t = a / (a - b);
+                if (0. ..=1.).contains(&t) {
+                    let p = points[i] + (points[j] - points[i]) * t;
+                    if feasible(projected[i] + (projected[j] - projected[i]) * t) {
+                        best = best.max(station.value(p));
                     }
-                    let (station,_)=self.exact_target_station(reference,d,1.)?;
-                    for curve in &curves {
-                        let hit=NurbsCurve::new(curve.degree(),curve.knots().to_vec(),curve.control_points().iter().map(|p|station.point(*p,d)).collect(),curve.weights().to_vec()).map_err(operation_error)?;
-                        for (lo,hi) in trim.covered_intervals(&hit)? {farthest=farthest.max(curve_station_max(&trimmed_curve(curve,lo,hi)?,station)?);}
-                    }
-                    if filled {
-                        for curve in trim.loops.iter().flatten() {let hit=projected(curve)?;for (lo,hi) in source_trim.covered_intervals(&hit)? {farthest=farthest.max(curve_station_max(&trimmed_curve(curve,lo,hi)?,global)?);}}
-                    }
-                } else if let Some((low,high))=self.parallel_sheet_boundaries(face,d)? {
-                    for end in [&low,&high] {
-                        let hit=projected(end)?;
-                        if filled {for (lo,hi) in source_trim.covered_intervals(&hit)? {farthest=farthest.max(curve_station_max(&trimmed_curve(end,lo,hi)?,global)?);}}
-                        for source in &curves {
-                            let intersections=exact_curve_intersections(source,&hit)?;
-                            for pair in intersections.hits {farthest=farthest.max(global.value(end.evaluate(pair[1])));}
-                            for overlap in intersections.overlaps {let (lo,hi)=(overlap[2].min(overlap[3]),overlap[2].max(overlap[3]));farthest=farthest.max(curve_station_max(&trimmed_curve(end,lo,hi)?,global)?);}
-                        }
-                    }
-                } else {unresolved=true;}
+                }
             }
         }
-        if unresolved {return Err(invalid("ThroughAll curved target needs a certified intersection route"));}
-        if !farthest.is_finite() || farthest<=start+1e-7 {return Err(invalid("NoThroughAllHit"));}
-        let scale=curves.iter().flat_map(|curve|curve.control_points()).flat_map(|p|[p.x().abs(),p.y().abs(),p.z().abs()]).fold(farthest.abs(),f64::max);
-        let eps=1e-7_f64.max(1e-10*scale);let end=farthest+(10.*eps).max(1e-6);
-        if !end.is_finite(){return Err(invalid("ThroughAll overflow"));}Ok(end)
+    }
+    let cross = |a: Vec2, b: Vec2| a.x() * b.y() - a.y() * b.x();
+    for i in 0..points.len() {
+        for j in i + 1..points.len() {
+            for k in j + 1..points.len() {
+                let a = projected[j] - projected[i];
+                let b = projected[k] - projected[i];
+                let det = cross(a, b);
+                if det.abs() <= 1e-24 {
+                    continue;
+                }
+                for q in polygon {
+                    let v = *q - projected[i];
+                    let x = cross(v, b) / det;
+                    let y = cross(a, v) / det;
+                    if x >= -1e-12 && y >= -1e-12 && x + y <= 1. + 1e-12 {
+                        best = best.max(station.value(
+                            points[i] + (points[j] - points[i]) * x + (points[k] - points[i]) * y,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    best.is_finite().then_some(best + 1e-11)
+}
+impl NewellGeometry {
+    fn ruled_sheet_boundaries(
+        &self,
+        face: FaceId,
+        parallel: Option<Vec3>,
+    ) -> Result<
+        Option<(
+            brepkit_math::nurbs::curve::NurbsCurve,
+            brepkit_math::nurbs::curve::NurbsCurve,
+        )>,
+        NewellKernelError,
+    > {
+        use brepkit_topology::{edge::EdgeCurve, face::FaceSurface};
+        let face = self.topology.face(face).map_err(operation_error)?;
+        if !face.inner_wires().is_empty() {
+            return Ok(None);
+        }
+        match face.surface() {
+            FaceSurface::Nurbs(surface)
+                if (surface.degree_v() == 1
+                    && surface.control_points().iter().all(|row| row.len() == 2))
+                    || (surface.degree_u() == 1 && surface.control_points().len() == 2) =>
+            {
+                let v_linear = surface.degree_v() == 1
+                    && surface.control_points().iter().all(|row| row.len() == 2);
+                let low: Vec<_> = if v_linear {
+                    surface.control_points().iter().map(|row| row[0]).collect()
+                } else {
+                    surface.control_points()[0].clone()
+                };
+                let high: Vec<_> = if v_linear {
+                    surface.control_points().iter().map(|row| row[1]).collect()
+                } else {
+                    surface.control_points()[1].clone()
+                };
+                if parallel.is_some_and(|d| {
+                    low.iter()
+                        .zip(&high)
+                        .any(|(a, b)| (*b - *a).cross(d).length() > 1e-9)
+                }) {
+                    return Ok(None);
+                }
+                let curve = |points: Vec<_>, index: usize| {
+                    brepkit_math::nurbs::curve::NurbsCurve::new(
+                        if v_linear {
+                            surface.degree_u()
+                        } else {
+                            surface.degree_v()
+                        },
+                        if v_linear {
+                            surface.knots_u().to_vec()
+                        } else {
+                            surface.knots_v().to_vec()
+                        },
+                        points,
+                        if v_linear {
+                            surface.weights().iter().map(|row| row[index]).collect()
+                        } else {
+                            surface.weights()[index].clone()
+                        },
+                    )
+                    .map_err(operation_error)
+                };
+                let low = curve(low, 0)?;
+                let high = curve(high, 1)?;
+                // A full ruled patch must still have the original four bounds.
+                // Trimmed boolean faces cannot be treated as untrimmed supports.
+                let edges = self
+                    .topology
+                    .wire(face.outer_wire())
+                    .map_err(operation_error)?
+                    .edges();
+                if !(2..=4).contains(&edges.len()) {
+                    return Ok(None);
+                }
+                let mut bounds = Vec::new();
+                for occurrence in edges {
+                    let edge = self
+                        .topology
+                        .edge(occurrence.edge())
+                        .map_err(operation_error)?;
+                    if matches!(edge.curve(), EdgeCurve::Line) {
+                        continue;
+                    }
+                    let a = self
+                        .topology
+                        .vertex(edge.start())
+                        .map_err(operation_error)?
+                        .point();
+                    let b = self
+                        .topology
+                        .vertex(edge.end())
+                        .map_err(operation_error)?
+                        .point();
+                    if let Some(curve) = crate::surface::boundary_curve(edge.curve(), a, b, true)? {
+                        bounds.push(curve);
+                    }
+                }
+                if bounds.len() != 2 {
+                    return Ok(None);
+                }
+                let covered = |a: &brepkit_math::nurbs::curve::NurbsCurve,
+                               b: &brepkit_math::nurbs::curve::NurbsCurve|
+                 -> Result<bool, NewellKernelError> {
+                    let hits = exact_curve_intersections(a, b)?;
+                    let (lo, hi) = a.domain();
+                    let mut intervals: Vec<_> = hits
+                        .overlaps
+                        .into_iter()
+                        .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
+                        .collect();
+                    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut cursor = lo;
+                    for (a, b) in intervals {
+                        if a > cursor + 1e-9 {
+                            return Ok(false);
+                        }
+                        cursor = cursor.max(b);
+                    }
+                    Ok(cursor >= hi - 1e-9)
+                };
+                if !(covered(&low, &bounds[0])? && covered(&high, &bounds[1])?
+                    || covered(&low, &bounds[1])? && covered(&high, &bounds[0])?)
+                {
+                    return Ok(None);
+                }
+                Ok(Some((low, high)))
+            }
+            FaceSurface::Cylinder(cylinder)
+                if parallel.is_none_or(|d| cylinder.axis().cross(d).length() <= 1e-12) =>
+            {
+                let mut curves = Vec::new();
+                for occurrence in self
+                    .topology
+                    .wire(face.outer_wire())
+                    .map_err(operation_error)?
+                    .edges()
+                {
+                    let edge = self
+                        .topology
+                        .edge(occurrence.edge())
+                        .map_err(operation_error)?;
+                    if matches!(edge.curve(), EdgeCurve::Line) {
+                        continue;
+                    }
+                    let a = self
+                        .topology
+                        .vertex(edge.start())
+                        .map_err(operation_error)?
+                        .point();
+                    let b = self
+                        .topology
+                        .vertex(edge.end())
+                        .map_err(operation_error)?
+                        .point();
+                    if let Some(curve) = crate::surface::boundary_curve(edge.curve(), a, b, true)? {
+                        curves.push(curve);
+                    }
+                }
+                if curves.len() == 2 {
+                    Ok(Some((curves.remove(0), curves.remove(0))))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+    fn partial_ruled_hit(
+        &self,
+        face: FaceId,
+        source: &ExactPlanarTrim,
+        curves: &[brepkit_math::nurbs::curve::NurbsCurve],
+        filled: bool,
+        d: Vec3,
+        global: crate::surface::SweepStation,
+    ) -> Result<Option<f64>, NewellKernelError> {
+        use brepkit_math::nurbs::{
+            curve::NurbsCurve, decompose::curve_to_bezier_segments, knot_ops::curve_split,
+        };
+        let Some((low, high)) = self.ruled_sheet_boundaries(face, None)? else {
+            return Ok(None);
+        };
+        let projected = |curve: &NurbsCurve| {
+            NurbsCurve::new(
+                curve.degree(),
+                curve.knots().to_vec(),
+                curve
+                    .control_points()
+                    .iter()
+                    .map(|p| *p - d * global.value(*p))
+                    .collect(),
+                curve.weights().to_vec(),
+            )
+            .map_err(operation_error)
+        };
+        let mut best = f64::NEG_INFINITY;
+        if filled {
+            for boundary in [&low, &high] {
+                for (a, b) in source.covered_intervals(&projected(boundary)?)? {
+                    best = best.max(curve_station_max(&trimmed_curve(boundary, a, b)?, global)?);
+                }
+            }
+        }
+        let high_parts = curve_to_bezier_segments(&high).map_err(operation_error)?;
+        let low_parts = curve_to_bezier_segments(&low).map_err(operation_error)?;
+        if high_parts.len() != low_parts.len() {
+            return Err(invalid("ruled boundary parameter mismatch"));
+        }
+        let mut certified = best;
+        let mut visits = 0usize;
+        for source_curve in curves {
+            for source_part in curve_to_bezier_segments(source_curve).map_err(operation_error)? {
+                let mut work: Vec<_> = low_parts
+                    .iter()
+                    .cloned()
+                    .zip(high_parts.iter().cloned())
+                    .map(|(a, b)| (source_part.clone(), a, b, 0u32))
+                    .collect();
+                while let Some((source_curve, low, high, depth)) = work.pop() {
+                    self.check_cancelled()?;
+                    visits += 1;
+                    if visits > 262144 || depth > 80 {
+                        return Err(invalid("certified curved ThroughAll complexity"));
+                    }
+                    if source_curve
+                        .weights()
+                        .iter()
+                        .chain(low.weights())
+                        .chain(high.weights())
+                        .any(|w| !w.is_finite() || *w <= 0.)
+                    {
+                        return Err(invalid("rational curve bound"));
+                    }
+                    let hull = control_polygon(
+                        source_curve
+                            .control_points()
+                            .iter()
+                            .map(|p| crate::boolean::project(source.frame, *p))
+                            .collect(),
+                    );
+                    let points: Vec<_> = low
+                        .control_points()
+                        .iter()
+                        .chain(high.control_points())
+                        .copied()
+                        .collect();
+                    let Some(upper) = clipped_hull_station(&points, &hull, source.frame, d, global)
+                    else {
+                        continue;
+                    };
+                    if upper <= best + 1e-9 {
+                        certified = certified.max(upper);
+                        continue;
+                    }
+                    let (a, b) = low.domain();
+                    let mut samples = vec![a, (a + b) * 0.5, b];
+                    if source_curve.degree() == 1 {
+                        let (s0, s1) = source_curve.domain();
+                        let p = source_curve.evaluate(s0);
+                        let q = source_curve.evaluate(s1);
+                        let m = xyz_vector(source.frame.normal)
+                            .cross(q - p)
+                            .normalize()
+                            .map_err(operation_error)?;
+                        let beam = crate::surface::SweepStation {
+                            gradient: m - global.gradient * m.dot(d),
+                            constant: -m.dot(Vec3::new(p.x(), p.y(), p.z()))
+                                - global.constant * m.dot(d),
+                        };
+                        samples.extend(affine_curve_roots(&low, beam)?);
+                        samples.extend(affine_curve_roots(&high, beam)?);
+                    }
+                    samples.sort_by(f64::total_cmp);
+                    samples.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+                    for u in samples {
+                        let p = low.evaluate(u);
+                        let q = high.evaluate(u);
+                        let pp = p - d * global.value(p);
+                        let qq = q - d * global.value(q);
+                        if (pp - qq).length() <= 1e-12 {
+                            continue;
+                        }
+                        let line =
+                            NurbsCurve::new(1, vec![0., 0., 1., 1.], vec![pp, qq], vec![1., 1.])
+                                .map_err(operation_error)?;
+                        let intersections = exact_curve_intersections(&source_curve, &line)?;
+                        for hit in intersections.hits {
+                            best = best.max(global.value(p + (q - p) * hit[1]));
+                        }
+                        for span in intersections.overlaps {
+                            for v in [span[2], span[3]] {
+                                best = best.max(global.value(p + (q - p) * v));
+                            }
+                        }
+                    }
+                    if upper <= best + 1e-9 {
+                        certified = certified.max(upper);
+                        continue;
+                    }
+                    let diameter = |points: &[brepkit_math::vec::Point3]| {
+                        points
+                            .iter()
+                            .flat_map(|a| points.iter().map(move |b| (*a - *b).length_squared()))
+                            .fold(0., f64::max)
+                    };
+                    let source_size = if hull.len() > 2 {
+                        diameter(source_curve.control_points())
+                    } else {
+                        0.
+                    };
+                    let target_size =
+                        diameter(low.control_points()).max(diameter(high.control_points()));
+                    if source_size > target_size {
+                        let (a, b) = source_curve.domain();
+                        let (left, right) =
+                            curve_split(&source_curve, (a + b) * 0.5).map_err(operation_error)?;
+                        work.push((left, low.clone(), high.clone(), depth + 1));
+                        work.push((right, low, high, depth + 1));
+                    } else {
+                        let (ll, lr) = curve_split(&low, (a + b) * 0.5).map_err(operation_error)?;
+                        let (hl, hr) =
+                            curve_split(&high, (a + b) * 0.5).map_err(operation_error)?;
+                        work.push((source_curve.clone(), ll, hl, depth + 1));
+                        work.push((source_curve, lr, hr, depth + 1));
+                    }
+                }
+            }
+        }
+        Ok(Some(certified.max(best)))
+    }
+    fn curved_through_all_station(
+        &self,
+        profile: (NewellShapeKey, u32),
+        boundary: crate::NewellBoundary,
+        d: Vec3,
+        start: f64,
+        targets: &[NewellShapeKey],
+        filled: bool,
+    ) -> Result<f64, NewellKernelError> {
+        use crate::surface::SweepStation as Station;
+        use brepkit_math::nurbs::curve::NurbsCurve;
+        let source_face = self.planar_face(profile.0, profile.1)?;
+        let source_frame = crate::profile::supporting_frame(&self.topology, source_face)?;
+        let curves = self.selected_boundary_curves(profile, boundary)?;
+        let normal = xyz_vector(source_frame.normal);
+        let denominator = normal.dot(d);
+        if denominator.abs() <= 1e-12 {
+            return Err(invalid("tangential Along"));
+        }
+        let global = Station {
+            gradient: normal * (1. / denominator),
+            constant: -normal.dot(xyz_vector(source_frame.origin)) / denominator,
+        };
+        let source_trim = self.exact_planar_trim(NewellFaceTarget {
+            shape: profile.0,
+            face: profile.1,
+            clearance: 0.,
+        })?;
+        let projected = |curve: &NurbsCurve| -> Result<NurbsCurve, NewellKernelError> {
+            NurbsCurve::new(
+                curve.degree(),
+                curve.knots().to_vec(),
+                curve
+                    .control_points()
+                    .iter()
+                    .map(|p| *p - d * global.value(*p))
+                    .collect(),
+                curve.weights().to_vec(),
+            )
+            .map_err(operation_error)
+        };
+        let mut farthest = f64::NEG_INFINITY;
+        let mut unresolved = false;
+        for target in targets {
+            for (ordinal, face) in self.shape_faces(*target)?.into_iter().enumerate() {
+                if matches!(
+                    self.topology.face(face).map_err(operation_error)?.surface(),
+                    brepkit_topology::face::FaceSurface::Plane { .. }
+                ) {
+                    let reference = NewellFaceTarget {
+                        shape: *target,
+                        face: u32::try_from(ordinal).map_err(operation_error)?,
+                        clearance: 0.,
+                    };
+                    let trim = self.exact_planar_trim(reference)?;
+                    let n = xyz_vector(trim.frame.normal);
+                    if n.dot(d).abs() <= 1e-12 {
+                        farthest = farthest.max(self.parallel_plane_chain_hit(
+                            &trim,
+                            &curves,
+                            source_frame,
+                            d,
+                            start,
+                            global,
+                        )?);
+                        if filled {
+                            for curve in trim.loops.iter().flatten() {
+                                let hit = projected(curve)?;
+                                for (lo, hi) in source_trim.covered_intervals(&hit)? {
+                                    farthest = farthest.max(curve_station_max(
+                                        &trimmed_curve(curve, lo, hi)?,
+                                        global,
+                                    )?);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let (station, _) = self.exact_target_station(reference, d, 1.)?;
+                    for curve in &curves {
+                        let hit = NurbsCurve::new(
+                            curve.degree(),
+                            curve.knots().to_vec(),
+                            curve
+                                .control_points()
+                                .iter()
+                                .map(|p| station.point(*p, d))
+                                .collect(),
+                            curve.weights().to_vec(),
+                        )
+                        .map_err(operation_error)?;
+                        for (lo, hi) in trim.covered_intervals(&hit)? {
+                            farthest = farthest
+                                .max(curve_station_max(&trimmed_curve(curve, lo, hi)?, station)?);
+                        }
+                    }
+                    if filled {
+                        for curve in trim.loops.iter().flatten() {
+                            let hit = projected(curve)?;
+                            for (lo, hi) in source_trim.covered_intervals(&hit)? {
+                                farthest = farthest.max(curve_station_max(
+                                    &trimmed_curve(curve, lo, hi)?,
+                                    global,
+                                )?);
+                            }
+                        }
+                    }
+                } else if let Some((low, high)) = self.ruled_sheet_boundaries(face, Some(d))? {
+                    for end in [&low, &high] {
+                        let hit = projected(end)?;
+                        if filled {
+                            for (lo, hi) in source_trim.covered_intervals(&hit)? {
+                                farthest = farthest
+                                    .max(curve_station_max(&trimmed_curve(end, lo, hi)?, global)?);
+                            }
+                        }
+                        for source in &curves {
+                            let intersections = exact_curve_intersections(source, &hit)?;
+                            for pair in intersections.hits {
+                                farthest = farthest.max(global.value(end.evaluate(pair[1])));
+                            }
+                            for overlap in intersections.overlaps {
+                                let (lo, hi) =
+                                    (overlap[2].min(overlap[3]), overlap[2].max(overlap[3]));
+                                farthest = farthest
+                                    .max(curve_station_max(&trimmed_curve(end, lo, hi)?, global)?);
+                            }
+                        }
+                    }
+                } else if let Some(hit) =
+                    self.partial_ruled_hit(face, &source_trim, &curves, filled, d, global)?
+                {
+                    farthest = farthest.max(hit);
+                } else {
+                    unresolved = true;
+                }
+            }
+        }
+        if unresolved {
+            return Err(invalid(
+                "ThroughAll curved target needs a certified intersection route",
+            ));
+        }
+        if !farthest.is_finite() || farthest <= start + 1e-7 {
+            return Err(invalid("NoThroughAllHit"));
+        }
+        let scale = curves
+            .iter()
+            .flat_map(|curve| curve.control_points())
+            .flat_map(|p| [p.x().abs(), p.y().abs(), p.z().abs()])
+            .fold(farthest.abs(), f64::max);
+        let eps = 1e-7_f64.max(1e-10 * scale);
+        let end = farthest + (10. * eps).max(1e-6);
+        if !end.is_finite() {
+            return Err(invalid("ThroughAll overflow"));
+        }
+        Ok(end)
     }
 }
 
 impl NewellGeometry {
-    fn parallel_plane_chain_hit(&self,trim:&ExactPlanarTrim,curves:&[brepkit_math::nurbs::curve::NurbsCurve],source_frame:crate::NewellProfileFrame,d:Vec3,start:f64,global:crate::surface::SweepStation)->Result<f64,NewellKernelError> {
+    fn parallel_plane_chain_hit(
+        &self,
+        trim: &ExactPlanarTrim,
+        curves: &[brepkit_math::nurbs::curve::NurbsCurve],
+        source_frame: crate::NewellProfileFrame,
+        d: Vec3,
+        start: f64,
+        global: crate::surface::SweepStation,
+    ) -> Result<f64, NewellKernelError> {
         use brepkit_math::nurbs::curve::NurbsCurve;
-        let source_normal=xyz_vector(source_frame.normal);let target_normal=xyz_vector(trim.frame.normal);let source_origin=xyz_point(source_frame.origin);
-        let transverse=target_normal-source_normal*target_normal.dot(source_normal);
-        let center=source_origin+transverse*(target_normal.dot(xyz_vector(trim.frame.origin)-xyz_vector(source_frame.origin))/transverse.dot(transverse));
-        let axis=source_normal.cross(target_normal).normalize().map_err(operation_error)?;
-        let extent=curves.iter().flat_map(|curve|curve.control_points()).map(|p|(*p-center).length()).fold(1.,f64::max)+1.;
-        let carrier=NurbsCurve::new(1,vec![0.,0.,1.,1.],vec![center-axis*extent,center+axis*extent],vec![1.,1.]).map_err(operation_error)?;
-        let bound=trim.loops.iter().flatten().flat_map(|curve|curve.control_points()).map(|p|global.value(*p)).fold(start,f64::max)+1.;
-        let line=|a,b|NurbsCurve::new(1,vec![0.,0.,1.,1.],vec![a,b],vec![1.,1.]).map_err(operation_error);
-        let mut far=f64::NEG_INFINITY;
+        let source_normal = xyz_vector(source_frame.normal);
+        let target_normal = xyz_vector(trim.frame.normal);
+        let source_origin = xyz_point(source_frame.origin);
+        let transverse = target_normal - source_normal * target_normal.dot(source_normal);
+        let center = source_origin
+            + transverse
+                * (target_normal
+                    .dot(xyz_vector(trim.frame.origin) - xyz_vector(source_frame.origin))
+                    / transverse.dot(transverse));
+        let axis = source_normal
+            .cross(target_normal)
+            .normalize()
+            .map_err(operation_error)?;
+        let extent = curves
+            .iter()
+            .flat_map(|curve| curve.control_points())
+            .map(|p| (*p - center).length())
+            .fold(1., f64::max)
+            + 1.;
+        let carrier = NurbsCurve::new(
+            1,
+            vec![0., 0., 1., 1.],
+            vec![center - axis * extent, center + axis * extent],
+            vec![1., 1.],
+        )
+        .map_err(operation_error)?;
+        let bound = trim
+            .loops
+            .iter()
+            .flatten()
+            .flat_map(|curve| curve.control_points())
+            .map(|p| global.value(*p))
+            .fold(start, f64::max)
+            + 1.;
+        let line = |a, b| {
+            NurbsCurve::new(1, vec![0., 0., 1., 1.], vec![a, b], vec![1., 1.])
+                .map_err(operation_error)
+        };
+        let mut far = f64::NEG_INFINITY;
         for curve in curves {
-            let intersections=exact_curve_intersections(curve,&carrier)?;
+            let intersections = exact_curve_intersections(curve, &carrier)?;
             for pair in intersections.hits {
-                let p=curve.evaluate(pair[0]);let ray=line(p+d*(start+1e-7),p+d*bound)?;
-                for (_,hi) in trim.covered_intervals(&ray)? {far=far.max(start+1e-7+(bound-start-1e-7)*hi);}
+                let p = curve.evaluate(pair[0]);
+                let ray = line(p + d * (start + 1e-7), p + d * bound)?;
+                for (_, hi) in trim.covered_intervals(&ray)? {
+                    far = far.max(start + 1e-7 + (bound - start - 1e-7) * hi);
+                }
             }
             for interval in intersections.overlaps {
-                let a=curve.evaluate(interval[0]);let b=curve.evaluate(interval[1]);
-                if (a-b).length()<=1e-7 {continue;}
-                let corners=[a+d*(start+1e-7),b+d*(start+1e-7),b+d*bound,a+d*bound];
-                let wire=(0..4).map(|i|line(corners[i],corners[(i+1)%4])).collect::<Result<Vec<_>,_>>()?;
-                let region=crate::boolean::Region{outer:corners.iter().map(|p|crate::boolean::project(trim.frame,*p)).collect(),holes:Vec::new()};
-                let strip=ExactPlanarTrim{frame:trim.frame,loops:vec![wire],linear:Some(region)};
-                for boundary in trim.loops.iter().flatten() {for (lo,hi) in strip.covered_intervals(boundary)? {far=far.max(curve_station_max(&trimmed_curve(boundary,lo,hi)?,global)?);}}
+                let a = curve.evaluate(interval[0]);
+                let b = curve.evaluate(interval[1]);
+                if (a - b).length() <= 1e-7 {
+                    continue;
+                }
+                let corners = [
+                    a + d * (start + 1e-7),
+                    b + d * (start + 1e-7),
+                    b + d * bound,
+                    a + d * bound,
+                ];
+                let wire = (0..4)
+                    .map(|i| line(corners[i], corners[(i + 1) % 4]))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let region = crate::boolean::Region {
+                    outer: corners
+                        .iter()
+                        .map(|p| crate::boolean::project(trim.frame, *p))
+                        .collect(),
+                    holes: Vec::new(),
+                };
+                let strip = ExactPlanarTrim {
+                    frame: trim.frame,
+                    loops: vec![wire],
+                    linear: Some(region),
+                };
+                for boundary in trim.loops.iter().flatten() {
+                    for (lo, hi) in strip.covered_intervals(boundary)? {
+                        far = far.max(curve_station_max(
+                            &trimmed_curve(boundary, lo, hi)?,
+                            global,
+                        )?);
+                    }
+                }
             }
         }
         Ok(far)
+    }
+}
+
+/// Complete roots of an affine station on a rational curve. Positive weights
+/// reduce the equation to a polynomial numerator on each exact Bezier span.
+/// Derivative roots partition it into monotone intervals (Rolle's theorem),
+/// including even-multiplicity contacts; no seed grid is used.
+fn affine_curve_roots(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    station: crate::surface::SweepStation,
+) -> Result<Vec<f64>, NewellKernelError> {
+    fn value(c: &[f64], t: f64) -> f64 {
+        let mut row = c.to_vec();
+        for n in (1..row.len()).rev() {
+            for i in 0..n {
+                row[i] = (1. - t) * row[i] + t * row[i + 1];
+            }
+        }
+        row.first().copied().unwrap_or(0.)
+    }
+    fn roots(c: &[f64]) -> Vec<f64> {
+        if c.len() < 2 {
+            return Vec::new();
+        }
+        let degree = (c.len() - 1) as f64;
+        let derivative: Vec<_> = c.windows(2).map(|p| degree * (p[1] - p[0])).collect();
+        let mut breaks = vec![0.];
+        breaks.extend(roots(&derivative));
+        breaks.push(1.);
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-13);
+        let scale = c.iter().copied().map(f64::abs).fold(0., f64::max);
+        if scale == 0. {
+            return Vec::new();
+        }
+        let tolerance = scale * 1e-13;
+        let mut result: Vec<_> = breaks
+            .iter()
+            .copied()
+            .filter(|t| value(c, *t).abs() <= tolerance)
+            .collect();
+        for pair in breaks.windows(2) {
+            let (mut a, mut b) = (pair[0], pair[1]);
+            let mut fa = value(c, a);
+            let fb = value(c, b);
+            if fa * fb >= 0. || fa.abs() <= tolerance || fb.abs() <= tolerance {
+                continue;
+            }
+            for _ in 0..64 {
+                let mid = (a + b) * 0.5;
+                let fm = value(c, mid);
+                if b - a <= 1e-13 {
+                    break;
+                }
+                if fm == 0. {
+                    a = mid;
+                    b = mid;
+                    break;
+                }
+                if fa * fm < 0. {
+                    b = mid;
+                } else {
+                    a = mid;
+                    fa = fm;
+                }
+            }
+            result.push((a + b) * 0.5);
+        }
+        result.sort_by(f64::total_cmp);
+        result.dedup_by(|a, b| (*a - *b).abs() < 1e-11);
+        result
+    }
+    if curve.degree() > 64 || curve.weights().iter().any(|w| !w.is_finite() || *w <= 0.) {
+        return Err(invalid("rational root bound"));
+    }
+    let mut result = Vec::new();
+    for part in
+        brepkit_math::nurbs::decompose::curve_to_bezier_segments(curve).map_err(operation_error)?
+    {
+        let coefficients: Vec<_> = part
+            .control_points()
+            .iter()
+            .zip(part.weights())
+            .map(|(p, w)| station.value(*p) * w)
+            .collect();
+        let (a, b) = part.domain();
+        result.extend(roots(&coefficients).into_iter().map(|t| a + (b - a) * t));
+    }
+    let (a, b) = curve.domain();
+    result.retain(|t| *t > a + 1e-13 * (b - a) && *t < b - 1e-13 * (b - a));
+    result.sort_by(f64::total_cmp);
+    result.dedup_by(|a, b| (*a - *b).abs() < 1e-11);
+    Ok(result)
+}
+impl NewellGeometry {
+    pub(crate) fn side_crossings(
+        &self,
+        curve: &brepkit_math::nurbs::curve::NurbsCurve,
+        _frame: crate::NewellProfileFrame,
+        difference: crate::surface::SweepStation,
+    ) -> Result<Vec<f64>, NewellKernelError> {
+        affine_curve_roots(curve, difference)
+    }
+    fn crossing_side_union(
+        &mut self,
+        profile: (NewellShapeKey, u32),
+        boundary: crate::NewellBoundary,
+        d: Vec3,
+        start: f64,
+        main: crate::surface::SweepStation,
+        second: crate::surface::SweepStation,
+    ) -> Result<Vec<NewellShapeKey>, NewellKernelError> {
+        use crate::surface::SweepStation as Station;
+        let direction = [d.x(), d.y(), d.z()];
+        let primary =
+            self.sweep_surface_between(profile, boundary, direction, Station::fixed(start), main)?;
+        let secondary = self.sweep_surface_between(
+            profile,
+            boundary,
+            direction,
+            Station::fixed(start),
+            second,
+        )?;
+        match self.combine_surfaces(&secondary, &primary, crate::NewellBooleanMode::Add) {
+            Ok(result) => {
+                let mut outputs = result.outputs;
+                outputs.extend(
+                    primary
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !result.changed_targets.contains(i))
+                        .map(|(_, key)| key),
+                );
+                self.order_components(outputs)
+            }
+            Err(NewellKernelError::Operation { message }) if message == "NoTargetIntersection" => {
+                Ok(primary)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -855,92 +1827,230 @@ struct ExactPlanarTrim {
     linear: Option<crate::boolean::Region>,
 }
 impl ExactPlanarTrim {
-    fn contains(&self,point:brepkit_math::vec::Point3)->Result<bool,NewellKernelError> {
-        if let Some(region) = &self.linear { return Ok(crate::boolean::contains_point(region,crate::boolean::project(self.frame,point))); }
-        use brepkit_math::{nurbs::curve::NurbsCurve,vec::Point3};
-        let u=xyz_vector(self.frame.u);let v=xyz_vector(self.frame.v);
-        let extent=self.loops.iter().flatten().flat_map(|curve|curve.control_points()).map(|p|(*p-point).length()).fold(1.,f64::max)+1.;
+    fn contains(&self, point: brepkit_math::vec::Point3) -> Result<bool, NewellKernelError> {
+        if let Some(region) = &self.linear {
+            return Ok(crate::boolean::contains_point(
+                region,
+                crate::boolean::project(self.frame, point),
+            ));
+        }
+        use brepkit_math::{nurbs::curve::NurbsCurve, vec::Point3};
+        let u = xyz_vector(self.frame.u);
+        let v = xyz_vector(self.frame.v);
+        let extent = self
+            .loops
+            .iter()
+            .flatten()
+            .flat_map(|curve| curve.control_points())
+            .map(|p| (*p - point).length())
+            .fold(1., f64::max)
+            + 1.;
         for attempt in 0..32 {
-            let angle=0.371_390_676_354_103_7 + f64::from(attempt)*1.618_033_988_749_895;
-            let direction=u*angle.cos()+v*angle.sin();
-            let ray=NurbsCurve::new(1,vec![0.,0.,1.,1.],vec![point,point+direction*extent],vec![1.,1.]).map_err(operation_error)?;
-            let mut parity=false;let mut ambiguous=false;
+            let angle = 0.371_390_676_354_103_7 + f64::from(attempt) * 1.618_033_988_749_895;
+            let direction = u * angle.cos() + v * angle.sin();
+            let ray = NurbsCurve::new(
+                1,
+                vec![0., 0., 1., 1.],
+                vec![point, point + direction * extent],
+                vec![1., 1.],
+            )
+            .map_err(operation_error)?;
+            let mut parity = false;
+            let mut ambiguous = false;
             for boundary in &self.loops {
-                let mut crossings=Vec::new();
+                let mut crossings = Vec::new();
                 for curve in boundary {
-                    let result=exact_curve_intersections(curve,&ray)?;
-                    if result.overlaps.iter().any(|span|span[2].min(span[3])*extent<=1e-7) {return Ok(true);}
-                    if !result.overlaps.is_empty() {ambiguous=true;break;}
-                    let (lo,hi)=curve.domain();
-                    for hit in result.hits {
-                        if (curve.evaluate(hit[0])-point).length()<=1e-7 {return Ok(true);}
-                        if hit[0]<=lo+1e-9*(hi-lo) || hit[0]>=hi-1e-9*(hi-lo) {ambiguous=true;break;}
-                        let delta=(hi-lo)*1e-6;
-                        let left=curve.evaluate((hit[0]-delta).max(lo));let right=curve.evaluate((hit[0]+delta).min(hi));
-                        let side=|p:Point3| (p-point).dot(u)*direction.dot(v)-(p-point).dot(v)*direction.dot(u);
-                        if side(left)*side(right)<0. {crossings.push(hit[1]);}
+                    let result = exact_curve_intersections(curve, &ray)?;
+                    if result
+                        .overlaps
+                        .iter()
+                        .any(|span| span[2].min(span[3]) * extent <= 1e-7)
+                    {
+                        return Ok(true);
                     }
-                    if ambiguous {break;}
+                    if !result.overlaps.is_empty() {
+                        ambiguous = true;
+                        break;
+                    }
+                    let (lo, hi) = curve.domain();
+                    for hit in result.hits {
+                        if (curve.evaluate(hit[0]) - point).length() <= 1e-7 {
+                            return Ok(true);
+                        }
+                        if hit[0] <= lo + 1e-9 * (hi - lo) || hit[0] >= hi - 1e-9 * (hi - lo) {
+                            ambiguous = true;
+                            break;
+                        }
+                        let delta = (hi - lo) * 1e-6;
+                        let left = curve.evaluate((hit[0] - delta).max(lo));
+                        let right = curve.evaluate((hit[0] + delta).min(hi));
+                        let side = |p: Point3| {
+                            (p - point).dot(u) * direction.dot(v)
+                                - (p - point).dot(v) * direction.dot(u)
+                        };
+                        if side(left) * side(right) < 0. {
+                            crossings.push(hit[1]);
+                        }
+                    }
+                    if ambiguous {
+                        break;
+                    }
                 }
-                if ambiguous {break;}
-                crossings.sort_by(f64::total_cmp);crossings.dedup_by(|a,b|(*a-*b).abs()*extent<=1e-7);
-                parity^=crossings.len()%2==1;
+                if ambiguous {
+                    break;
+                }
+                crossings.sort_by(f64::total_cmp);
+                crossings.dedup_by(|a, b| (*a - *b).abs() * extent <= 1e-7);
+                parity ^= crossings.len() % 2 == 1;
             }
-            if !ambiguous {return Ok(parity);}
+            if !ambiguous {
+                return Ok(parity);
+            }
         }
         Err(invalid("AmbiguousTarget trim query"))
     }
-    fn covered_intervals(&self,curve:&brepkit_math::nurbs::curve::NurbsCurve)->Result<Vec<(f64,f64)>,NewellKernelError> {
-        let (lo,hi)=curve.domain();let mut breaks=vec![lo,hi];
+    fn covered_intervals(
+        &self,
+        curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    ) -> Result<Vec<(f64, f64)>, NewellKernelError> {
+        let (lo, hi) = curve.domain();
+        let mut breaks = vec![lo, hi];
         for boundary in self.loops.iter().flatten() {
-            let result=exact_curve_intersections(curve,boundary)?;
-            breaks.extend(result.hits.into_iter().map(|hit|hit[0]));
-            for overlap in result.overlaps {breaks.extend([overlap[0],overlap[1]]);}
+            let result = exact_curve_intersections(curve, boundary)?;
+            breaks.extend(result.hits.into_iter().map(|hit| hit[0]));
+            for overlap in result.overlaps {
+                breaks.extend([overlap[0], overlap[1]]);
+            }
         }
-        breaks.retain(|t|t.is_finite() && *t>=lo && *t<=hi);breaks.sort_by(f64::total_cmp);breaks.dedup_by(|a,b|(*a-*b).abs()<=1e-10*(hi-lo));
-        let mut result=Vec::new();
-        for span in breaks.windows(2) {if self.contains(curve.evaluate(span[0]+(span[1]-span[0])*0.5))? {result.push((span[0],span[1]));}}
+        breaks.retain(|t| t.is_finite() && *t >= lo && *t <= hi);
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup_by(|a, b| (*a - *b).abs() <= 1e-10 * (hi - lo));
+        let mut result = Vec::new();
+        for span in breaks.windows(2) {
+            if self.contains(curve.evaluate(span[0] + (span[1] - span[0]) * 0.5))? {
+                result.push((span[0], span[1]));
+            }
+        }
         Ok(result)
     }
-    fn covers(&self,curve:&brepkit_math::nurbs::curve::NurbsCurve)->Result<bool,NewellKernelError> {
+    fn covers(
+        &self,
+        curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    ) -> Result<bool, NewellKernelError> {
         if let Some(region) = &self.linear
-            && curve.degree() == 1 && curve.control_points().len() == 2 {
-            return Ok(crate::boolean::contains_segment(region,crate::boolean::project(self.frame,curve.control_points()[0]),crate::boolean::project(self.frame,curve.control_points()[1])));
+            && curve.degree() == 1
+            && curve.control_points().len() == 2
+        {
+            return Ok(crate::boolean::contains_segment(
+                region,
+                crate::boolean::project(self.frame, curve.control_points()[0]),
+                crate::boolean::project(self.frame, curve.control_points()[1]),
+            ));
         }
-        let (lo,hi)=curve.domain();if !self.contains(curve.evaluate(lo))? || !self.contains(curve.evaluate(hi))? {return Ok(false);}
-        let mut cursor=lo;
-        for (a,b) in self.covered_intervals(curve)? {if a>cursor+1e-10*(hi-lo) {return Ok(false);}cursor=cursor.max(b);}
-        Ok(cursor>=hi-1e-10*(hi-lo))
+        let (lo, hi) = curve.domain();
+        if !self.contains(curve.evaluate(lo))? || !self.contains(curve.evaluate(hi))? {
+            return Ok(false);
+        }
+        let mut cursor = lo;
+        for (a, b) in self.covered_intervals(curve)? {
+            if a > cursor + 1e-10 * (hi - lo) {
+                return Ok(false);
+            }
+            cursor = cursor.max(b);
+        }
+        Ok(cursor >= hi - 1e-10 * (hi - lo))
     }
 }
 impl NewellGeometry {
-    fn exact_planar_trim(&self,target:NewellFaceTarget)->Result<ExactPlanarTrim,NewellKernelError> {
-        let face=self.planar_face(target.shape,target.face)?;
-        let frame=crate::profile::supporting_frame(&self.topology,face)?;
-        let count=self.topology.face(face).map_err(operation_error)?.inner_wires().len()+1;
-        let mut loops=Vec::new();
-        for wire in 0..count {loops.push(self.selected_boundary_curves((target.shape,target.face),crate::NewellBoundary::Wire(u32::try_from(wire).map_err(operation_error)?))?);}
-        let linear=if loops.iter().flatten().all(|curve|curve.degree()==1 && curve.control_points().len()==2) { Some(crate::boolean::line_region(&self.topology,face,frame)?) } else { None };
-        Ok(ExactPlanarTrim {frame,loops,linear})
+    fn exact_planar_trim(
+        &self,
+        target: NewellFaceTarget,
+    ) -> Result<ExactPlanarTrim, NewellKernelError> {
+        let face = self.planar_face(target.shape, target.face)?;
+        let frame = crate::profile::supporting_frame(&self.topology, face)?;
+        let count = self
+            .topology
+            .face(face)
+            .map_err(operation_error)?
+            .inner_wires()
+            .len()
+            + 1;
+        let mut loops = Vec::new();
+        for wire in 0..count {
+            loops.push(self.selected_boundary_curves(
+                (target.shape, target.face),
+                crate::NewellBoundary::Wire(u32::try_from(wire).map_err(operation_error)?),
+            )?);
+        }
+        let linear = if loops
+            .iter()
+            .flatten()
+            .all(|curve| curve.degree() == 1 && curve.control_points().len() == 2)
+        {
+            Some(crate::boolean::line_region(&self.topology, face, frame)?)
+        } else {
+            None
+        };
+        Ok(ExactPlanarTrim {
+            frame,
+            loops,
+            linear,
+        })
     }
-    fn exact_target_station(&self,target:NewellFaceTarget,d:Vec3,sign:f64)->Result<(crate::surface::SweepStation,ExactPlanarTrim),NewellKernelError> {
-        if !target.clearance.is_finite() || target.clearance<0. {return Err(invalid("target clearance"));}
-        let trim=self.exact_planar_trim(target)?;let n=xyz_vector(trim.frame.normal);let denominator=n.dot(d);
-        if denominator.abs()<=1e-12 {return Err(invalid("target parallel to sweep"));}
-        Ok((crate::surface::SweepStation{gradient:n*(-1./denominator),constant:n.dot(xyz_vector(trim.frame.origin))/denominator-sign*target.clearance},trim))
+    fn exact_target_station(
+        &self,
+        target: NewellFaceTarget,
+        d: Vec3,
+        sign: f64,
+    ) -> Result<(crate::surface::SweepStation, ExactPlanarTrim), NewellKernelError> {
+        if !target.clearance.is_finite() || target.clearance < 0. {
+            return Err(invalid("target clearance"));
+        }
+        let trim = self.exact_planar_trim(target)?;
+        let n = xyz_vector(trim.frame.normal);
+        let denominator = n.dot(d);
+        if denominator.abs() <= 1e-12 {
+            return Err(invalid("target parallel to sweep"));
+        }
+        Ok((
+            crate::surface::SweepStation {
+                gradient: n * (-1. / denominator),
+                constant: n.dot(xyz_vector(trim.frame.origin)) / denominator
+                    - sign * target.clearance,
+            },
+            trim,
+        ))
     }
-    fn exact_chain_coverage(&self,curves:&[brepkit_math::nurbs::curve::NurbsCurve],d:Vec3,station:crate::surface::SweepStation,trim:&ExactPlanarTrim)->Result<(),NewellKernelError> {
+    fn exact_chain_coverage(
+        &self,
+        curves: &[brepkit_math::nurbs::curve::NurbsCurve],
+        d: Vec3,
+        station: crate::surface::SweepStation,
+        trim: &ExactPlanarTrim,
+    ) -> Result<(), NewellKernelError> {
         use brepkit_math::nurbs::curve::NurbsCurve;
         for curve in curves {
-            let projected=NurbsCurve::new(curve.degree(),curve.knots().to_vec(),curve.control_points().iter().map(|p|station.point(*p,d)).collect(),curve.weights().to_vec()).map_err(operation_error)?;
-            if !trim.covers(&projected)? {return Err(invalid("target trim does not cover the swept chain"));}
+            let projected = NurbsCurve::new(
+                curve.degree(),
+                curve.knots().to_vec(),
+                curve
+                    .control_points()
+                    .iter()
+                    .map(|p| station.point(*p, d))
+                    .collect(),
+                curve.weights().to_vec(),
+            )
+            .map_err(operation_error)?;
+            if !trim.covers(&projected)? {
+                return Err(invalid("target trim does not cover the swept chain"));
+            }
         }
         Ok(())
     }
 }
 
 impl NewellGeometry {
-    fn selected_boundary_curves(
+    pub(crate) fn selected_boundary_curves(
         &self,
         profile: (NewellShapeKey, u32),
         boundary: crate::NewellBoundary,
@@ -990,10 +2100,24 @@ impl NewellGeometry {
                     .map_err(operation_error)?
                     .point();
                 curves.push(
-                    match crate::surface::boundary_curve(edge.curve(), a, b, true)? {
+                    match crate::surface::boundary_curve(
+                        edge.curve(),
+                        a,
+                        b,
+                        occurrence.is_forward() ^ face.is_reversed(),
+                    )? {
                         Some(curve) => curve,
-                        None => NurbsCurve::new(1, vec![0., 0., 1., 1.], vec![a, b], vec![1., 1.])
-                            .map_err(operation_error)?,
+                        None => NurbsCurve::new(
+                            1,
+                            vec![0., 0., 1., 1.],
+                            if occurrence.is_forward() ^ face.is_reversed() {
+                                vec![a, b]
+                            } else {
+                                vec![b, a]
+                            },
+                            vec![1., 1.],
+                        )
+                        .map_err(operation_error)?,
                     },
                 );
             }
@@ -1127,39 +2251,47 @@ impl NewellGeometry {
                 {
                     return Err(invalid("InvalidStartPlane"));
                 }
-                self.exact_chain_coverage(&curves,d,station,&trim)?;
+                self.exact_chain_coverage(&curves, d, station, &trim)?;
                 station.value(xyz_point(frame.origin))
             }
         };
-        let resolve = |extent: &NewellSurfaceExtent,
-                       sign: f64|
-         -> Result<Station, NewellKernelError> {
-            let station = match extent {
-                NewellSurfaceExtent::Blind(depth) if depth.is_finite() && *depth > 1e-7 => {
-                    Station::fixed(start + sign * depth)
-                }
-                NewellSurfaceExtent::Blind(_) => return Err(invalid("nonpositive side depth")),
-                NewellSurfaceExtent::UpTo(target) => {
-                    let (station, trim) = self.exact_target_station(*target, d, sign)?;
-                    let mut raw = station;
-                    raw.constant += sign * target.clearance;
-                    self.exact_chain_coverage(&curves,d,raw,&trim)?;
-                    station
-                }
-                NewellSurfaceExtent::ThroughAll(targets) => Station::fixed(self.curved_through_all_station(request.profile,request.boundary,d,start,targets,false)?),
+        let resolve =
+            |extent: &NewellSurfaceExtent, sign: f64| -> Result<Station, NewellKernelError> {
+                let station = match extent {
+                    NewellSurfaceExtent::Blind(depth) if depth.is_finite() && *depth > 1e-7 => {
+                        Station::fixed(start + sign * depth)
+                    }
+                    NewellSurfaceExtent::Blind(_) => return Err(invalid("nonpositive side depth")),
+                    NewellSurfaceExtent::UpTo(target) => {
+                        let (station, trim) = self.exact_target_station(*target, d, sign)?;
+                        let mut raw = station;
+                        raw.constant += sign * target.clearance;
+                        self.exact_chain_coverage(&curves, d, raw, &trim)?;
+                        station
+                    }
+                    NewellSurfaceExtent::ThroughAll(targets) => {
+                        Station::fixed(self.curved_through_all_station(
+                            request.profile,
+                            request.boundary,
+                            d,
+                            start,
+                            targets,
+                            false,
+                        )?)
+                    }
+                };
+                self.certify_boundary_domain(
+                    &curves,
+                    d,
+                    station,
+                    None,
+                    Some(Station {
+                        gradient: station.gradient * sign,
+                        constant: sign * (station.constant - start),
+                    }),
+                )?;
+                Ok(station)
             };
-            self.certify_boundary_domain(
-                &curves,
-                d,
-                station,
-                None,
-                Some(Station {
-                    gradient: station.gradient * sign,
-                    constant: sign * (station.constant - start),
-                }),
-            )?;
-            Ok(station)
-        };
         let main = resolve(&request.extent, 1.)?;
         let (low, high) = match &request.sides {
             NewellSurfaceSides::One => (Station::fixed(start), main),
@@ -1198,9 +2330,14 @@ impl NewellGeometry {
                 }) {
                     (Station::fixed(start), second)
                 } else {
-                    return Err(invalid(
-                        "crossing curved side endpoints need exact curve splitting",
-                    ));
+                    return self.crossing_side_union(
+                        request.profile,
+                        request.boundary,
+                        d,
+                        start,
+                        main,
+                        second,
+                    );
                 }
             }
         };
@@ -1395,78 +2532,6 @@ impl NewellGeometry {
         }
         Ok(Some(LineProfile { face, frame, edges }))
     }
-    fn line_start(
-        &self,
-        profile: &LineProfile,
-        d: Vec3,
-        start: NewellSurfaceStart,
-    ) -> Result<f64, NewellKernelError> {
-        match start {
-            NewellSurfaceStart::Distance(value) if value.is_finite() => Ok(value),
-            NewellSurfaceStart::Distance(_) => Err(invalid("starting distance")),
-            NewellSurfaceStart::UpTo(target) => {
-                let (endpoint, trim) = self.exact_target_station(target,d,1.)?;
-                let frame = trim.frame;
-                let n = xyz_vector(frame.normal);
-                if n.cross(xyz_vector(profile.frame.normal)).length() > 1e-12 {
-                    return Err(invalid("InvalidStartPlane"));
-                }
-                let denominator = n.dot(d);
-                if denominator.abs() <= 1e-12 {
-                    return Err(invalid("tangential starting ray"));
-                }
-                let station = n.dot(xyz_vector(frame.origin) - xyz_vector(profile.frame.origin))
-                    / denominator;
-                for edge in &profile.edges {
-                    let curve = brepkit_math::nurbs::curve::NurbsCurve::new(1,vec![0.,0.,1.,1.],edge.to_vec(),vec![1.,1.]).map_err(operation_error)?;
-                    self.exact_chain_coverage(&[curve],d,endpoint,&trim)?;
-                }
-                Ok(station)
-            }
-        }
-    }
-    fn line_endpoint(
-        &self,
-        edge: [brepkit_math::vec::Point3; 2],
-        d: Vec3,
-        start: f64,
-        extent: &NewellSurfaceExtent,
-        sign: f64,
-    ) -> Result<[f64; 2], NewellKernelError> {
-        let end = match extent {
-            NewellSurfaceExtent::Blind(value) => {
-                if !value.is_finite() || *value <= 1e-7 {
-                    return Err(invalid("nonpositive side depth"));
-                }
-                [start + sign * value; 2]
-            }
-            NewellSurfaceExtent::UpTo(target) => {
-                let (endpoint, trim) = self.exact_target_station(*target,d,sign)?;
-                let frame = trim.frame;
-                let n = xyz_vector(frame.normal);
-                let h = n.dot(xyz_vector(frame.origin));
-                let denominator = n.dot(d);
-                if denominator.abs() <= 1e-12 {
-                    return Err(invalid("target parallel to sweep"));
-                }
-                let raw = edge.map(|p| (h - n.dot(Vec3::new(p.x(), p.y(), p.z()))) / denominator);
-                let curve = brepkit_math::nurbs::curve::NurbsCurve::new(1,vec![0.,0.,1.,1.],edge.to_vec(),vec![1.,1.]).map_err(operation_error)?;
-                let mut unadjusted = endpoint; unadjusted.constant += sign * target.clearance;
-                self.exact_chain_coverage(&[curve],d,unadjusted,&trim)?;
-                raw.map(|value| value - sign * target.clearance)
-            }
-            NewellSurfaceExtent::ThroughAll(_) => {
-                return Err(invalid("unresolved ThroughAll endpoint"));
-            }
-        };
-        if end
-            .iter()
-            .any(|value| !value.is_finite() || sign * (value - start) <= 1e-7)
-        {
-            return Err(invalid("target is not beyond the displaced start"));
-        }
-        Ok(end)
-    }
     fn line_through_all(
         &self,
         profile: &LineProfile,
@@ -1599,62 +2664,7 @@ impl NewellGeometry {
         let d = xyz_vector(request.direction)
             .normalize()
             .map_err(operation_error)?;
-        let Some(profile) = self.line_profile(request.profile, request.boundary)? else {
-            return self.curved_surface_extrude(request, d);
-        };
-        if xyz_vector(profile.frame.normal).dot(d).abs() <= 1e-12 {
-            return Err(invalid("tangential Along"));
-        }
-        let start = self.line_start(&profile, d, request.start)?;
-        let extent = if let NewellSurfaceExtent::ThroughAll(targets) = &request.extent {
-            let end = match self.line_through_all(&profile,d,start,targets,false)? {
-                Some(end)=>end,
-                None=>self.curved_through_all_station(request.profile,request.boundary,d,start,targets,false)?,
-            };
-            NewellSurfaceExtent::Blind(end - start)
-        } else {
-            request.extent
-        };
-        let mut groups = Vec::new();
-        for edge in profile.edges {
-            let frame = side_frame(edge, d)?;
-            let end = self.line_endpoint(edge, d, start, &extent, 1.)?;
-            let quad = |low: [f64; 2], high: [f64; 2]| crate::boolean::Region {
-                outer: vec![
-                    crate::boolean::project(frame, edge[0] + d * low[0]),
-                    crate::boolean::project(frame, edge[1] + d * low[1]),
-                    crate::boolean::project(frame, edge[1] + d * high[1]),
-                    crate::boolean::project(frame, edge[0] + d * high[0]),
-                ],
-                holes: Vec::new(),
-            };
-            let mut regions = vec![quad([start; 2], end)];
-            match &request.sides {
-                NewellSurfaceSides::One => {}
-                NewellSurfaceSides::Symmetric => {
-                    regions = vec![quad(end.map(|value| 2. * start - value), end)]
-                }
-                NewellSurfaceSides::Second { extent, reverse } => {
-                    let sign = if *reverse { 1. } else { -1. };
-                    let second = self.line_endpoint(edge, d, start, extent, sign)?;
-                    let side = if *reverse {
-                        quad([start; 2], second)
-                    } else {
-                        quad(second, [start; 2])
-                    };
-                    regions = crate::boolean::region_boolean(
-                        &regions,
-                        &[side],
-                        crate::NewellBooleanMode::Add,
-                    )?;
-                }
-            }
-            crate::boolean::merge_groups(
-                &mut groups,
-                &[crate::boolean::PlaneRegions { frame, regions }],
-            )?;
-        }
-        self.rebuild_line_surfaces(&groups)
+        self.curved_surface_extrude(request, d)
     }
 }
 
@@ -1668,46 +2678,309 @@ mod tests {
     };
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     #[test]
+    fn nonparallel_ruled_through_all_proves_finite_hits_both_directions_and_misses() -> TestResult {
+        let mut geometry = NewellGeometry::new();
+        let source = geometry.box_shape([20., 20., 1.], [-5., -5., 0.])?;
+        let face = geometry
+            .profile_faces(source)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., 1.])
+            .ok_or("source")?
+            .face;
+        let low = [
+            Point3::new(0., 0., 4.),
+            Point3::new(2., 3., 7.),
+            Point3::new(4., 2., 6.),
+            Point3::new(6., 0., 4.),
+        ];
+        let high = low.map(|p| p + Vec3::new(1.2, 0., 1.6));
+        let (native, _, _) = crate::surface::cubic_band(&mut geometry.topology, low, high, false)?;
+        let target = geometry.insert_surface(vec![native])?;
+        let t = (24. - 252_f64.sqrt()) / 18.;
+        let ymax = 9. * t - 12. * t * t + 3. * t * t * t;
+        let end = geometry.through_all_station((source, face), [0., 0., 1.], 0., &[target])?;
+        assert!((end - (4.6 + ymax + 1e-6)).abs() < 2e-9);
+        let output = geometry.extrude_face(source, face, Some([0., 0., 1.]), 0., end)?;
+        assert!((geometry.volume(output)? - 400. * end).abs() < 1e-5);
+        assert!(!geometry.tessellate(output, 0.05)?.indices().is_empty());
+        let upper = geometry.box_shape([20., 20., 1.], [-5., -5., 10.])?;
+        let bottom = geometry
+            .profile_faces(upper)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., -1.])
+            .ok_or("bottom")?
+            .face;
+        let reverse =
+            geometry.through_all_station((upper, bottom), [0., 0., -1.], 0., &[target])?;
+        assert!((reverse - 6. - 1e-6).abs() < 2e-9);
+        let missing = geometry.box_shape([1.; 3], [100., 100., 0.])?;
+        let miss_face = geometry
+            .profile_faces(missing)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., 1.])
+            .ok_or("miss")?
+            .face;
+        for _ in 0..2 {
+            assert!(matches!(
+                geometry.through_all_station((missing, miss_face), [0., 0., 1.], 0., &[target]),
+                Err(NewellKernelError::InvalidParameter {
+                    parameter: "NoThroughAllHit"
+                })
+            ));
+        }
+        let partial = geometry.box_shape([1.; 3], [2., 1., 0.])?;
+        let partial_face = geometry
+            .profile_faces(partial)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., 1.])
+            .ok_or("partial source")?
+            .face;
+        for _ in 0..2 {
+            let reach = geometry.through_all_station(
+                (partial, partial_face),
+                [0., 0., 1.],
+                0.,
+                &[target],
+            )?;
+            assert!((reach - 6.301001).abs() < 2e-9, "{reach}");
+        }
+        let sheet = geometry.extrude_surface(NewellSurfaceExtrude {
+            profile: (partial, partial_face),
+            boundary: crate::NewellBoundary::Face,
+            direction: [0., 0., 1.],
+            start: NewellSurfaceStart::Distance(0.),
+            extent: NewellSurfaceExtent::ThroughAll(vec![target]),
+            sides: NewellSurfaceSides::One,
+        })?[0];
+        assert!((geometry.surface_area(sheet)? - 4. * 6.301001).abs() < 1e-6);
+        assert!(!geometry.tessellate(sheet, 0.02)?.indices().is_empty());
+        let reverse_source = geometry.box_shape([1.; 3], [2., 1., 10.])?;
+        let reverse_face = geometry
+            .profile_faces(reverse_source)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., -1.])
+            .ok_or("reverse partial")?
+            .face;
+        let reach = geometry.through_all_station(
+            (reverse_source, reverse_face),
+            [0., 0., -1.],
+            0.,
+            &[target],
+        )?;
+        assert!((reach - (38. / 9. + 1e-6)).abs() < 2e-9, "reverse {reach}");
+        assert!(matches!(
+            geometry.through_all_station((source, face), [0., 0., -1.], 0., &[target]),
+            Err(NewellKernelError::InvalidParameter {
+                parameter: "NoThroughAllHit"
+            })
+        ));
+        Ok(())
+    }
+    #[test]
+    fn nonparallel_cylinder_partial_filled_and_parallel_open_chain_hits_are_certified() -> TestResult
+    {
+        let mut geometry = NewellGeometry::new();
+        let solid = brepkit_operations::primitives::make_cylinder(&mut geometry.topology, 1., 2.)?;
+        brepkit_operations::transform::transform_solid(
+            &mut geometry.topology,
+            solid,
+            &Mat4([
+                [0., 0., 1., 0.],
+                [0., 1., 0., 0.],
+                [-1., 0., 0., 4.],
+                [0., 0., 0., 1.],
+            ]),
+        )?;
+        let target = geometry.insert(solid)?;
+        let source = geometry.box_shape([1., 0.25, 1.], [0.5, 0.5, 0.])?;
+        let face = geometry
+            .profile_faces(source)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., 1.])
+            .ok_or("source")?;
+        let expected = 3. + 0.75_f64.sqrt() + 1e-6;
+        assert!(
+            (geometry.through_all_station((source, face.face), [0., 0., 1.], 0., &[target])?
+                - expected)
+                .abs()
+                < 2e-9
+        );
+        let edge = face.wires[0]
+            .edges
+            .iter()
+            .find(|e| (e.start[1] - 0.5).abs() < 1e-9 && (e.end[1] - 0.5).abs() < 1e-9)
+            .ok_or("parallel boundary")?
+            .edge;
+        let sheet = geometry.extrude_surface(NewellSurfaceExtrude {
+            profile: (source, face.face),
+            boundary: crate::NewellBoundary::Edge { wire: 0, edge },
+            direction: [0., 0., 1.],
+            start: NewellSurfaceStart::Distance(0.),
+            extent: NewellSurfaceExtent::ThroughAll(vec![target]),
+            sides: NewellSurfaceSides::One,
+        })?[0];
+        assert!((geometry.surface_area(sheet)? - expected).abs() < 1e-6);
+        assert!(!geometry.tessellate(sheet, 0.02)?.indices().is_empty());
+        Ok(())
+    }
+    #[test]
+    fn partial_nonparallel_hit_with_a_curved_profile_retains_certified_extrema() -> TestResult {
+        let solid = crate::NewellProfile::closed_cubic([[0., 0.], [2., 3.], [4., 2.], [6., 0.]])?
+            .extrude([0., 0., 1.], 1.)?;
+        let mut geometry = NewellGeometry::new();
+        geometry.topology = solid.topology;
+        let source = geometry.insert(solid.solid)?;
+        let face = geometry
+            .profile_faces(source)?
+            .into_iter()
+            .find(|f| f.frame.normal == [0., 0., 1.])
+            .ok_or("curve source")?
+            .face;
+        let low = [
+            Point3::new(0., 0., 4.),
+            Point3::new(2., 3., 7.),
+            Point3::new(4., 2., 6.),
+            Point3::new(6., 0., 4.),
+        ];
+        let high = low.map(|p| p + Vec3::new(1.2, 0., 1.6));
+        let (native, _, _) = crate::surface::cubic_band(&mut geometry.topology, low, high, false)?;
+        let target = geometry.insert_surface(vec![native])?;
+        let t = (4.44 - 10.0368_f64.sqrt()) / 3.6;
+        let expected = 4.6 + 9. * t - 12. * t * t + 3. * t * t * t + 1e-6;
+        let reach = geometry.through_all_station((source, face), [0., 0., 1.], 0., &[target])?;
+        assert!(
+            (reach - expected).abs() < 2e-9,
+            "reach {reach}, expected {expected}"
+        );
+        let output = geometry.extrude_face(source, face, Some([0., 0., 1.]), 0., reach)?;
+        assert!((geometry.volume(output)? - 7.5 * expected).abs() < 1e-6);
+        assert!(!geometry.tessellate(output, 0.02)?.indices().is_empty());
+        Ok(())
+    }
+    #[test]
     fn curved_through_all_uses_finite_hits_parallel_sheets_and_filled_interiors() -> TestResult {
-        let solid=crate::NewellProfile::closed_cubic([[0.,0.],[2.,3.],[4.,2.],[6.,0.]])?.extrude([0.,0.,1.],1.)?;
-        let mut geometry=NewellGeometry::new();geometry.topology=solid.topology;let source=geometry.insert(solid.solid)?;
-        let profile=geometry.profile_faces(source)?.into_iter().find(|face|face.frame.normal==[0.,0.,1.]).ok_or("profile")?;
-        let edge=profile.wires[0].edges.iter().find(|edge|!edge.straight).ok_or("cubic")?.edge;
-        let boundary=crate::NewellBoundary::Edge{wire:0,edge};
-        let a=geometry.box_shape([2.,10.,1.],[0.,-4.,2.])?;
-        let b=geometry.box_shape([2.,10.,1.],[4.,-4.,8.])?;
-        let miss=geometry.box_shape([1.;3],[100.;3])?;
-        let request=NewellSurfaceExtrude{profile:(source,profile.face),boundary,direction:[0.,0.,1.],start:NewellSurfaceStart::Distance(0.),extent:NewellSurfaceExtent::ThroughAll(vec![a,b,miss]),sides:NewellSurfaceSides::One};
-        let sheet=geometry.extrude_surface(request.clone())?[0];
-        let curves=geometry.selected_boundary_curves((source,profile.face),boundary)?;
-        let mut sum=0.;let n=16384;for i in 0..=n {let t=f64::from(i)/f64::from(n);let q=9.-24.*t+9.*t*t;sum+=(if i==0||i==n{1.}else if i%2==0{2.}else{4.})*(36.+q*q).sqrt();}let length=sum/(3.*f64::from(n));
-        assert!((geometry.surface_area(sheet)?-(8.+1e-6)*length).abs()<1e-6);
-        assert_eq!(curves.len(),1);
-        assert!((geometry.through_all_station((source,profile.face),[0.,0.,1.],0.,&[a,b,miss])?-8.-1e-6).abs()<1e-8);
-        let tall=geometry.sweep_surface((source,profile.face),boundary,[0.,0.,1.],5.,12.)?[0];
-        let mut parallel=request.clone();parallel.extent=NewellSurfaceExtent::ThroughAll(vec![a,tall,miss]);
-        let sheet=geometry.extrude_surface(parallel)?[0];assert!((geometry.surface_area(sheet)?-(12.+1e-6)*length).abs()<1e-6);
-        let inside=geometry.box_shape([0.2,0.2,1.],[2.7,0.4,10.])?;
-        assert!((geometry.through_all_station((source,profile.face),[0.,0.,1.],0.,&[inside])?-10.-1e-6).abs()<1e-8);
-        let mut boundary_miss=request;boundary_miss.extent=NewellSurfaceExtent::ThroughAll(vec![inside]);
+        let solid = crate::NewellProfile::closed_cubic([[0., 0.], [2., 3.], [4., 2.], [6., 0.]])?
+            .extrude([0., 0., 1.], 1.)?;
+        let mut geometry = NewellGeometry::new();
+        geometry.topology = solid.topology;
+        let source = geometry.insert(solid.solid)?;
+        let profile = geometry
+            .profile_faces(source)?
+            .into_iter()
+            .find(|face| face.frame.normal == [0., 0., 1.])
+            .ok_or("profile")?;
+        let edge = profile.wires[0]
+            .edges
+            .iter()
+            .find(|edge| !edge.straight)
+            .ok_or("cubic")?
+            .edge;
+        let boundary = crate::NewellBoundary::Edge { wire: 0, edge };
+        let a = geometry.box_shape([2., 10., 1.], [0., -4., 2.])?;
+        let b = geometry.box_shape([2., 10., 1.], [4., -4., 8.])?;
+        let miss = geometry.box_shape([1.; 3], [100.; 3])?;
+        let request = NewellSurfaceExtrude {
+            profile: (source, profile.face),
+            boundary,
+            direction: [0., 0., 1.],
+            start: NewellSurfaceStart::Distance(0.),
+            extent: NewellSurfaceExtent::ThroughAll(vec![a, b, miss]),
+            sides: NewellSurfaceSides::One,
+        };
+        let sheet = geometry.extrude_surface(request.clone())?[0];
+        let curves = geometry.selected_boundary_curves((source, profile.face), boundary)?;
+        let mut sum = 0.;
+        let n = 16384;
+        for i in 0..=n {
+            let t = f64::from(i) / f64::from(n);
+            let q = 9. - 24. * t + 9. * t * t;
+            sum += (if i == 0 || i == n {
+                1.
+            } else if i % 2 == 0 {
+                2.
+            } else {
+                4.
+            }) * (36. + q * q).sqrt();
+        }
+        let length = sum / (3. * f64::from(n));
+        assert!((geometry.surface_area(sheet)? - (8. + 1e-6) * length).abs() < 1e-6);
+        assert_eq!(curves.len(), 1);
+        assert!(
+            (geometry.through_all_station(
+                (source, profile.face),
+                [0., 0., 1.],
+                0.,
+                &[a, b, miss]
+            )? - 8.
+                - 1e-6)
+                .abs()
+                < 1e-8
+        );
+        let tall =
+            geometry.sweep_surface((source, profile.face), boundary, [0., 0., 1.], 5., 12.)?[0];
+        let mut parallel = request.clone();
+        parallel.extent = NewellSurfaceExtent::ThroughAll(vec![a, tall, miss]);
+        let sheet = geometry.extrude_surface(parallel)?[0];
+        assert!((geometry.surface_area(sheet)? - (12. + 1e-6) * length).abs() < 1e-6);
+        let inside = geometry.box_shape([0.2, 0.2, 1.], [2.7, 0.4, 10.])?;
+        assert!(
+            (geometry.through_all_station((source, profile.face), [0., 0., 1.], 0., &[inside])?
+                - 10.
+                - 1e-6)
+                .abs()
+                < 1e-8
+        );
+        let mut boundary_miss = request;
+        boundary_miss.extent = NewellSurfaceExtent::ThroughAll(vec![inside]);
         assert!(geometry.extrude_surface(boundary_miss).is_err());
         Ok(())
     }
     #[test]
     fn exact_circular_target_trim_classifies_the_whole_chain() -> TestResult {
-        let mut geometry=NewellGeometry::new();
-        let cylinder=brepkit_operations::primitives::make_cylinder(&mut geometry.topology,2.,1.)?;
-        brepkit_operations::transform::transform_solid(&mut geometry.topology,cylinder,&Mat4::translation(0.,0.,5.))?;
-        let target=geometry.insert(cylinder)?;
-        let face=geometry.profile_faces(target)?.into_iter().find(|face|face.frame.normal==[0.,0.,1.]).ok_or("cap")?.face;
-        let trim=geometry.exact_planar_trim(NewellFaceTarget{shape:target,face,clearance:0.})?;
-        assert!(trim.contains(Point3::new(0.,0.,6.))?);
-        assert!(trim.contains(Point3::new(1.9,0.,6.))?);
-        assert!(!trim.contains(Point3::new(2.1,0.,6.))?);
-        let source=geometry.box_shape([1.,1.,1.],[-0.5,-0.5,0.])?;
-        let profile=geometry.profile_faces(source)?.into_iter().find(|face|face.frame.normal==[0.,0.,1.]).ok_or("profile")?.face;
-        let request=NewellSurfaceExtrude{profile:(source,profile),boundary:crate::NewellBoundary::Face,direction:[0.,0.,1.],start:NewellSurfaceStart::Distance(0.),extent:NewellSurfaceExtent::UpTo(NewellFaceTarget{shape:target,face,clearance:0.}),sides:NewellSurfaceSides::One};
-        let sheet=geometry.extrude_surface(request)?[0];assert!((geometry.surface_area(sheet)?-20.).abs()<1e-6);
+        let mut geometry = NewellGeometry::new();
+        let cylinder =
+            brepkit_operations::primitives::make_cylinder(&mut geometry.topology, 2., 1.)?;
+        brepkit_operations::transform::transform_solid(
+            &mut geometry.topology,
+            cylinder,
+            &Mat4::translation(0., 0., 5.),
+        )?;
+        let target = geometry.insert(cylinder)?;
+        let face = geometry
+            .profile_faces(target)?
+            .into_iter()
+            .find(|face| face.frame.normal == [0., 0., 1.])
+            .ok_or("cap")?
+            .face;
+        let trim = geometry.exact_planar_trim(NewellFaceTarget {
+            shape: target,
+            face,
+            clearance: 0.,
+        })?;
+        assert!(trim.contains(Point3::new(0., 0., 6.))?);
+        assert!(trim.contains(Point3::new(1.9, 0., 6.))?);
+        assert!(!trim.contains(Point3::new(2.1, 0., 6.))?);
+        let source = geometry.box_shape([1., 1., 1.], [-0.5, -0.5, 0.])?;
+        let profile = geometry
+            .profile_faces(source)?
+            .into_iter()
+            .find(|face| face.frame.normal == [0., 0., 1.])
+            .ok_or("profile")?
+            .face;
+        let request = NewellSurfaceExtrude {
+            profile: (source, profile),
+            boundary: crate::NewellBoundary::Face,
+            direction: [0., 0., 1.],
+            start: NewellSurfaceStart::Distance(0.),
+            extent: NewellSurfaceExtent::UpTo(NewellFaceTarget {
+                shape: target,
+                face,
+                clearance: 0.,
+            }),
+            sides: NewellSurfaceSides::One,
+        };
+        let sheet = geometry.extrude_surface(request)?[0];
+        assert!((geometry.surface_area(sheet)? - 20.).abs() < 1e-6);
         Ok(())
     }
     #[test]
@@ -1787,6 +3060,34 @@ mod tests {
         symmetric.sides = NewellSurfaceSides::Symmetric;
         let doubled = geometry.extrude_surface(symmetric)?[0];
         assert!((geometry.surface_area(doubled)? - 2. * expected).abs() < 1e-6);
+        let mut crossing = request.clone();
+        crossing.sides = NewellSurfaceSides::Second {
+            extent: NewellSurfaceExtent::Blind(4.3),
+            reverse: true,
+        };
+        let united = geometry.extrude_surface(crossing)?[0];
+        let mut sum = 0.;
+        for i in 0..=n {
+            let t = f64::from(i) / f64::from(n);
+            let q = 9. - 24. * t + 9. * t * t;
+            let weight = if i == 0 || i == n {
+                1.
+            } else if i % 2 == 0 {
+                2.
+            } else {
+                4.
+            };
+            sum += weight * (4. + 0.6 * t).max(4.3) * (36. + q * q).sqrt();
+        }
+        assert!((geometry.surface_area(united)? - sum / (3. * f64::from(n))).abs() < 1e-6);
+        assert_eq!(geometry.face_count(united)?, 2);
+        let mesh = geometry.tessellate(united, 0.02)?;
+        assert!(!mesh.indices().is_empty());
+        assert_eq!(
+            mesh.feature_edges().offsets().len(),
+            7,
+            "the shared interior ruling is not a feature edge"
+        );
         let small = geometry.box_shape([1., 20., 1.], [0., -10., 4.])?;
         let face = geometry
             .profile_faces(small)?

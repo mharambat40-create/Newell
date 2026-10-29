@@ -13,6 +13,10 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 
+[features]
+# Metadata-only fixtures for controller regression tests; never a default feature.
+test-support = []
+
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true

@@ -6,14 +6,58 @@
 // (at your option) any later version.
 //! Per-window camera controller and gesture ownership, independent of the GPU.
 
-use crate::camera::{Camera, MIN_DISTANCE, Vec3, dot, plane_hit, scale, sub};
+use crate::camera::{Camera, MIN_DISTANCE, Vec3, dot, plane_hit, scale, sub, transform};
 use crate::input::NavigationGesture;
 use crate::picking::{PickHit, PickingScene};
 use newell_kernel::NewellMesh;
 use newell_render::{CameraSnapshot, SceneViewport, exposed_regions};
+use std::time::{Duration, Instant};
 use winit::event::{MouseButton, TouchPhase};
 
 const WORLD_REFERENCE_CLIP_SPHERE: (Vec3, f64) = ([0.0; 3], 1.01);
+
+fn clip_to_screen(clip: [f64; 4], viewport: SceneViewport) -> Option<(f64, f64)> {
+    if clip[3] <= 1.0e-6
+        || clip[2] < 0.0
+        || clip[2] > clip[3]
+        || !clip.iter().all(|value| value.is_finite())
+    {
+        return None;
+    }
+    Some((
+        f64::from(viewport.x) + (clip[0] / clip[3] + 1.0) * f64::from(viewport.width) * 0.5,
+        f64::from(viewport.y) + (1.0 - clip[1] / clip[3]) * f64::from(viewport.height) * 0.5,
+    ))
+}
+
+fn point_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+fn point_along(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+fn segment_distance(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> (f64, f64) {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length_sq = dx.mul_add(dx, dy * dy);
+    let t = if length_sq <= f64::EPSILON {
+        0.0
+    } else {
+        (((point.0 - start.0) * dx + (point.1 - start.1) * dy) / length_sq).clamp(0.0, 1.0)
+    };
+    (t, point_distance(point, point_along(start, end, t)))
+}
+
+fn screen_to_world_parameter(screen_t: f64, start_w: f64, end_w: f64) -> f64 {
+    let denominator = start_w.mul_add(screen_t, end_w * (1.0 - screen_t));
+    if denominator.abs() <= f64::EPSILON {
+        screen_t
+    } else {
+        screen_t * start_w / denominator
+    }
+}
 
 fn enclosing_sphere(a: (Vec3, f64), b: (Vec3, f64)) -> (Vec3, f64) {
     let offset = sub(b.0, a.0);
@@ -86,6 +130,19 @@ struct Zoom {
     anchor: Vec3,
     point: (f64, f64),
 }
+#[derive(Debug, Clone, Copy)]
+struct ViewTransition {
+    started: Instant,
+    from: Camera,
+    to: Camera,
+    pivot: Vec3,
+    screen_point: (f64, f64),
+    pivot_depth: f64,
+    viewport: SceneViewport,
+    mesh_revision: u64,
+}
+const VIEW_TRANSITION_DURATION: Duration = Duration::from_millis(250);
+const VIEW_TRANSITION_FRAME: Duration = Duration::from_millis(16);
 
 /// The only mutable camera/navigation owner. View snapshots contain matrices only.
 #[derive(Debug, Default)]
@@ -107,6 +164,7 @@ pub struct Navigation {
     zoom: Option<Zoom>,
     scroll_gate: NavigationGesture,
     pinch_gate: NavigationGesture,
+    transition: Option<ViewTransition>,
     revision: u64,
 }
 impl Navigation {
@@ -157,6 +215,108 @@ impl Navigation {
         }
         self.scene.pick(self.camera.ray(point)?)
     }
+    /// Picks a renderer-owned reference from its actual projected world geometry.
+    /// Translucently occluded references remain eligible; camera clipping and exposed
+    /// viewport admission still apply.
+    #[must_use]
+    pub fn pick_origin_reference(&self, point: (f64, f64)) -> Option<newell_ui::OriginReference> {
+        use newell_ui::OriginReference as R;
+        const AXIS_LENGTH_PX: f64 = 192.0;
+        const PLANE_OUTER_PX: f64 = 156.0;
+        const PLANE_INSET: f64 = 0.2;
+        const AXIS_TOLERANCE_PX: f64 = 5.0;
+        if !self.visible(point) {
+            return None;
+        }
+        let camera = self.camera;
+        let snapshot = self.snapshot()?;
+        let view_projection = snapshot
+            .view_projection()
+            .map(|column| column.map(f64::from));
+        let origin_clip = transform(view_projection, [0.0, 0.0, 0.0, 1.0]);
+        if origin_clip[3] <= 1.0e-6 || origin_clip[2] < 0.0 || origin_clip[2] > origin_clip[3] {
+            return None;
+        }
+        let projection = snapshot.projection();
+        let pixels_per_world = f64::from(projection[1][1].abs())
+            * f64::from(camera.viewport.height)
+            / (2.0 * origin_clip[3]);
+        let world_scale = AXIS_LENGTH_PX / pixels_per_world;
+        if !world_scale.is_finite() || world_scale <= 0.0 {
+            return None;
+        }
+        let origin_screen = clip_to_screen(origin_clip, camera.viewport)?;
+        let origin_distance = point_distance(point, origin_screen);
+        if origin_distance <= 5.0 {
+            return Some(R::O);
+        }
+
+        let mut axis_hit: Option<(f64, usize, R)> = None;
+        for (axis, reference) in [R::X, R::Y, R::Z].into_iter().enumerate() {
+            let mut end = [0.0; 3];
+            end[axis] = world_scale;
+            let end_clip = transform(view_projection, [end[0], end[1], end[2], 1.0]);
+            let Some(end_screen) = clip_to_screen(end_clip, camera.viewport) else {
+                continue;
+            };
+            let (screen_t, distance) = segment_distance(point, origin_screen, end_screen);
+            if distance > AXIS_TOLERANCE_PX {
+                continue;
+            }
+            let dash_distance = point_distance(
+                origin_screen,
+                point_along(origin_screen, end_screen, screen_t),
+            );
+            if dash_distance.rem_euclid(10.0) >= 6.0 {
+                continue;
+            }
+            let world_t = screen_to_world_parameter(screen_t, origin_clip[3], end_clip[3]);
+            let mut world_point = [0.0; 3];
+            world_point[axis] = world_scale * world_t;
+            let depth = dot(sub(world_point, camera.eye), camera.basis().2);
+            let candidate = (depth, axis, reference);
+            if axis_hit.is_none_or(|best| {
+                depth.total_cmp(&best.0).is_lt()
+                    || (depth.total_cmp(&best.0).is_eq() && axis < best.1)
+            }) {
+                axis_hit = Some(candidate);
+            }
+        }
+        if let Some((_, _, reference)) = axis_hit {
+            return Some(reference);
+        }
+
+        let ray = camera.ray(point)?;
+        let mut plane_hit_choice: Option<(f64, usize, R)> = None;
+        for (index, (reference, normal_axis, a, b)) in
+            [(R::XY, 2, 0, 1), (R::XZ, 1, 0, 2), (R::YZ, 0, 1, 2)]
+                .into_iter()
+                .enumerate()
+        {
+            let mut normal = [0.0; 3];
+            normal[normal_axis] = 1.0;
+            let Some(hit) = plane_hit(ray, [0.0; 3], normal) else {
+                continue;
+            };
+            let lo = PLANE_OUTER_PX * PLANE_INSET / AXIS_LENGTH_PX * world_scale;
+            let hi = PLANE_OUTER_PX / AXIS_LENGTH_PX * world_scale;
+            if !(lo..=hi).contains(&hit[a]) || !(lo..=hi).contains(&hit[b]) {
+                continue;
+            }
+            let clip = transform(view_projection, [hit[0], hit[1], hit[2], 1.0]);
+            if clip[3] <= 1.0e-6 || clip[2] < 0.0 || clip[2] > clip[3] {
+                continue;
+            }
+            let depth = dot(sub(hit, camera.eye), camera.basis().2);
+            if plane_hit_choice.is_none_or(|best| {
+                depth.total_cmp(&best.0).is_lt()
+                    || (depth.total_cmp(&best.0).is_eq() && index < best.1)
+            }) {
+                plane_hit_choice = Some((depth, index, reference));
+            }
+        }
+        plane_hit_choice.map(|(_, _, reference)| reference)
+    }
     fn pivot(&self, point: (f64, f64)) -> Vec3 {
         self.pick(point)
             .map(|hit| hit.point)
@@ -191,6 +351,9 @@ impl Navigation {
             || display_scale <= 0.0
         {
             return false;
+        }
+        if !matches!(kind, DragKind::PrimaryOrbit | DragKind::SecondaryPan) {
+            self.transition = None;
         }
         let pivot = self.pivot(point);
         let depth = dot(sub(pivot, self.camera.eye), self.camera.basis().2).max(MIN_DISTANCE);
@@ -259,6 +422,7 @@ impl Navigation {
         }
         self.pending_drag = None;
         self.drag = Some(pending);
+        self.transition = None;
         self.navigate(point)
     }
     /// Advances the pending primary press without affecting a secondary press.
@@ -543,6 +707,11 @@ impl Navigation {
     }
     /// Cancels captures without altering pose. Ongoing trackpad streams stay rejected.
     pub fn cancel(&mut self) {
+        self.cancel_captures();
+        self.transition = None;
+    }
+    /// Clears direct/pending gestures while allowing an automatic view transition to continue.
+    pub fn cancel_captures(&mut self) {
         self.drag = None;
         self.pending_drag = None;
         self.secondary_scroll_offset = (0.0, 0.0);
@@ -616,6 +785,7 @@ impl Navigation {
         let Some(capture) = capture else {
             return false;
         };
+        self.transition = None;
         let before = self.camera;
         self.camera = self.camera.zoom(
             capture.anchor,
@@ -672,6 +842,151 @@ impl Navigation {
             self.camera.align_view_about(direction, pivot, screen_point);
         }
         self.record(before)
+    }
+    /// Starts a 250 ms automatic-view transition around the current contextual pivot.
+    pub fn start_view_transition(
+        &mut self,
+        direction: newell_ui::navigation_widgets::ViewDirection,
+        now: Instant,
+    ) -> bool {
+        let from = self.prepare_transition_start(now);
+        let viewport = from.viewport;
+        let center_pixel = (
+            f64::from(viewport.x) + f64::from(viewport.width) * 0.5,
+            f64::from(viewport.y) + f64::from(viewport.height) * 0.5,
+        );
+        let pivot = self.pivot(center_pixel);
+        let Some(screen_point) = from.project(pivot) else {
+            return false;
+        };
+        let pivot_depth = dot(sub(pivot, from.eye), from.basis().2);
+        if !pivot_depth.is_finite() || pivot_depth <= MIN_DISTANCE {
+            return false;
+        }
+        let mut to = from;
+        if !to.align_view_about(direction, pivot, screen_point) || to == from {
+            self.transition = None;
+            return false;
+        }
+        self.install_transition(now, from, to, pivot, screen_point, pivot_depth)
+    }
+    /// Starts the same transition for the existing closest-principal-axis command.
+    pub fn start_normal_to_axis_transition(&mut self, now: Instant) -> bool {
+        let from = self.prepare_transition_start(now);
+        let viewport = from.viewport;
+        let point = (
+            f64::from(viewport.x) + f64::from(viewport.width) * 0.5,
+            f64::from(viewport.y) + f64::from(viewport.height) * 0.5,
+        );
+        let pivot = self.pivot(point);
+        let Some(screen_point) = from.project(pivot) else {
+            return false;
+        };
+        let pivot_depth = dot(sub(pivot, from.eye), from.basis().2);
+        let mut to = from;
+        to.normal_to_axis();
+        let Some(anchored) = to.interpolate_view_about(to, 1.0, pivot, screen_point, pivot_depth)
+        else {
+            self.transition = None;
+            return false;
+        };
+        to = anchored;
+        if to == from {
+            self.transition = None;
+            return false;
+        }
+        self.install_transition(now, from, to, pivot, screen_point, pivot_depth)
+    }
+    fn prepare_transition_start(&mut self, now: Instant) -> Camera {
+        if self.transition.is_some() {
+            self.advance_view_transition(now);
+        }
+        self.cancel_captures();
+        self.camera
+    }
+    fn install_transition(
+        &mut self,
+        now: Instant,
+        from: Camera,
+        to: Camera,
+        pivot: Vec3,
+        screen_point: (f64, f64),
+        pivot_depth: f64,
+    ) -> bool {
+        if !pivot_depth.is_finite() || pivot_depth <= MIN_DISTANCE || to == from {
+            self.transition = None;
+            return false;
+        }
+        self.transition = Some(ViewTransition {
+            started: now,
+            from,
+            to,
+            pivot,
+            screen_point,
+            pivot_depth,
+            viewport: from.viewport,
+            mesh_revision: self.scene.revision(),
+        });
+        self.advance_view_transition(now);
+        self.transition.is_some()
+    }
+    /// Advances an active transition and reports whether the displayed pose changed.
+    pub fn advance_view_transition(&mut self, now: Instant) -> bool {
+        let Some(transition) = self.transition else {
+            return false;
+        };
+        if transition.viewport != self.camera.viewport
+            || transition.mesh_revision != self.scene.revision()
+        {
+            self.transition = None;
+            return false;
+        }
+        let raw = (now
+            .saturating_duration_since(transition.started)
+            .as_secs_f64()
+            / VIEW_TRANSITION_DURATION.as_secs_f64())
+        .clamp(0.0, 1.0);
+        let amount = raw * raw * (3.0 - 2.0 * raw);
+        let next = if raw <= 0.0 {
+            Some(transition.from)
+        } else if raw >= 1.0 {
+            Some(transition.to)
+        } else {
+            transition.from.interpolate_view_about(
+                transition.to,
+                amount,
+                transition.pivot,
+                transition.screen_point,
+                transition.pivot_depth,
+            )
+        };
+        let Some(next) = next else {
+            self.transition = None;
+            return false;
+        };
+        let before = self.camera;
+        self.camera = next;
+        if let Some(mut pending) = self.pending_drag {
+            pending.camera = self.camera;
+            pending.pivot = self.pivot(pending.start);
+            pending.depth =
+                dot(sub(pending.pivot, self.camera.eye), self.camera.basis().2).max(MIN_DISTANCE);
+            self.pending_drag = Some(pending);
+        }
+        if raw >= 1.0 {
+            self.transition = None;
+        }
+        self.record(before)
+    }
+    /// Next event-loop wake required while a view transition is active.
+    #[must_use]
+    pub fn transition_deadline(&self, now: Instant) -> Option<Instant> {
+        let transition = self.transition?;
+        Some((now + VIEW_TRANSITION_FRAME).min(transition.started + VIEW_TRANSITION_DURATION))
+    }
+    /// Cancels only an automatic view animation when its window is no longer renderable.
+    pub fn cancel_view_transition(&mut self) {
+        self.transition = None;
     }
     /// Explicit principal-axis alignment, with a stable vertical-view heading.
     pub fn normal_to_axis(&mut self) -> bool {
@@ -833,5 +1148,104 @@ mod click_certificate_tests {
             n.cancel();
             assert_eq!(n.finish_primary((100.0, 100.0)), None);
         }
+    }
+
+    #[test]
+    fn origin_reference_picking_uses_projected_geometry_priority_and_ui_occlusion() {
+        use newell_ui::OriginReference as R;
+        let viewport = SceneViewport::new(0, 0, 640, 480);
+        let mut camera = Camera::look_at([0.0, 0.0, 20.0], [0.0; 3], viewport);
+        camera.set_perspective(false);
+        let mut nav = Navigation::new(camera);
+        nav.set_layout(viewport, Vec::new());
+        let origin = camera.project([0.0; 3]).unwrap();
+        assert_eq!(nav.pick_origin_reference(origin), Some(R::O));
+        assert_eq!(
+            nav.pick_origin_reference((origin.0 + 10.0, origin.1)),
+            Some(R::X)
+        );
+        assert_eq!(
+            nav.pick_origin_reference((origin.0 + 80.0, origin.1 - 80.0)),
+            Some(R::XY)
+        );
+
+        nav.set_layout(
+            viewport,
+            vec![SceneViewport::new(
+                origin.0.floor() as u32 - 1,
+                origin.1.floor() as u32 - 1,
+                3,
+                3,
+            )],
+        );
+        assert_eq!(nav.pick_origin_reference(origin), None);
+
+        let away = Camera::look_at([0.0, 0.0, -20.0], [0.0, 0.0, -40.0], viewport);
+        nav = Navigation::new(away);
+        nav.set_layout(viewport, Vec::new());
+        assert_eq!(nav.pick_origin_reference((320.0, 240.0)), None);
+    }
+
+    #[test]
+    fn automatic_view_transition_keeps_context_pivot_and_restarts_from_displayed_pose() {
+        use newell_ui::navigation_widgets::ViewDirection;
+        let viewport = SceneViewport::new(0, 0, 640, 480);
+        for perspective in [false, true] {
+            let mut camera = Camera::look_at([7.0, 5.0, 6.0], [3.0, 2.0, 1.0], viewport);
+            camera.set_perspective(perspective);
+            let pivot = [2.0, 2.5, 1.5];
+            let screen = camera.project(pivot).unwrap();
+            let depth = dot(sub(pivot, camera.eye), camera.basis().2);
+            let mut target = camera;
+            target.align_view_about(ViewDirection::new([0, 0, 1]).unwrap(), pivot, screen);
+            let middle = camera
+                .interpolate_view_about(target, 0.5, pivot, screen, depth)
+                .unwrap();
+            let projected = middle.project(pivot).unwrap();
+            assert!((projected.0 - screen.0).abs() < 1e-8);
+            assert!((projected.1 - screen.1).abs() < 1e-8);
+            assert_eq!(middle.perspective, perspective);
+            assert_eq!(middle.orthographic_height, camera.orthographic_height);
+            assert_eq!(middle.vertical_fov, camera.vertical_fov);
+        }
+
+        let mut nav = Navigation::new(Camera::look_at([7.0, 5.0, 6.0], [3.0, 2.0, 1.0], viewport));
+        nav.set_layout(viewport, Vec::new());
+        let now = Instant::now();
+        assert!(nav.start_view_transition(ViewDirection::new([0, 0, 1]).unwrap(), now));
+        assert!(nav.advance_view_transition(now + Duration::from_millis(125)));
+        let displayed = nav.camera();
+        assert!(nav.start_view_transition(
+            ViewDirection::new([0, -1, 0]).unwrap(),
+            now + Duration::from_millis(125),
+        ));
+        assert_eq!(nav.camera(), displayed);
+        let from_second = nav.camera();
+        let viewport_center = (
+            f64::from(viewport.x) + f64::from(viewport.width) * 0.5,
+            f64::from(viewport.y) + f64::from(viewport.height) * 0.5,
+        );
+        let pivot = nav.pivot(viewport_center);
+        let screen = from_second.project(pivot).unwrap();
+        let mut expected = from_second;
+        expected.align_view_about(ViewDirection::new([0, -1, 0]).unwrap(), pivot, screen);
+        assert!(nav.advance_view_transition(now + Duration::from_millis(375)));
+        assert_eq!(nav.camera(), expected);
+        assert!(
+            nav.transition_deadline(now + Duration::from_millis(375))
+                .is_none()
+        );
+
+        assert!(nav.start_view_transition(
+            ViewDirection::new([0, 0, 1]).unwrap(),
+            now + Duration::from_millis(400),
+        ));
+        assert!(nav.begin(DragKind::Pan, (320.0, 240.0), 1.0, true));
+        assert!(
+            nav.transition_deadline(now + Duration::from_millis(401))
+                .is_none()
+        );
+        nav.cancel();
+        assert!(!nav.advance_view_transition(now + Duration::from_millis(700)));
     }
 }

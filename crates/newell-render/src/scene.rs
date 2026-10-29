@@ -12,12 +12,12 @@ use std::collections::BTreeMap;
 use wgpu::util::DeviceExt;
 
 // Fixed physical-pixel baseline for the origin reference assembly (independent of UI scale).
-const REFERENCE_AXIS_LENGTH_PX: f32 = 96.0;
+const REFERENCE_AXIS_LENGTH_PX: f32 = 192.0;
 const REFERENCE_MARKER_DIAMETER_PX: f32 = 3.84; // half of the former 0.08 * 96 diameter
 const REFERENCE_DASH_PX: f32 = 6.0;
 const REFERENCE_DASH_GAP_PX: f32 = 4.0;
-const REFERENCE_PLANE_INSET: f32 = 0.05;
-const REFERENCE_PLANE_EXTENT: f32 = 0.70;
+const REFERENCE_PLANE_OUTER_EXTENT_PX: f32 = 156.0;
+const REFERENCE_PLANE_INSET_FRACTION: f32 = 0.20;
 const REFERENCE_NEUTRAL_COLOR: [f32; 3] = [201.0 / 255.0, 205.0 / 255.0, 210.0 / 255.0];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1413,8 +1413,8 @@ fn world_reference_geometry() -> WorldReferenceGeometry {
             p[b] = y;
             p
         };
-        let lo = REFERENCE_PLANE_INSET;
-        let hi = REFERENCE_PLANE_EXTENT;
+        let hi = REFERENCE_PLANE_OUTER_EXTENT_PX / REFERENCE_AXIS_LENGTH_PX;
+        let lo = hi * REFERENCE_PLANE_INSET_FRACTION;
         let corners = [point(lo, lo), point(hi, lo), point(hi, hi), point(lo, hi)];
         for triangle in [[0, 1, 2], [0, 2, 3]] {
             push_reference_triangle(
@@ -1624,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn origin_reference_planes_are_neutral_and_axes_keep_gizmo_colors() {
+    fn origin_reference_geometry_uses_doubled_dimensions_and_neutral_planes() {
         use super::*;
         use newell_ui::navigation_widgets::NAV_AXIS_COLORS;
         let g = world_reference_geometry();
@@ -1632,6 +1632,14 @@ mod tests {
         assert_eq!(g.lines.len(), 30);
         let plane_fill = reference_vertex([0.; 3], [0.; 3], REFERENCE_NEUTRAL_COLOR, 0.10).color;
         let plane_outline = reference_vertex([0.; 3], [0.; 3], REFERENCE_NEUTRAL_COLOR, 0.20).color;
+        assert_eq!(REFERENCE_AXIS_LENGTH_PX, 192.0);
+        assert_eq!(REFERENCE_PLANE_OUTER_EXTENT_PX, 156.0);
+        let plane_outer = REFERENCE_PLANE_OUTER_EXTENT_PX;
+        let plane_inset = plane_outer * REFERENCE_PLANE_INSET_FRACTION;
+        let plane_extent = plane_outer - plane_inset;
+        let previous_plane_extent = (0.70 - 0.05) * 96.0;
+        assert!((plane_inset / plane_outer - 0.20).abs() < 1e-6);
+        assert!((plane_extent - previous_plane_extent * 2.0).abs() < 1e-4);
         assert!(
             g.surfaces[..g.plane_vertices as usize]
                 .iter()
@@ -1650,7 +1658,8 @@ mod tests {
                 for other in 0..3 {
                     if other != axis {
                         assert!(
-                            (REFERENCE_PLANE_INSET..=REFERENCE_PLANE_EXTENT)
+                            (plane_inset / REFERENCE_AXIS_LENGTH_PX
+                                ..=plane_outer / REFERENCE_AXIS_LENGTH_PX)
                                 .contains(&v.position[other])
                         );
                     }
@@ -1661,7 +1670,7 @@ mod tests {
                 assert_eq!(v.dashed, 0.);
                 for other in 0..3 {
                     if other != axis {
-                        assert!(v.position[other] >= 0.05);
+                        assert!(v.position[other] >= plane_inset / REFERENCE_AXIS_LENGTH_PX);
                     }
                 }
             }
@@ -1698,14 +1707,14 @@ mod tests {
                 let expected = REFERENCE_AXIS_LENGTH_PX * 2. * origin[3]
                     / (camera.projection()[1][1].abs() * viewport.height as f32);
                 assert!((scale - expected).abs() < 1e-5);
-                // Camera-up tangent at origin must always occupy exactly the baseline pixels.
+                // Camera-up tangent at origin must occupy the doubled reference length.
                 let view = camera.view();
                 let point = [view[0][1] * scale, view[1][1] * scale, view[2][1] * scale];
                 let end = clip_position(camera.view_projection(), point);
                 let pixels =
                     (end[1] / end[3] - origin[1] / origin[3]) * viewport.height as f32 / 2.;
                 assert!(
-                    (pixels - 96.).abs() < 0.001,
+                    (pixels - REFERENCE_AXIS_LENGTH_PX).abs() < 0.001,
                     "{perspective}/{zoom}: {pixels}"
                 );
                 let uniforms = reference_uniforms(camera, viewport).unwrap();
@@ -1841,7 +1850,7 @@ mod tests {
                     scene.set_camera(&device, camera);
                     let bytes = render(&scene);
                     // Front view: X is horizontal, Z vertical, Y disappears into depth.
-                    for d in 6..93 {
+                    for d in 6..112 {
                         let lit = (127..=128).any(|y| pixel(&bytes, 128 + d, y) != [0; 3]);
                         // Avoid exact one-pixel raster boundaries.
                         if d % 10 == 2 {
@@ -1857,8 +1866,8 @@ mod tests {
                     );
                     assert_eq!(pixel(&bytes, 100, 128), [0; 3]); // no negative X extension
                     assert_eq!(pixel(&bytes, 128, 155), [0; 3]); // no negative Z extension
-                    assert_eq!(pixel(&bytes, 128 + 98, 127), [0; 3]); // fixed endpoint
-                    let fill = pixel(&bytes, 148, 108);
+                    assert!((127..=128).any(|y| pixel(&bytes, 230, y) != [0; 3]));
+                    let fill = pixel(&bytes, 168, 88);
                     assert!(
                         fill[0].abs_diff(fill[1]) <= 4 && fill[1].abs_diff(fill[2]) <= 4,
                         "plane fill should be neutral, got {fill:?}"

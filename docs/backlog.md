@@ -149,6 +149,34 @@ The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
 - [ ] M4.10: Implement command preview, OK/Cancel semantics and rollback of
   uncommitted command state.
 
+### M4.5–M4.10 prototype closure — 2026-10-29
+
+**Implementation complete for prototype scope; acceptance pending.** The human
+explicitly deferred the two advanced geometry classes below in the
+[dated scope amendment](plans/M4.5-M4.10-extrude-pipeline.md#12-prototype-scope-amendment--2026-10-29).
+This is not completion of every original revision-2 requirement. Supported exact
+geometry and transaction correctness remain required. Fresh desktop workflows,
+regression checks and the finite remaining human-only checklist are in the
+[closure record](validation/M4.5-M4.10-extrude-pipeline.md#prototype-closure--2026-10-29).
+M4.5–M4.10 checkboxes remain unchecked pending that acceptance; the previously
+confirmed M4.4 validation is retained without requesting repetition.
+
+### Deferred advanced Extrude geometry
+
+- [ ] **M4.D1 — Nonlinear curved-support correspondence for Add/Remove.**
+  Explicitly deferred, not implemented. Preserve the supported generated-domain
+  arrangements. Fixture, pinned-API limitations and future acceptance:
+  [C((s+s²)/2) and exact 4L/L results](validation/M4.5-M4.10-extrude-pipeline.md#deferred-nonlinear-correspondence).
+  Require a certified coincidence/parameter map, exact manifold result, unique
+  retained provenance, downstream mesh, real-worker replay/identity and atomic
+  failure/draft/retry coverage before checking this item.
+- [ ] **M4.D2 — General trimmed rational targets.** Explicitly deferred where
+  the required trim/intersection/finite-hit operations are unestablished.
+  [Documented rational patch with a trimmed hole, limitations and future criteria](validation/M4.5-M4.10-extrude-pipeline.md#deferred-trimmed-rational-targets).
+  Require actual trim-aware hits/misses (both directions, filled/open profiles),
+  exact geometry/topology, stable references/mesh and atomic real-worker/draft
+  recovery. Keep the currently supported partial ruled/cylindrical cases green.
+
 ### M4.4 verification history — 2026-10-27
 
 - Manual validation: **passed by the human**; the human tested M4.4 and
@@ -158,3 +186,44 @@ The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
   formatting, strict Clippy, documentation tests and `git diff --check` passed.
   No failures were reported. The existing `block v0.1.6` future-incompatibility
   notice remains informational.
+
+
+## Milestone 5: Complete, responsive parametric Sketcher
+
+Plan: [M5 — Complete, responsive parametric Sketcher](plans/M5-sketcher.md),
+revision 2, §9.1. Planning is authorized; production execution follows human
+acceptance of M4's real command/parameter/geometry pipeline. Listing these
+slices does not approve implementation or establish completion.
+
+- [ ] M5.0: Feasibility and requirements — approved decisions, hardware/fixture
+  baselines, rank, cancellation and curve/tolerance capability evidence.
+- [ ] M5.1: Model/session/journal — stable IDs, shared data, support/frame,
+  Sketch feature, typed edits, undo/redo and versioned data transfer.
+- [ ] M5.2: Incremental numerical foundation — dependency graph, sparse solves,
+  scaling, bounded service classes and cooperative cancellation.
+- [ ] M5.3: Editing shell and navigation — panels, support picker, plane camera,
+  input routing, selection and numeric/Formula tools.
+- [ ] M5.4: Basic draw and constraints — points, lines, rectangles, polygons,
+  circles, arcs, slots and dimensional/geometric relations.
+- [ ] M5.5: Regions and selection — exact arrangements, holes/islands,
+  open chains, selected-region unions and repair diagnostics.
+- [ ] M5.6: Real CAD integration — atomic Sketch commit, region/wire profiles
+  for M4 Extrude, downstream replay and profile repair.
+- [ ] M5.7: Modify — trim, extend, split, fillet, chamfer, offset and relation
+  transfer with atomic undo.
+- [ ] M5.8: Patterns/transforms — copy, move, rotate, scale, mirror and
+  associative linear/circular patterns.
+- [ ] M5.9: Advanced curves — ellipses/arcs, bounded conics, Bézier curves,
+  fit splines and exact control refinement.
+- [ ] M5.10: Advanced constraints/diagnostics — normal/curvature relations,
+  spline tangency, rank/DOF certification and conflict diagnostics.
+- [ ] M5.11: References — Projected/Intersect/Insert, linked/copy modes and
+  dependency repair.
+- [ ] M5.12: Text — supported text entry, exact font contours, placement,
+  scaling, conversion and text-profile extrusion.
+- [ ] M5.13: Large-sketch usability — filtered/virtual lists, label placement,
+  search/isolation, label counts and slice/grid controls.
+- [ ] M5.14: Multi-window and stress — conflicts/rebase, late results,
+  history/parameter integration, memory and worker fairness.
+- [ ] M5.15: Milestone acceptance — all advertised tools, benchmark classes,
+  workspace/GPU checks and physical-device review.

@@ -1,0 +1,1550 @@
+//! Solid-level tessellation orchestration.
+
+use brepkit_math::det_hash::{DetHashMap, DetHashSet};
+use brepkit_math::vec::{Point3, Vec3};
+use brepkit_topology::Topology;
+use brepkit_topology::edge::EdgeCurve;
+use brepkit_topology::face::{FaceId, FaceSurface};
+use brepkit_topology::solid::SolidId;
+
+use super::TriangleMesh;
+use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
+use super::mesh_ops::{dedupe_coincident_triangles, split_pinched_chords, weld_boundary_vertices};
+use super::nonplanar::{
+    circle_pole_params, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
+    tessellate_nonplanar_snap, tessellate_revolution_band_shared, tessellate_torus_notch_band,
+    tessellate_torus_two_rim_band,
+};
+use super::nurbs::{compute_angular_range, compute_v_param_range};
+use super::planar::{
+    cdt_triangulate_simple, collect_wire_global_vertices, cover_by_winding, polygon_self_crosses,
+    project_by_normal, remove_closing_duplicate_global, remove_closing_duplicate_ids,
+    run_planar_cdt, tessellate_planar_shared_with_holes, unproject_point,
+};
+use super::{MERGE_GRID, point_merge_key};
+
+/// Tessellate all faces of a solid into a single watertight triangle mesh.
+///
+/// Unlike per-face `tessellate()`, this function coordinates tessellation across
+/// all faces of the solid by pre-computing shared edge tessellations. When two
+/// faces share an edge, the edge is tessellated once and both faces receive
+/// identical vertices along that boundary -- eliminating cracks between adjacent
+/// faces and producing a guaranteed 2-manifold mesh.
+///
+/// # Algorithm
+///
+/// Based on Stoger & Kurka (2003), "Watertight Tessellation of B-rep NURBS
+/// CAD-Models Using Connectivity Information":
+///
+/// 1. Build edge-to-face adjacency map from the solid's topology.
+/// 2. Tessellate each unique edge once, producing a shared polyline.
+/// 3. For each face, tessellate using cached edge points as boundary vertices.
+/// 4. Merge all per-face meshes into a single mesh with shared boundary vertices.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup or face tessellation fails.
+pub fn tessellate_solid(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_solid_with_tolerance(
+        topo,
+        solid,
+        deflection,
+        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+    )
+}
+
+/// Tessellate a solid at a density safe for mesh-boolean co-refinement.
+///
+/// Identical to [`tessellate_solid_with_tolerance`] except circular edges keep
+/// the curvature floor: the mesh boolean's robustness depends on the denser
+/// floored circle sampling, independent of the display deflection cap.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup or face tessellation fails.
+pub fn tessellate_solid_for_boolean(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_solid_core(topo, solid, deflection, angular_tol, false, true).map(|core| core.mesh)
+}
+
+/// Tessellate a solid with explicit linear and angular tolerances.
+///
+/// `angular_tol` (radians) caps the per-segment tangent turn; pass `0.0` to
+/// disable the angular criterion (linear-only, backward-compatible) path.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup or face tessellation fails.
+pub fn tessellate_solid_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_solid_core(topo, solid, deflection, angular_tol, false, false).map(|core| core.mesh)
+}
+
+/// Watertight solid tessellation with per-face triangle grouping.
+///
+/// Runs the same shared-edge-pool pipeline as [`tessellate_solid_with_tolerance`],
+/// then reorders triangles so each face's triangles are contiguous. Returns the
+/// mesh plus `face_offsets`: one entry per face of
+/// `explorer::solid_faces(topo, solid)` (in that order, including empty groups)
+/// where `face_offsets[i]` is the start offset into `mesh.indices` for face `i`,
+/// plus a final sentinel equal to `mesh.indices.len()`.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup or face tessellation fails.
+pub fn tessellate_solid_grouped_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<(TriangleMesh, Vec<u32>), crate::OperationsError> {
+    let CoreMesh {
+        mut mesh,
+        tri_faces,
+        n_faces,
+        ..
+    } = tessellate_solid_core(topo, solid, deflection, angular_tol, true, false)?;
+    let tri_faces = tri_faces.unwrap_or_default();
+    debug_assert_eq!(tri_faces.len() * 3, mesh.indices.len());
+
+    let mut counts = vec![0_u32; n_faces];
+    for &f in &tri_faces {
+        if let Some(c) = counts.get_mut(f as usize) {
+            *c += 1;
+        }
+    }
+
+    let mut face_offsets = Vec::with_capacity(n_faces + 1);
+    let mut acc = 0_u32;
+    face_offsets.push(0_u32);
+    for &c in &counts {
+        acc += c * 3;
+        face_offsets.push(acc);
+    }
+
+    // Stable counting-sort scatter: per-face triangle order is preserved.
+    let mut cursors: Vec<usize> = face_offsets[..n_faces]
+        .iter()
+        .map(|&o| o as usize)
+        .collect();
+    let mut new_indices = vec![0_u32; mesh.indices.len()];
+    for (t, &f) in tri_faces.iter().enumerate() {
+        let Some(cursor) = cursors.get_mut(f as usize) else {
+            continue;
+        };
+        let dst = *cursor;
+        new_indices[dst..dst + 3].copy_from_slice(&mesh.indices[t * 3..t * 3 + 3]);
+        *cursor += 3;
+    }
+    mesh.indices = new_indices;
+
+    Ok((mesh, face_offsets))
+}
+
+/// What [`tessellate_solid_core`] returns.
+pub(super) struct CoreMesh {
+    /// The solid's mesh.
+    pub(super) mesh: TriangleMesh,
+    /// The `tri -> face` array, when asked for.
+    pub(super) tri_faces: Option<Vec<u32>>,
+    /// How many faces the solid has.
+    pub(super) n_faces: usize,
+    /// The faces left without triangles by their meshers or by the boundary
+    /// weld. Two coincident faces of opposite sense, which cancel to nothing
+    /// by design, are not among them.
+    #[cfg(test)]
+    pub(super) unmeshed: Vec<FaceId>,
+}
+
+/// Core watertight tessellation pipeline.
+///
+/// When `track_faces` is set, also returns a parallel `tri -> face` array (one
+/// entry per triangle, holding the index of the owning face within
+/// `explorer::solid_faces` order); otherwise the attribution bookkeeping is
+/// skipped and `None` is returned. The face count is always returned.
+///
+/// `circle_floor` selects whether circular edges keep the curvature floor.
+/// Display callers pass `false` (constant-curvature circles are exact without
+/// it); the boolean mesh-fallback passes `true` for co-refinement robustness.
+/// Because the shared edge pool drives the cylinder/cone band density, this one
+/// flag governs every circular feature in the solid consistently.
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
+pub(super) fn tessellate_solid_core(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+    track_faces: bool,
+    circle_floor: bool,
+) -> Result<CoreMesh, crate::OperationsError> {
+    use brepkit_topology::explorer;
+
+    let all_faces = explorer::solid_faces(topo, solid)?;
+    let edge_face_map = explorer::edge_to_face_map(topo, solid)?;
+    let mut phase_t = PhaseTimer::start();
+    let phase = |label: &str, t: &mut PhaseTimer| t.lap(label);
+
+    // The map is a std `HashMap`, so sort its keys into ID order before use —
+    // keeping all downstream iteration deterministic regardless of
+    // insertion-order hashing.
+    let mut edge_indices: Vec<usize> = edge_face_map.keys().copied().collect();
+    edge_indices.sort_unstable();
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut edge_points: DetHashMap<usize, Vec<Point3>> = if edge_indices.len() >= 32 {
+        use rayon::prelude::*;
+        let results: Vec<Result<(usize, Vec<Point3>), crate::OperationsError>> = edge_indices
+            .par_iter()
+            .filter_map(|&edge_idx| {
+                let edge_id = topo.edge_id_from_index(edge_idx)?;
+                let edge_data = match topo.edge(edge_id) {
+                    Ok(d) => d,
+                    Err(e) => return Some(Err(crate::OperationsError::Topology(e))),
+                };
+                Some(
+                    sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)
+                        .map(|pts| (edge_idx, pts)),
+                )
+            })
+            .collect();
+        let mut map = DetHashMap::default();
+        for r in results {
+            let (idx, pts) = r?;
+            map.insert(idx, pts);
+        }
+        map
+    } else {
+        let mut map = DetHashMap::default();
+        for &edge_idx in &edge_indices {
+            if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
+                && let Ok(edge_data) = topo.edge(edge_id)
+            {
+                let points = sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
+                map.insert(edge_idx, points);
+            }
+        }
+        map
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut edge_points: DetHashMap<usize, Vec<Point3>> = {
+        let mut map = DetHashMap::default();
+        for &edge_idx in &edge_indices {
+            if let Some(edge_id) = topo.edge_id_from_index(edge_idx) {
+                if let Ok(edge_data) = topo.edge(edge_id) {
+                    let points =
+                        sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
+                    map.insert(edge_idx, points);
+                }
+            }
+        }
+        map
+    };
+
+    phase("edge_sampling", &mut phase_t);
+    // Synchronize circle edge samples with face grid density so a face's rim
+    // points line up with its own analytic grid columns.
+    {
+        for &face_id in &all_faces {
+            let face_data = topo.face(face_id)?;
+            let face_nu = match face_data.surface() {
+                FaceSurface::Cone(cone) => {
+                    let v_range =
+                        compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
+                    let u_range = compute_angular_range(topo, face_data, |p| cone.project_point(p));
+                    let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
+                    segments_for_chord_deviation_a(
+                        max_radius.max(0.01),
+                        u_range.1 - u_range.0,
+                        deflection,
+                        angular_tol,
+                        circle_floor,
+                    )
+                }
+                FaceSurface::Cylinder(cyl) => {
+                    let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p));
+                    segments_for_chord_deviation_a(
+                        cyl.radius(),
+                        u_range.1 - u_range.0,
+                        deflection,
+                        angular_tol,
+                        circle_floor,
+                    )
+                }
+                _ => continue,
+            };
+            let expected_count = face_nu + 1;
+
+            let mut wire_ids = vec![face_data.outer_wire()];
+            wire_ids.extend_from_slice(face_data.inner_wires());
+            for &wire_id in &wire_ids {
+                let wire = topo.wire(wire_id)?;
+                for oe in wire.edges() {
+                    let edge_idx = oe.edge().index();
+                    let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
+                        continue;
+                    };
+                    let Ok(edge_data) = topo.edge(edge_id) else {
+                        continue;
+                    };
+                    let EdgeCurve::Circle(circle) = edge_data.curve() else {
+                        continue;
+                    };
+
+                    if let Some(pts) = edge_points.get(&edge_idx)
+                        && pts.len() < expected_count
+                    {
+                        if tess_trace() {
+                            log::debug!(
+                                "sync e{edge_idx}: {} -> {expected_count} demanded by {face_id:?} {}",
+                                pts.len(),
+                                face_data.surface().type_tag()
+                            );
+                        }
+                        let (t_start, t_end) = circle_param_range(topo, edge_data, circle)?;
+                        let new_pts = brepkit_geometry::sampling::sample_uniform(
+                            circle,
+                            t_start,
+                            t_end,
+                            expected_count,
+                        );
+                        edge_points.insert(edge_idx, new_pts);
+                    }
+                }
+            }
+        }
+    }
+
+    // A hole passing a planar face's arc nearer than the arc's chords sag
+    // would cross them in the face's mesh: the arc is sampled finer, until
+    // its chords sag at most half the hole's clearance. The arc's samples
+    // are shared, so the face across it takes them too. The chords sag
+    // toward the arc's centre, so only a hole inside its circle can meet
+    // them, and the hole's mesh boundary is the polyline through its
+    // samples, whose farthest points from the centre are its vertices:
+    // the samples alone give the clearance, a straight edge's included.
+    for &face_id in &all_faces {
+        let face_data = topo.face(face_id)?;
+        if !face_data.surface().is_planar() || face_data.inner_wires().is_empty() {
+            continue;
+        }
+        let mut hole_points: Vec<Point3> = Vec::new();
+        for &wire_id in face_data.inner_wires() {
+            for oe in topo.wire(wire_id)?.edges() {
+                if let Some(points) = edge_points.get(&oe.edge().index()) {
+                    hole_points.extend_from_slice(points);
+                }
+            }
+        }
+        for oe in topo.wire(face_data.outer_wire())?.edges() {
+            let edge_data = topo.edge(oe.edge())?;
+            let EdgeCurve::Circle(circle) = edge_data.curve() else {
+                continue;
+            };
+            let Some(points) = edge_points.get(&oe.edge().index()) else {
+                continue;
+            };
+            let (t_start, t_end) = circle_param_range(topo, edge_data, circle)?;
+            let span = (t_end - t_start).abs();
+            let segments = points.len().saturating_sub(1).max(1);
+            #[allow(clippy::cast_precision_loss)]
+            let sag = circle.radius() * (1.0 - (0.5 * span / segments as f64).cos());
+            let clearance = hole_points
+                .iter()
+                .map(|&p| ((p - circle.center()).length() - circle.radius()).abs())
+                .fold(f64::INFINITY, f64::min);
+            if clearance >= 2.0 * sag || clearance <= 0.0 {
+                continue;
+            }
+            let half_step = (1.0 - 0.5 * clearance / circle.radius())
+                .clamp(-1.0, 1.0)
+                .acos();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let needed = ((0.5 * span / half_step).ceil() as usize).min(4096);
+            if needed > segments {
+                let finer =
+                    brepkit_geometry::sampling::sample_uniform(circle, t_start, t_end, needed + 1);
+                edge_points.insert(oe.edge().index(), finer);
+            }
+        }
+    }
+
+    // A sphere face's circle edge running over the sphere's pole (a wall
+    // through its axis) takes the pole as a sample: the face's u turns over
+    // there, and its mesher runs the loop along the pole's row from it. Both
+    // faces on the edge weld to the one sample.
+    for &face_id in &all_faces {
+        let face_data = topo.face(face_id)?;
+        let FaceSurface::Sphere(sphere) = face_data.surface() else {
+            continue;
+        };
+        for &wire_id in std::iter::once(&face_data.outer_wire()).chain(face_data.inner_wires()) {
+            for oe in topo.wire(wire_id)?.edges() {
+                let edge_data = topo.edge(oe.edge())?;
+                let EdgeCurve::Circle(circle) = edge_data.curve() else {
+                    continue;
+                };
+                let Some(points) = edge_points.get_mut(&oe.edge().index()) else {
+                    continue;
+                };
+                let (t0, t1) = circle_param_range(topo, edge_data, circle)?;
+                let along = |p: Point3| {
+                    t0 + (circle.project(p) - t0 + 1e-9).rem_euclid(std::f64::consts::TAU) - 1e-9
+                };
+                for t in circle_pole_params(circle, (t0, t1), sphere) {
+                    let pole = circle.evaluate(t);
+                    if points.iter().any(|&p| {
+                        point_merge_key(p, MERGE_GRID) == point_merge_key(pole, MERGE_GRID)
+                    }) {
+                        continue;
+                    }
+                    let at = (1..points.len())
+                        .find(|&i| i + 1 == points.len() || along(points[i]) > t)
+                        .unwrap_or(points.len());
+                    points.insert(at, pole);
+                }
+            }
+        }
+    }
+
+    phase("circle_sync", &mut phase_t);
+    let mut merged = TriangleMesh::default();
+    let mut point_to_global: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();
+    let mut edge_global_indices: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
+
+    let mut sampled_edges: Vec<usize> = edge_points.keys().copied().collect();
+    sampled_edges.sort_unstable();
+    for edge_idx in sampled_edges {
+        let points = &edge_points[&edge_idx];
+        let mut global_ids = Vec::with_capacity(points.len());
+        for &pt in points {
+            let key = point_merge_key(pt, MERGE_GRID);
+            let idx = point_to_global.entry(key).or_insert_with(|| {
+                #[allow(clippy::cast_possible_truncation)]
+                let idx = merged.positions.len() as u32;
+                merged.positions.push(pt);
+                merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+                idx
+            });
+            global_ids.push(*idx);
+        }
+        edge_global_indices.insert(edge_idx, global_ids);
+    }
+
+    phase("edge_weld_pool", &mut phase_t);
+    {
+        let tol_linear = brepkit_math::tolerance::Tolerance::new().linear;
+        let refine_tol = tol_linear * 10.0;
+
+        // Spatial hash over the shared edge-point pool. The T-junction splice
+        // below must find every pool point lying ON each circle edge; scanning
+        // the whole pool per circle is O(circle-edges × pool-points) and
+        // dominated a 1274-face export tessellation at 90% of its wall clock
+        // (gh #1500). Instead, bucket the pool once and walk each circle at
+        // cell-sized arc steps, inspecting the 3×3×3 neighborhood of each
+        // visited cell — sound because a candidate sits within
+        // `refine_tol + step/2 ≤ cell` of some walked sample, so its cell
+        // index differs by at most 1 per axis.
+        let (grid_cell, point_grid) = {
+            let mut lo = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+            let mut hi = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for p in &merged.positions {
+                lo = Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z()));
+                hi = Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z()));
+            }
+            let diag = (hi - lo).length();
+            let cell = if diag.is_finite() && diag > 0.0 {
+                (diag / 128.0).max(refine_tol * 4.0)
+            } else {
+                refine_tol.max(1e-3)
+            };
+            let inv = 1.0 / cell;
+            let key = |p: &Point3| -> (i64, i64, i64) {
+                #[allow(clippy::cast_possible_truncation)]
+                (
+                    (p.x() * inv).floor() as i64,
+                    (p.y() * inv).floor() as i64,
+                    (p.z() * inv).floor() as i64,
+                )
+            };
+            let mut grid: DetHashMap<(i64, i64, i64), Vec<u32>> = DetHashMap::default();
+            for (gid, p) in merged.positions.iter().enumerate() {
+                #[allow(clippy::cast_possible_truncation)]
+                grid.entry(key(p)).or_default().push(gid as u32);
+            }
+            (cell, grid)
+        };
+        let grid_inv = 1.0 / grid_cell;
+        let cell_of = |p: &Point3| -> (i64, i64, i64) {
+            #[allow(clippy::cast_possible_truncation)]
+            (
+                (p.x() * grid_inv).floor() as i64,
+                (p.y() * grid_inv).floor() as i64,
+                (p.z() * grid_inv).floor() as i64,
+            )
+        };
+
+        for &edge_idx in &edge_indices {
+            let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
+                continue;
+            };
+            let Ok(edge_data) = topo.edge(edge_id) else {
+                continue;
+            };
+            let EdgeCurve::Circle(circle) = edge_data.curve() else {
+                continue;
+            };
+
+            let Ok(start_vtx) = topo.vertex(edge_data.start()) else {
+                continue;
+            };
+            let Ok(end_vtx) = topo.vertex(edge_data.end()) else {
+                continue;
+            };
+            let start_pos = start_vtx.point();
+            let end_pos = end_vtx.point();
+
+            let (t_min, t_max) = edge_data.curve().domain_with_endpoints(start_pos, end_pos);
+            let is_closed = edge_data.start() == edge_data.end();
+
+            let existing_gids_vec: Vec<u32> = edge_global_indices
+                .get(&edge_idx)
+                .cloned()
+                .unwrap_or_default();
+            let existing_gids: DetHashSet<u32> = existing_gids_vec.iter().copied().collect();
+
+            let candidates: Vec<u32> = {
+                let steps = ((std::f64::consts::TAU * circle.radius() * grid_inv).ceil() as usize)
+                    .clamp(8, 8192);
+                let mut visited: DetHashSet<(i64, i64, i64)> = DetHashSet::default();
+                let mut cand: Vec<u32> = Vec::new();
+                #[allow(clippy::cast_precision_loss)]
+                for i in 0..steps {
+                    let t = std::f64::consts::TAU * (i as f64) / (steps as f64);
+                    let (cx, cy, cz) = cell_of(&circle.evaluate(t));
+                    for dx in -1..=1_i64 {
+                        for dy in -1..=1_i64 {
+                            for dz in -1..=1_i64 {
+                                let c = (cx + dx, cy + dy, cz + dz);
+                                if visited.insert(c)
+                                    && let Some(gids) = point_grid.get(&c)
+                                {
+                                    cand.extend_from_slice(gids);
+                                }
+                            }
+                        }
+                    }
+                }
+                cand
+            };
+
+            let mut insertions: Vec<(f64, u32)> = Vec::new();
+            for gid32 in candidates {
+                let pos = &merged.positions[gid32 as usize];
+                if existing_gids.contains(&gid32) {
+                    continue;
+                }
+                if (*pos - start_pos).length() < refine_tol {
+                    continue;
+                }
+                if !is_closed && (*pos - end_pos).length() < refine_tol {
+                    continue;
+                }
+                let t = circle.project(*pos);
+                let on_circle = circle.evaluate(t);
+                let dist = (*pos - on_circle).length();
+                if dist >= refine_tol {
+                    continue;
+                }
+                let in_range = if is_closed {
+                    true
+                } else if t_min < t_max {
+                    t >= t_min - 1e-8 && t <= t_max + 1e-8
+                } else {
+                    t >= t_min - 1e-8 || t <= t_max + 1e-8
+                };
+                if in_range {
+                    insertions.push((t, gid32));
+                }
+            }
+
+            if insertions.is_empty() {
+                continue;
+            }
+
+            insertions.sort_by(|a, b| a.0.total_cmp(&b.0));
+            insertions.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-8);
+
+            let mut all_with_t: Vec<(f64, u32)> = existing_gids_vec
+                .iter()
+                .map(|&gid| {
+                    let pos = merged.positions[gid as usize];
+                    (circle.project(pos), gid)
+                })
+                .collect();
+            all_with_t.extend(insertions);
+            all_with_t.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut seen_gids = DetHashSet::default();
+            all_with_t.retain(|(_, gid)| seen_gids.insert(*gid));
+
+            let refined: Vec<u32> = all_with_t.into_iter().map(|(_, gid)| gid).collect();
+            edge_global_indices.insert(edge_idx, refined);
+        }
+    }
+
+    phase("circle_refine_scan", &mut phase_t);
+    // When tracking, `tri_faces` runs parallel to the mesh triangles:
+    // tri_faces[t] is the index (into `all_faces`) of the face that produced
+    // triangle t. The ungrouped caller skips this bookkeeping entirely.
+    // Tracked always: the pinched-chord pass needs each triangle's face.
+    let mut tri_faces: Option<Vec<u32>> = Some(Vec::new());
+    #[allow(clippy::items_after_statements)]
+    struct CdtJob {
+        face_index: u32,
+        pts2d: Vec<brepkit_math::vec::Point2>,
+        outer_count: usize,
+        inner_wire_ranges: Vec<(usize, usize)>,
+        all_global_ids: Vec<Option<u32>>,
+        all_positions: Vec<Point3>,
+        normal: Vec3,
+        is_reversed: bool,
+    }
+    #[allow(clippy::items_after_statements)]
+    type CdtResult = Result<super::planar::PlanarCdtOutput, crate::OperationsError>;
+
+    let mut other_face_indices: Vec<usize> = Vec::new();
+    // Faces whose outline crosses itself mesh first, so the crossing
+    // vertices they splice into shared edges reach every neighbour; planar
+    // faces with holes collect their outlines in the second pass.
+    let mut queued = vec![false; all_faces.len()];
+    for crossing_pass in [true, false] {
+        let mut cdt_jobs: Vec<CdtJob> = Vec::new();
+        for (fi, &face_id) in all_faces.iter().enumerate() {
+            if queued[fi] {
+                continue;
+            }
+            let face_data = topo.face(face_id)?;
+            let has_inner = !face_data.inner_wires().is_empty();
+            let planar = matches!(face_data.surface(), FaceSurface::Plane { .. });
+            if crossing_pass && planar && has_inner {
+                continue;
+            }
+            queued[fi] = true;
+            if let FaceSurface::Plane { normal, .. } = face_data.surface() {
+                let normal = *normal;
+                let is_reversed = face_data.is_reversed();
+                let wire = topo.wire(face_data.outer_wire())?;
+                let tol = 1e-10;
+
+                let (mut all_positions, mut all_global_ids) = collect_wire_global_vertices(
+                    wire,
+                    &edge_global_indices,
+                    &merged.positions,
+                    tol,
+                );
+                remove_closing_duplicate_global(
+                    &mut all_positions,
+                    &mut all_global_ids,
+                    &merged.positions,
+                    tol,
+                );
+                // A face without holes joins these jobs only when its sides
+                // cross: the job keeps the crossing vertices and hands them to
+                // the neighbours before they mesh.
+                if !has_inner {
+                    let outline: Vec<brepkit_math::vec::Point2> = all_positions
+                        .iter()
+                        .map(|&p| project_by_normal(p, normal))
+                        .collect();
+                    if !polygon_self_crosses(&outline) {
+                        other_face_indices.push(fi);
+                        continue;
+                    }
+                }
+                let outer_count = all_positions.len();
+
+                let mut inner_wire_ranges: Vec<(usize, usize)> = Vec::new();
+                for &iw_id in face_data.inner_wires() {
+                    let iw = topo.wire(iw_id)?;
+                    let start = all_positions.len();
+                    let (inner_pos, inner_gids) = collect_wire_global_vertices(
+                        iw,
+                        &edge_global_indices,
+                        &merged.positions,
+                        tol,
+                    );
+                    let mut inner_flat_ids: Vec<u32> = Vec::with_capacity(inner_gids.len());
+                    let mut next_sentinel = u32::MAX;
+                    for (pos, gid_opt) in inner_pos.into_iter().zip(inner_gids) {
+                        let gid = gid_opt.unwrap_or_else(|| {
+                            debug_assert!(false, "inner wire vertex had no global ID");
+                            let s = next_sentinel;
+                            next_sentinel = next_sentinel.wrapping_sub(1);
+                            s
+                        });
+                        inner_flat_ids.push(gid);
+                        all_positions.push(pos);
+                        all_global_ids.push(Some(gid));
+                    }
+                    if inner_flat_ids.len() > 2 {
+                        remove_closing_duplicate_ids(&mut inner_flat_ids, &merged.positions, tol);
+                        let expected_end = start + inner_flat_ids.len();
+                        all_positions.truncate(expected_end);
+                        all_global_ids.truncate(expected_end);
+                    }
+                    let end = all_positions.len();
+                    inner_wire_ranges.push((start, end));
+                }
+
+                let pts2d: Vec<brepkit_math::vec::Point2> = all_positions
+                    .iter()
+                    .map(|&p| project_by_normal(p, normal))
+                    .collect();
+
+                #[allow(clippy::cast_possible_truncation)]
+                cdt_jobs.push(CdtJob {
+                    face_index: fi as u32,
+                    pts2d,
+                    outer_count,
+                    inner_wire_ranges,
+                    all_global_ids,
+                    all_positions,
+                    normal,
+                    is_reversed,
+                });
+                continue;
+            }
+            other_face_indices.push(fi);
+        }
+
+        phase("cdt_job_prep", &mut phase_t);
+        #[cfg(not(target_arch = "wasm32"))]
+        let cdt_results: Vec<CdtResult> = if cdt_jobs.len() >= 2 {
+            use rayon::prelude::*;
+            cdt_jobs
+                .par_iter()
+                .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
+                .collect()
+        } else {
+            cdt_jobs
+                .iter()
+                .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let cdt_results: Vec<CdtResult> = cdt_jobs
+            .iter()
+            .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
+            .collect();
+
+        phase("cdt_run", &mut phase_t);
+        for (job, result) in cdt_jobs.iter().zip(cdt_results) {
+            // A face without holes whose crossing outline the CDT cannot recover
+            // meshes as before, on its own after the other faces.
+            let (mut tris, steiner) = match result {
+                Ok(output) => output,
+                Err(e) if job.inner_wire_ranges.is_empty() => {
+                    log::debug!(
+                        "crossing outline of face {} left to the fan: {e}",
+                        job.face_index
+                    );
+                    other_face_indices.push(job.face_index as usize);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            if job.inner_wire_ranges.is_empty() {
+                cover_by_winding(&job.pts2d, job.outer_count, &steiner, true, &mut tris);
+            }
+
+            // Lift constraint-recovery Steiner points to 3D and give them global
+            // vertices. A Steiner point that lies ON a shared boundary edge is
+            // additionally spliced into that edge's shared sample chain so the
+            // NEIGHBOUR faces (tessellated after the CDT jobs) pick it up —
+            // without this the neighbour spans the original segment in one piece
+            // and the mesh cracks at a T-junction.
+            let n_input = job.all_positions.len();
+            let mut steiner_positions: Vec<Point3> = Vec::with_capacity(steiner.len());
+            let mut steiner_gids: Vec<u32> = Vec::with_capacity(steiner.len());
+            for p2d in &steiner {
+                let p3d = unproject_point(*p2d, job.normal, &job.all_positions[0]);
+                let key = point_merge_key(p3d, MERGE_GRID);
+                let gid = *point_to_global.entry(key).or_insert_with(|| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let idx = merged.positions.len() as u32;
+                    merged.positions.push(p3d);
+                    merged.normals.push(job.normal);
+                    idx
+                });
+                steiner_positions.push(p3d);
+                steiner_gids.push(gid);
+            }
+            if !steiner.is_empty() {
+                let ring_segments: Vec<(usize, usize)> = (0..job.outer_count)
+                    .map(|i| (i, (i + 1) % job.outer_count))
+                    .chain(job.inner_wire_ranges.iter().flat_map(|&(st, en)| {
+                        (st..en).map(move |i| (i, if i + 1 == en { st } else { i + 1 }))
+                    }))
+                    .collect();
+                let mut per_segment: DetHashMap<(usize, usize), Vec<(f64, u32)>> =
+                    DetHashMap::default();
+                for (si, p2d) in steiner.iter().enumerate() {
+                    for &(i, j) in &ring_segments {
+                        let a = job.pts2d[i];
+                        let b = job.pts2d[j];
+                        let ab = (b.x() - a.x(), b.y() - a.y());
+                        let len2 = ab.0 * ab.0 + ab.1 * ab.1;
+                        if len2 < 1e-24 {
+                            continue;
+                        }
+                        let ap = (p2d.x() - a.x(), p2d.y() - a.y());
+                        let t = (ap.0 * ab.0 + ap.1 * ab.1) / len2;
+                        if !(1e-9..=1.0 - 1e-9).contains(&t) {
+                            continue;
+                        }
+                        let cross = ap.0 * ab.1 - ap.1 * ab.0;
+                        if cross * cross / len2 < 1e-18 {
+                            per_segment
+                                .entry((i, j))
+                                .or_default()
+                                .push((t, steiner_gids[si]));
+                        }
+                    }
+                }
+                // A vertex where two sides cross lies on both, and each side's
+                // edge chain takes it, except a chain holding both sides: that
+                // edge's curve passes through the point twice, and its other
+                // face could not tell which pass a lone sample belongs to.
+                // (edge chain, segment ends, crossing vertices with their place
+                // along the segment)
+                #[allow(clippy::items_after_statements)]
+                type Splice = (usize, u32, u32, Vec<(f64, u32)>);
+                let mut placed: Vec<Splice> = Vec::new();
+                for ((i, j), run) in per_segment {
+                    let (Some(gi), Some(gj)) = (job.all_global_ids[i], job.all_global_ids[j])
+                    else {
+                        continue;
+                    };
+                    let key = edge_global_indices.iter().find_map(|(&key, chain)| {
+                        chain
+                            .windows(2)
+                            .any(|w| (w[0] == gi && w[1] == gj) || (w[0] == gj && w[1] == gi))
+                            .then_some(key)
+                    });
+                    if let Some(key) = key {
+                        placed.push((key, gi, gj, run));
+                    }
+                }
+                let twice = |key: usize, gid: u32| {
+                    placed
+                        .iter()
+                        .filter(|(k, _, _, run)| *k == key && run.iter().any(|&(_, g)| g == gid))
+                        .count()
+                        > 1
+                };
+                let splices: Vec<Splice> = placed
+                    .iter()
+                    .map(|(key, gi, gj, run)| {
+                        let kept = run.iter().filter(|&&(_, g)| !twice(*key, g)).copied();
+                        (*key, *gi, *gj, kept.collect())
+                    })
+                    .collect();
+                for (key, gi, gj, mut run) in splices {
+                    run.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let Some(chain) = edge_global_indices.get_mut(&key) else {
+                        continue;
+                    };
+                    for p in 0..chain.len().saturating_sub(1) {
+                        if chain[p] == gi && chain[p + 1] == gj {
+                            for (k, &(_, gid)) in run.iter().enumerate() {
+                                chain.insert(p + 1 + k, gid);
+                            }
+                            break;
+                        }
+                        if chain[p] == gj && chain[p + 1] == gi {
+                            for (k, &(_, gid)) in run.iter().rev().enumerate() {
+                                chain.insert(p + 1 + k, gid);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let pos_of = |i: usize| -> Point3 {
+                if i < n_input {
+                    job.all_positions[i]
+                } else {
+                    steiner_positions[i - n_input]
+                }
+            };
+            let gid_of = |i: usize| -> u32 {
+                if i < n_input {
+                    job.all_global_ids[i].unwrap_or(0)
+                } else {
+                    steiner_gids[i - n_input]
+                }
+            };
+
+            let needs_flip = if let Some(&(i0, i1, i2)) = tris.first() {
+                let p0 = pos_of(i0);
+                let p1 = pos_of(i1);
+                let p2 = pos_of(i2);
+                let a = p1 - p0;
+                let b = p2 - p0;
+                let winding_matches = a.cross(b).dot(job.normal) > 0.0;
+                winding_matches == job.is_reversed
+            } else {
+                false
+            };
+
+            for &(i0, i1, i2) in &tris {
+                let g0 = gid_of(i0);
+                let g1 = gid_of(i1);
+                let g2 = gid_of(i2);
+                if let Some(tf) = tri_faces.as_mut() {
+                    tf.push(job.face_index);
+                }
+                if needs_flip {
+                    merged.indices.push(g0);
+                    merged.indices.push(g2);
+                    merged.indices.push(g1);
+                } else {
+                    merged.indices.push(g0);
+                    merged.indices.push(g1);
+                    merged.indices.push(g2);
+                }
+            }
+        }
+    }
+
+    phase("planar_stitch", &mut phase_t);
+    for &fi in &other_face_indices {
+        if let Err(e) = tessellate_face_with_shared_edges(
+            topo,
+            all_faces[fi],
+            deflection,
+            angular_tol,
+            circle_floor,
+            &edge_global_indices,
+            &mut merged,
+            &mut point_to_global,
+        ) {
+            log::warn!("skipping face during tessellation: {e}");
+        }
+        // Attribute every triangle appended by this face (even partial output
+        // before an error) so tri_faces stays parallel to the triangle list.
+        if let Some(tf) = tri_faces.as_mut() {
+            #[allow(clippy::cast_possible_truncation)]
+            tf.resize(merged.indices.len() / 3, fi as u32);
+        }
+    }
+
+    phase("other_faces", &mut phase_t);
+    let n_verts = merged.positions.len();
+    let tri_count = merged.indices.len() / 3;
+
+    let mut needs_normal = vec![false; n_verts];
+    for i in 0..n_verts {
+        let n = &merged.normals[i];
+        if n.x().abs() < 1e-30 && n.y().abs() < 1e-30 && n.z().abs() < 1e-30 {
+            needs_normal[i] = true;
+        }
+    }
+
+    {
+        let mut vertex_faces: DetHashMap<usize, DetHashSet<FaceId>> = DetHashMap::default();
+        for (&edge_idx, global_ids) in &edge_global_indices {
+            if let Some(face_ids) = edge_face_map.get(&edge_idx) {
+                for &gid in global_ids {
+                    let gi = gid as usize;
+                    if gi < n_verts && needs_normal[gi] {
+                        let entry = vertex_faces.entry(gi).or_default();
+                        for &fid in face_ids {
+                            entry.insert(fid);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut fallback_needed = vec![false; n_verts];
+        for i in 0..n_verts {
+            if !needs_normal[i] {
+                continue;
+            }
+            let pos = merged.positions[i];
+            let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
+            let mut count = 0_u32;
+            if let Some(faces) = vertex_faces.get(&i) {
+                let mut faces: Vec<FaceId> = faces.iter().copied().collect();
+                faces.sort_unstable_by_key(|f| f.index());
+                for fid in faces {
+                    if let Ok(face_data) = topo.face(fid) {
+                        let surf = face_data.surface();
+                        if let Some(n) = crate::fillet::face_surface_normal_at(surf, pos) {
+                            let oriented = if face_data.is_reversed() {
+                                Vec3::new(-n.x(), -n.y(), -n.z())
+                            } else {
+                                n
+                            };
+                            normal_sum += oriented;
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            if count > 0 {
+                merged.normals[i] = normal_sum.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+            } else {
+                fallback_needed[i] = true;
+            }
+        }
+
+        if fallback_needed.iter().any(|&f| f) {
+            let mut accum: Vec<Vec3> = vec![Vec3::new(0.0, 0.0, 0.0); n_verts];
+            for t in 0..tri_count {
+                let i0 = merged.indices[t * 3] as usize;
+                let i1 = merged.indices[t * 3 + 1] as usize;
+                let i2 = merged.indices[t * 3 + 2] as usize;
+                let a = merged.positions[i1] - merged.positions[i0];
+                let b = merged.positions[i2] - merged.positions[i0];
+                let face_normal = a.cross(b);
+                if fallback_needed.get(i0).copied().unwrap_or(false) {
+                    accum[i0] += face_normal;
+                }
+                if fallback_needed.get(i1).copied().unwrap_or(false) {
+                    accum[i1] += face_normal;
+                }
+                if fallback_needed.get(i2).copied().unwrap_or(false) {
+                    accum[i2] += face_normal;
+                }
+            }
+            for i in 0..n_verts {
+                if fallback_needed[i] {
+                    merged.normals[i] = accum[i].normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                }
+            }
+        }
+    }
+
+    phase("normals", &mut phase_t);
+    let repeated = weld_boundary_vertices(&mut merged, deflection, tri_faces.as_mut());
+
+    // A face no mesher covered, or whose rim the weld collapsed beside a
+    // neighbour's crack, leaves a hole the caller cannot see from the mesh.
+    // Read before the dedupe below, which empties two coincident faces of
+    // opposite sense on purpose.
+    let unmeshed: Vec<FaceId> = tri_faces.as_ref().map_or_else(Vec::new, |tf| {
+        let mut meshed = vec![false; all_faces.len()];
+        for &fi in tf {
+            if let Some(flag) = meshed.get_mut(fi as usize) {
+                *flag = true;
+            }
+        }
+        all_faces
+            .iter()
+            .zip(&meshed)
+            .filter(|(_, m)| !**m)
+            .map(|(&face_id, _)| face_id)
+            .collect()
+    });
+    for face_id in &unmeshed {
+        log::warn!("{face_id:?} meshed to no triangles at deflection {deflection}");
+    }
+
+    // Drop coincident/cancelling triangles left by booleans that
+    // produced overlapping coplanar faces (issue #696). Keyed on quantized
+    // positions so position-coincident triangles with distinct vertex IDs
+    // are still caught.
+    dedupe_coincident_triangles(&mut merged, tri_faces.as_mut());
+    phase("weld_dedupe", &mut phase_t);
+
+    if repeated && let Some(tf) = tri_faces.as_mut() {
+        let surfaces: Vec<Option<&FaceSurface>> = all_faces
+            .iter()
+            .map(|&f| topo.face(f).ok().map(brepkit_topology::face::Face::surface))
+            .collect();
+        // A curved analytic surface projects exactly; a plane holds its
+        // chords already, and a NURBS projection can fail to a far point.
+        let on_face = |fi: u32, p: Point3| -> Option<Point3> {
+            let surface = (*surfaces.get(fi as usize)?)?;
+            if !matches!(
+                surface,
+                FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+            ) {
+                return None;
+            }
+            let (u, v) = surface.project_point(p)?;
+            surface.evaluate(u, v)
+        };
+        split_pinched_chords(&mut merged, tf, &on_face);
+    }
+
+    Ok(CoreMesh {
+        mesh: merged,
+        tri_faces: tri_faces.filter(|_| track_faces),
+        n_faces: all_faces.len(),
+        #[cfg(test)]
+        unmeshed,
+    })
+}
+
+/// `BK_TESS_PHASES` (any value): log per-phase wall clock of the solid
+/// tessellation pipeline. Resolved once per process.
+#[cfg(not(target_arch = "wasm32"))]
+fn tess_phases() -> bool {
+    static PHASES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PHASES.get_or_init(|| std::env::var("BK_TESS_PHASES").is_ok())
+}
+
+/// Per-phase wall-clock lap timer for `BK_TESS_PHASES` diagnostics.
+///
+/// `std::time::Instant::now()` PANICS on wasm32-unknown-unknown (no time
+/// source), and this runs inside every solid tessellation — the timer must
+/// compile to a no-op there (3.2.15 aborted every wasm solid tessellation
+/// through this call).
+struct PhaseTimer {
+    #[cfg(not(target_arch = "wasm32"))]
+    t: std::time::Instant,
+}
+
+impl PhaseTimer {
+    fn start() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            t: std::time::Instant::now(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn lap(&mut self, label: &str) {
+        if tess_phases() {
+            log::debug!(
+                "TESS_PHASE {label}: {:.1}ms",
+                self.t.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        self.t = std::time::Instant::now();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::unused_self)]
+    fn lap(&mut self, _label: &str) {}
+}
+
+/// `BK_TESS_TRACE` (any value): log each face's mesher-arm dispatch.
+/// Resolved ONCE per process — the dispatch runs per face and must not pay
+/// an env lookup each call.
+fn tess_trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("BK_TESS_TRACE").is_ok())
+}
+
+/// Tessellate a single face, reusing shared edge vertices from the global mesh.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub(super) fn tessellate_face_with_shared_edges(
+    topo: &Topology,
+    face_id: FaceId,
+    deflection: f64,
+    angular_tol: f64,
+    circle_floor: bool,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<(), crate::OperationsError> {
+    let face_data = topo.face(face_id)?;
+    let is_reversed = face_data.is_reversed();
+
+    let idx_start = merged.indices.len();
+    let pos_start = merged.positions.len();
+
+    if let FaceSurface::Plane { normal, .. } = face_data.surface() {
+        let normal = *normal;
+        let wire = topo.wire(face_data.outer_wire())?;
+
+        let mut boundary_global_ids: Vec<u32> = Vec::new();
+        let tol = 1e-10;
+
+        for oe in wire.edges() {
+            let edge_idx = oe.edge().index();
+            if let Some(global_ids) = edge_global_indices.get(&edge_idx) {
+                let is_fwd = oe.is_forward();
+                let len = global_ids.len();
+                for j in 0..len {
+                    let gid = if is_fwd {
+                        global_ids[j]
+                    } else {
+                        global_ids[len - 1 - j]
+                    };
+                    if j == 0 && !boundary_global_ids.is_empty() {
+                        let last_gid = *boundary_global_ids.last().unwrap_or(&u32::MAX);
+                        if last_gid == gid {
+                            continue;
+                        }
+                        if (last_gid as usize) < merged.positions.len()
+                            && (gid as usize) < merged.positions.len()
+                        {
+                            let last_pos = merged.positions[last_gid as usize];
+                            let this_pos = merged.positions[gid as usize];
+                            if (last_pos - this_pos).length() < tol {
+                                continue;
+                            }
+                        }
+                    }
+                    boundary_global_ids.push(gid);
+                }
+            } else {
+                let edge_data = topo.edge(oe.edge())?;
+                let points = sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
+                let ordered: Vec<Point3> = if oe.is_forward() {
+                    points
+                } else {
+                    points.into_iter().rev().collect()
+                };
+                for (j, pt) in ordered.iter().enumerate() {
+                    if j == 0 && !boundary_global_ids.is_empty() {
+                        let last_gid = *boundary_global_ids.last().unwrap_or(&u32::MAX);
+                        if (last_gid as usize) < merged.positions.len() {
+                            let last_pos = merged.positions[last_gid as usize];
+                            if (last_pos - *pt).length() < tol {
+                                continue;
+                            }
+                        }
+                    }
+                    let key = point_merge_key(*pt, MERGE_GRID);
+                    let gid = point_to_global.entry(key).or_insert_with(|| {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let idx = merged.positions.len() as u32;
+                        merged.positions.push(*pt);
+                        merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+                        idx
+                    });
+                    boundary_global_ids.push(*gid);
+                }
+            }
+        }
+
+        remove_closing_duplicate_ids(&mut boundary_global_ids, &merged.positions, tol);
+
+        let n = boundary_global_ids.len();
+        if n < 3 {
+            return Ok(());
+        }
+
+        let local_positions: Vec<Point3> = boundary_global_ids
+            .iter()
+            .map(|&gid| merged.positions[gid as usize])
+            .collect();
+
+        if face_data.inner_wires().is_empty() {
+            let mut local_indices = cdt_triangulate_simple(&local_positions, normal);
+
+            if local_indices.len() >= 3 {
+                let i0 = local_indices[0] as usize;
+                let i1 = local_indices[1] as usize;
+                let i2 = local_indices[2] as usize;
+                let a = local_positions[i1] - local_positions[i0];
+                let b = local_positions[i2] - local_positions[i0];
+                let tri_normal = a.cross(b);
+                if tri_normal.dot(normal) < 0.0 {
+                    for t in 0..local_indices.len() / 3 {
+                        local_indices.swap(t * 3 + 1, t * 3 + 2);
+                    }
+                }
+            }
+
+            for &li in &local_indices {
+                merged.indices.push(boundary_global_ids[li as usize]);
+            }
+        } else {
+            tessellate_planar_shared_with_holes(
+                topo,
+                face_data,
+                &boundary_global_ids,
+                &local_positions,
+                normal,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?;
+        }
+    } else if matches!(face_data.surface(), FaceSurface::Nurbs(_)) {
+        let triangles_before = merged.indices.len();
+        let cdt_ok = tessellate_nonplanar_cdt(
+            topo,
+            face_id,
+            face_data,
+            deflection,
+            angular_tol,
+            circle_floor,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        );
+        // A boundary that encloses nothing in (u, v), such as a whole torus's
+        // seam pair collapsed onto one vertex, leaves the CDT without
+        // triangles: the snap mesher covers the surface's whole domain.
+        if cdt_ok.is_err() || merged.indices.len() == triangles_before {
+            tessellate_nonplanar_snap(
+                topo,
+                face_id,
+                face_data,
+                deflection,
+                angular_tol,
+                circle_floor,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?;
+        }
+    } else if matches!(
+        face_data.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) {
+        let (all_line_circle, band_eligible) = {
+            let wire = topo.wire(face_data.outer_wire())?;
+            let lc = wire.edges().iter().all(|oe| {
+                topo.edge(oe.edge())
+                    .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Line | EdgeCurve::Circle(_)))
+            });
+            // The structured band takes any rim, wavy mixed ones included
+            // (winding-chain separators carry marched-NURBS pieces); it
+            // verifies the cycle structure itself and declines anything else.
+            let be = wire.edges().iter().all(|oe| topo.edge(oe.edge()).is_ok());
+            (lc, be)
+        };
+        let is_standard_rect =
+            all_line_circle && topo.wire(face_data.outer_wire())?.edges().len() <= 4;
+
+        // Prefer a structured band built from the shared rim vertices — it
+        // is watertight by construction and avoids the snap path's proximity
+        // reconciliation, which cracks drilled holes at certain radius/
+        // deflection combos (issue #696). Tried for ANY Line/Circle wire, not
+        // just the 4-edge canonical shape: a boolean can deliver a full band
+        // whose rims are split into arc chains (cone∪box inscribed-rim), which
+        // the band mesher now handles; it still returns false for anything
+        // that is not a two-full-rim band.
+        let band_handled = band_eligible
+            && tessellate_revolution_band_shared(topo, face_data, edge_global_indices, merged)?;
+
+        if band_handled {
+            // done — watertight structured band emitted
+        } else if is_standard_rect {
+            // Partial bands and holed full bands have a simple polygon
+            // outer boundary in unwrapped UV, so CDT over the shared pool
+            // ids is watertight by construction. The snap path re-samples
+            // the rim independently and cracks at fine deflections when its
+            // segment count diverges from the pool's (the #696 class, seen
+            // on gridfinity socket cone/cylinder corner rings). Inner wires
+            // are constrained and flood-removed as holes.
+            let mut cdt_handled = false;
+            {
+                let pos_save = merged.positions.len();
+                let nrm_save = merged.normals.len();
+                let idx_save = merged.indices.len();
+                let cdt_ok = tessellate_nonplanar_cdt(
+                    topo,
+                    face_id,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                );
+                if cdt_ok.is_err() || merged.indices.len() == idx_save {
+                    merged.positions.truncate(pos_save);
+                    merged.normals.truncate(nrm_save);
+                    merged.indices.truncate(idx_save);
+                    // The CDT attempt may have registered merge-map entries
+                    // for the now-truncated vertices; a later lookup would
+                    // return a global id past `positions.len()`.
+                    point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
+                } else {
+                    cdt_handled = true;
+                }
+            }
+            if !cdt_handled {
+                tessellate_nonplanar_snap(
+                    topo,
+                    face_id,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?;
+            }
+        } else {
+            let pos_save = merged.positions.len();
+            let nrm_save = merged.normals.len();
+            let idx_save = merged.indices.len();
+            let cdt_ok = tessellate_nonplanar_cdt(
+                topo,
+                face_id,
+                face_data,
+                deflection,
+                angular_tol,
+                circle_floor,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            );
+            if cdt_ok.is_err() || merged.indices.len() == idx_save {
+                merged.positions.truncate(pos_save);
+                merged.normals.truncate(nrm_save);
+                merged.indices.truncate(idx_save);
+                // Same stale-merge-map hazard as the partial-band rollback
+                // above: drop entries referencing the truncated vertices.
+                point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
+                tessellate_nonplanar_snap(
+                    topo,
+                    face_id,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?;
+            }
+        }
+    } else {
+        // A sphere/torus latitude band (the annular region between two
+        // constant-v full-revolution boundaries, e.g. a cylinder bored through a
+        // sphere) degenerates in UV: each latitude projects to a zero-area
+        // back-and-forth segment, so the CDT below cannot bound the band and
+        // fills the removed polar cap. Tessellate such bands structurally from
+        // the shared boundary vertices instead. Returns false for any other
+        // sphere/torus face, which then takes the CDT/snap path unchanged.
+        // A torus notch band (a patch wrapping the tube fully, its outer and
+        // one inner wire each a v-wrapping loop at an end of a ring-angle
+        // span) is swept along u, not v, so it is not a latitude band. Try it
+        // first; it returns false for any other torus face.
+        let handled_notch = matches!(face_data.surface(), FaceSurface::Torus(_))
+            && tessellate_torus_notch_band(
+                topo,
+                face_data,
+                deflection,
+                angular_tol,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?;
+
+        // A full-revolution torus band between two closed rims (an analytic
+        // revolve's arc-profile wall, seamed by its doubled profile arc) is
+        // structured from the shared rim vertices, like the cylinder/cone
+        // standard band — CDT degenerates on its fully-u-wrapping UV image and
+        // the snap path re-samples the rims into cracks.
+        let handled_band = handled_notch
+            || (matches!(face_data.surface(), FaceSurface::Torus(_))
+                && tessellate_torus_two_rim_band(
+                    topo,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?)
+            || (matches!(
+                face_data.surface(),
+                FaceSurface::Sphere(_) | FaceSurface::Torus(_)
+            ) && tessellate_latitude_band_shared(
+                topo,
+                face_data,
+                deflection,
+                angular_tol,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?);
+
+        if !handled_band {
+            let pos_save = merged.positions.len();
+            let nrm_save = merged.normals.len();
+            let idx_save = merged.indices.len();
+            let ptg_count_save = point_to_global.len();
+
+            let cdt_ok = tessellate_nonplanar_cdt(
+                topo,
+                face_id,
+                face_data,
+                deflection,
+                angular_tol,
+                circle_floor,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            );
+            let cdt_produced_tris = cdt_ok.is_ok() && merged.indices.len() > idx_save;
+            if tess_trace() {
+                log::debug!(
+                    "tess dispatch {face_id:?} {} rev={is_reversed} cdt_ok={cdt_produced_tris}",
+                    face_data.surface().type_tag()
+                );
+            }
+            if !cdt_produced_tris {
+                merged.positions.truncate(pos_save);
+                merged.normals.truncate(nrm_save);
+                merged.indices.truncate(idx_save);
+                if point_to_global.len() > ptg_count_save {
+                    point_to_global.retain(|_, v| (*v as usize) < pos_save);
+                }
+
+                tessellate_nonplanar_snap(
+                    topo,
+                    face_id,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    circle_floor,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?;
+            }
+        }
+    }
+
+    if tess_trace() {
+        log::debug!(
+            "tess face {face_id:?} {} tris {}..{}",
+            face_data.surface().type_tag(),
+            idx_start / 3,
+            merged.indices.len() / 3
+        );
+    }
+    if is_reversed {
+        let idx_end = merged.indices.len();
+        let tri_count = (idx_end - idx_start) / 3;
+        for t in 0..tri_count {
+            let base = idx_start + t * 3;
+            merged.indices.swap(base + 1, base + 2);
+        }
+        for n in &mut merged.normals[pos_start..] {
+            *n = -*n;
+        }
+    }
+
+    Ok(())
+}

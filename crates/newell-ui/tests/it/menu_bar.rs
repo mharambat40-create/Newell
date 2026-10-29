@@ -11,6 +11,7 @@
 use newell_ui::{CellContent, CellGrid, ShellKey, ShellState, ThemeChoice};
 
 const REFERENCE: &str = include_str!("../../../../docs/ui_design/Application_Menu_Bar.txt");
+const CURRENT_UI: &str = include_str!("../../../../docs/ui_design/README_UI.md");
 
 fn shell() -> ShellState {
     ShellState::new(82, 30)
@@ -28,7 +29,14 @@ fn row_chars(grid: &CellGrid, row: u32) -> Vec<char> {
 /// The lines of the reference box whose top edge starts with `top` (`╭─View`), up to and
 /// including its `╰` edge.
 fn reference_box(top: &str) -> Vec<Vec<char>> {
-    let lines: Vec<&str> = REFERENCE.lines().collect();
+    // README_UI sections 28.3 and 41 explicitly supersede the old View
+    // artwork's Navigation cube row, including the conditional Gizmo child.
+    let reference = if top == "╭─View" {
+        CURRENT_UI.split("Current menu:").nth(1).unwrap()
+    } else {
+        REFERENCE
+    };
+    let lines: Vec<&str> = reference.lines().collect();
     let start = lines.iter().position(|l| l.starts_with(top)).unwrap();
     let len = lines[start..]
         .iter()

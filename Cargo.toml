@@ -6,6 +6,7 @@ members = [
     "crates/newell-model",
     "crates/newell-kernel",
 ]
+exclude = ["vendor/faer-0.22.6", "vendor/brepkit-math-4.2.2", "vendor/brepkit-operations-4.2.2"]
 resolver = "3"
 
 [workspace.package]
@@ -30,3 +31,9 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 dbg_macro = "deny"
+
+# ADR0009: source resolution only; geometry dependencies stay kernel-local.
+[patch.crates-io]
+faer = { path = "vendor/faer-0.22.6" }
+brepkit-math = { path = "vendor/brepkit-math-4.2.2" }
+brepkit-operations = { path = "vendor/brepkit-operations-4.2.2" }

@@ -247,6 +247,18 @@ impl Default for ExtrudeSpec {
     }
 }
 impl ExtrudeSpec {
+    /// Stores only effective operands after the frozen edit has been validated.
+    /// The original validation envelope remains sealed in the prepared result.
+    pub(crate) fn active_recipe(&self) -> Self {
+        let mut recipe = self.clone();
+        if recipe.result == ExtrudeResult::New {
+            recipe.targets = MergePolicy::All;
+        } else if let MergePolicy::Explicit(targets) = &mut recipe.targets {
+            let mut seen = std::collections::BTreeSet::new();
+            targets.retain(|entity| seen.insert(*entity));
+        }
+        recipe
+    }
     /// Derived field projection for command hydration and kernel lowering. It has
     /// no independent lifetime or authority and never contains inactive drafts.
     #[must_use]
@@ -470,16 +482,19 @@ impl ExtrudeInputProjection {
         } else {
             SidesSpec::One
         };
-        Ok(ExtrudeSpec {
-            profile: self.profile_geometry.or_else(|| {
-                self.profile.map(|entity| {
-                    geometry::ProfileRef::Face(geometry::FaceRef {
-                        entity,
-                        generation: geometry::GeometryGeneration(0),
-                        face: 0,
-                    })
+        let profile = self.profile_geometry;
+        #[cfg(any(test, feature = "test-support"))]
+        let profile = profile.or_else(|| {
+            self.profile.map(|entity| {
+                geometry::ProfileRef::Face(geometry::FaceRef {
+                    entity,
+                    generation: geometry::GeometryGeneration(0),
+                    face: 0,
                 })
-            }),
+            })
+        });
+        Ok(ExtrudeSpec {
+            profile,
             geometry: self.geometry,
             result: self.result,
             extent,
@@ -705,6 +720,25 @@ impl Document {
         }
         Ok(id)
     }
+    /// Supplies an exact base recipe to headless integration tests only.
+    ///
+    /// # Errors
+    /// Rejects the same invalid names/capacity as an ordinary base operation.
+    #[cfg(feature = "test-support")]
+    pub fn add_base_recipe_for_test(
+        &mut self,
+        name: &str,
+        recipe: geometry::BaseGeometryRecipe,
+    ) -> Result<FeatureId, ModelError> {
+        let feature = self.add_base_solid(name)?;
+        let entity = self
+            .feature(feature)
+            .and_then(|f| f.outputs().first())
+            .copied()
+            .ok_or(ModelError::InvalidGeometryReference)?;
+        self.base_geometry.insert(entity, recipe);
+        Ok(feature)
+    }
     pub fn add_base_feature(
         &mut self,
         name: String,
@@ -824,6 +858,7 @@ impl Document {
         entity.visible = visible;
         Ok(changed)
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn commit_extrude(&mut self, spec: ExtrudeSpec) -> Result<FeatureId, ModelError> {
         self.commit_extrude_before(spec, None)
     }
@@ -898,6 +933,7 @@ impl Document {
         validate_extrude(spec, self.parameters())?;
         self.capacity(1)
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn commit_extrude_before(
         &mut self,
         spec: ExtrudeSpec,
@@ -1072,9 +1108,11 @@ impl CommandController {
         };
         Ok(())
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn confirm(&mut self, document: &mut Document) -> Result<Option<FeatureId>, ModelError> {
         self.confirm_before(document, None)
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn confirm_before(
         &mut self,
         document: &mut Document,

@@ -27,5 +27,7 @@ thiserror.workspace = true
 winit = "0.30.13"
 
 [dev-dependencies]
+newell-kernel = { path = "../newell-kernel", version = "0.1.0", features = ["test-support"] }
+newell-model = { path = "../newell-model", version = "0.1.0", features = ["test-support"] }
 proptest.workspace = true
 insta.workspace = true
