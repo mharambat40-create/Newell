@@ -191,6 +191,7 @@ macro_rules! try_const {
 	};
 }
 
+#[cfg(feature = "rayon")]
 use core::num::NonZeroUsize;
 use core::sync::atomic::AtomicUsize;
 use equator::{assert, debug_assert};
@@ -1034,7 +1035,7 @@ mod internal_prelude {
 
 	pub(crate) use crate::{Accum, Conj, ContiguousBwd, ContiguousFwd, DiagStatus, Par, Shape, Stride, Unbind, unzip, zip};
 
-	pub use {unzip as uz, zip as z};
+	pub use crate::{unzip as uz, zip as z};
 
 	pub use crate::make_guard;
 	pub use dyn_stack::{MemStack, StackReq};

@@ -25,7 +25,7 @@ to a binding rule. Report the exact decision required and do not start another
 role. Continue independent work that does not depend on that decision where
 possible.
 
-Keep MVC boundaries, BrepKIT isolation/exact pins, Newell-owned public kernel
+Keep MVC boundaries, SolidCore isolation/exact pins, Newell-owned public kernel
 types, flat CellGrid, O(1) UI routing, one GPU UI draw call and exact ASCII
 semantics. Geometry queries have their separately specified complexity. Follow
 production safety/error-handling and AGPL header requirements.

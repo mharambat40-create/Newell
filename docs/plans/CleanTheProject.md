@@ -13,7 +13,7 @@
 - **Documentation corrections** (§3) change `.md` files and `.github/**` only. They align specifications with `ARCHITECTURE.md`.
 - **Code and config fixes** (§4) change `Cargo.toml`, `crates/**` stubs, toolchain and lint config. No production logic.
 - **Out of scope:** any geometry, UI, or render logic; any new dependency not listed here; any refactor unrelated to consistency.
-- **Geometric kernel:** BRepKIT remains the only geometric kernel. No OpenCASCADE, OCCT, or other kernel is introduced, referenced, or planned. `brepkit` appears only in `crates/newell-kernel/Cargo.toml` and is added in M3.1, not here.
+- **Geometric kernel:** SolidCore remains the only geometric kernel. No OpenCASCADE, OCCT, or other kernel is introduced, referenced, or planned. `SolidCore` appears only in `crates/newell-kernel/Cargo.toml` and is added in M3.1, not here.
 - **No placeholders:** no empty trait, no stub module, no `TODO`. A crate stub contains only its AGPL header and the minimum needed to compile.
 - **No Architect code:** this plan is the only file the Architect writes.
 
@@ -32,7 +32,7 @@
 |---|---|---|
 | D1 | Five-crate workspace (`newell-kernel`, `newell-model`, `newell-ui`, `newell-render`, `newell-app`). `newell-sketch` and `newell-io` are removed from `Description.md` §3.1 and are added later only through an `ARCHITECTURE.md` amendment. | DOC-6 |
 | D2 | Four primary agents (Architect, Challenger, Executor, Auditor). Explorer is an **optional read-only helper**, not a pipeline stage. | DOC-3, DOC-6, DOC-13, DOC-15 |
-| D3 | BRepKIT pin version: not chosen now. The exact version is pinned in M3.1 as `=x.y.z`, chosen from the 3.0+ line in ADR 0001. Not blocking this PR. | DOC-4 |
+| D3 | SolidCore pin version: not chosen now. The exact version is pinned in M3.1 as `=x.y.z`, chosen from the 3.0+ line in ADR 0001. Not blocking this PR. | DOC-4 |
 | D4 | Logo sprite grid: 5×3 (major), 3×2 (minor), per `ARCHITECTURE.md` §3.3. | DOC-8 |
 | D5 | `--locked` and `--all-features` on every Cargo job in CI. | CI-2 |
 | D6 | Single batched `wgpu` draw call for the ASCII overlay (`ARCHITECTURE.md` §3.4). **No four-pass design.** `ui-design.md` is rewritten to match. | DOC-9 |
@@ -94,7 +94,7 @@ Insert after the four bullets of §2 (before §3):
 ```
 
 ### DOC-4 `ARCHITECTURE.md` §5.1, version pin example
-Replace `brepkit = "=0.1.0"` with `brepkit = "=x.y.z"` and add after the Version Pinning bullet: "The exact version is chosen when M3.1 starts and recorded in an ADR." The `0.1.0` example conflicted with ADR 0001 (BRepKIT 3.0+).
+Historical package-version discussion. ADR 0010 now controls the exact SolidCore source revision; this earlier placeholder is superseded.
 
 ### DOC-5 `ARCHITECTURE.md` §1, crate list
 No change. The five crates are already listed there and are the reference for D1.
@@ -188,7 +188,7 @@ publish = false
 thiserror = "2"
 proptest = "1.4"
 insta = "1.38"
-# brepkit is NEVER declared here. Only in crates/newell-kernel/Cargo.toml (M3.1), pinned =x.y.z.
+# SolidCore is NEVER declared here. Only in crates/newell-kernel/Cargo.toml (M3.1), pinned =x.y.z.
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -232,7 +232,7 @@ Crate-specific content:
 
 Each `.rs` file starts with the header on lines 1–6 exactly as in `ARCHITECTURE.md` §6, with no BOM.
 
-Dependency rules (`ARCHITECTURE.md` §1, §5.1): `newell-kernel` is the only crate allowed to name `brepkit`, and that happens in M3.1. No crate in this PR depends on `wgpu`, `winit`, or `brepkit`.
+Dependency rules (`ARCHITECTURE.md` §1, §5.1): `newell-kernel` is the only crate allowed to name `SolidCore`, and that happens in M3.1. No crate in this PR depends on `wgpu`, `winit`, or `SolidCore`.
 
 Dependencies between crates are not added in this PR. They are added with the code that needs them.
 
@@ -371,7 +371,7 @@ Run each command from the repo root. Each must exit 0 unless noted.
 9. Grep gates (each must return no matches unless noted):
    - `grep -rn "unsafe" crates --include=*.rs`
    - `grep -rn "unwrap()\|expect(\|panic!" crates --include=*.rs`
-   - `grep -rln "brepkit\|opencascade\|occt" crates Cargo.toml` (must be empty in this PR)
+   - `grep -rln "SolidCore\|opencascade\|occt" crates Cargo.toml` (must be empty in this PR)
    - Every `.rs` file starts with the header: for f in `find crates -name '*.rs'`, `head -6 "$f"` must equal the header in `ARCHITECTURE.md` §6.
    - `grep -rn "2×2\|2x2\|four render passes\|hue shift" docs/ui-design.md` (empty)
    - `grep -rn "5 AI agents\|5 agents\|newell-sketch\|newell-io" Description.md README.md` (empty, except the explicit "not in this workspace" note in DOC-6)
@@ -398,7 +398,7 @@ Paste this to start the Executor after B1 is lifted:
 >
 > Rules:
 > - Do not implement production logic. Crates are stubs containing only the header and the minimum needed to compile.
-> - Do not add BRepKIT or any other geometric kernel. Do not add dependencies beyond those in CODE-1.
+> - Do not add SolidCore or any other geometric kernel. Do not add dependencies beyond those in CODE-1.
 > - Do not bypass the permission rules in `.claude/settings.json`. If a write is denied, stop and report it.
 > - For CI-1, resolve action SHAs with `gh api` at execution time. Do not guess. If a lookup fails, stop.
 > - Do not run `Glob` or `Grep` over the whole repository. Search only inside the paths named in the plan.

@@ -3993,11 +3993,6 @@ impl ApplicationHandler<AppEvent> for App {
             renderer.set_ui_grid(shell.grid());
             renderer.set_scene_viewport(scene_viewport(&shell));
         }
-        let base = match self.document.add_seeded_solid("Base Solid") {
-            Ok(base) => base,
-            Err(error) => return self.fail(event_loop, error),
-        };
-        let _ = base;
         self.shell = Some(shell);
         self.window = Some(window.clone());
         if let Err(error) = self.queue_geometry_bootstrap() {
@@ -4521,7 +4516,20 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Layout reconciliation may update the camera lens/viewport. Publish
+                // grid inputs only after the scene camera has been reconciled.
                 self.sync_navigation_widgets();
+                let grid = self
+                    .shell
+                    .as_ref()
+                    .filter(|shell| shell.shell().view_panel_visible(4))
+                    .and_then(|shell| {
+                        self.navigation
+                            .grid_snapshot(shell.shell().theme() == newell_ui::ThemeChoice::Dark)
+                    });
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.set_grid(grid);
+                }
                 if let Some(gate) = self.gate {
                     if Instant::now() < gate.deadline {
                         // The OS has not reported the new size yet: keep the last frame.
@@ -4632,6 +4640,20 @@ impl ApplicationHandler<AppEvent> for App {
 mod tests {
     use super::*;
     use newell_ui::{CellContent, GridMetrics, ShellKey, ShellState, UiPoint};
+
+    #[test]
+    fn fresh_application_starts_with_an_empty_model_and_idle_command_controller() {
+        let app = App::new();
+        let projection =
+            crate::document::project_document(app.document.identity(), app.document.document())
+                .unwrap();
+
+        assert!(app.document.document().features().is_empty());
+        assert!(projection.features.is_empty());
+        assert!(projection.elements.is_empty());
+        assert_eq!(app.commands.state(), &CommandState::Idle);
+        assert!(app.commands.preview().is_none());
+    }
 
     pub(super) fn live_app() -> App {
         let mut app = App::new();
@@ -6728,7 +6750,16 @@ mod real_extrude_tests {
             .ok_or("runtime")?
             .worker
             .stop_for_test()?;
-        wake.recv_timeout(Duration::from_secs(10))?;
+        // A completion wake may already be queued. Wakes request inspection;
+        // only the lifetime flag certifies that the worker has actually exited.
+        let stopped_by = Instant::now() + Duration::from_secs(10);
+        while app.geometry.as_ref().ok_or("runtime")?.worker.is_alive() {
+            let remaining = stopped_by.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("worker did not exit after shutdown".into());
+            }
+            wake.recv_timeout(remaining)?;
+        }
         assert!(!app.geometry.as_ref().ok_or("runtime")?.worker.is_alive());
         let update = app.drain_worker_reply();
         app.apply(update);

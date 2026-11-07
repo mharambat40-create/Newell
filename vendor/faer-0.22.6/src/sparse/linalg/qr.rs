@@ -2276,6 +2276,440 @@ pub fn factorize_symbolic_qr<I: Index>(A: SymbolicSparseColMatRef<'_, I>, params
 	}
 }
 
+/// Feature-only full orthogonal operator extraction. No unsafe constructor or
+/// existing upstream unsafe body is changed.
+#[cfg(feature = "newell-m50")]
+impl QrRef<'_, usize, f64> {
+    /// Extract compact scalar reflectors plus R-aligned row permutation,
+    /// including the orthogonal complement omitted by least-squares solve APIs.
+    pub fn orthogonal_operator(
+        self,
+        max_bytes: usize,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<super::rank::RankQrOrthogonal, super::rank::RankQrError> {
+        use super::rank::{RankQrError as Error, RankQrOrthogonal};
+        let m = self.symbolic.nrows();
+        let n = self.symbolic.ncols();
+        let mut out = RankQrOrthogonal::new(m, max_bytes)?;
+        match &self.symbolic.raw {
+            SymbolicQrRaw::Simplicial(symbolic) => {
+                let (_, rest) = self.indices.split_at(n + 1);
+                let (_, rest) = rest.split_at(symbolic.len_r());
+                let (ptr, rows) = rest.split_at(n + 1);
+                let (rows, _) = rows.split_at(symbolic.len_householder());
+                let (_, values) = self.val.split_at(symbolic.len_r());
+                let (values, tau) = values.split_at(symbolic.len_householder());
+                for j in 0..n {
+                    if cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    let begin = ptr[j];
+                    let end = ptr[j + 1];
+                    let mut v = out.vector(end - begin)?;
+                    if begin < end {
+                        out.order[j] = rows[begin];
+                    }
+                    for p in begin..end {
+                        v.push((rows[p], values[p]));
+                    }
+                    out.push(v, 1. / tau[j])?;
+                }
+            }
+            SymbolicQrRaw::Supernodal(symbolic) => {
+                let h = symbolic.householder();
+                let l = symbolic.R_adjoint();
+                let hn = h.len_householder_row_idx();
+                let ns = h.n_supernodes();
+                let (rows, rest) = self.indices.split_at(hn);
+                let (bs, rest) = rest.split_at(hn + ns);
+                let (nrows, ncols) = rest.split_at(hn + ns);
+                let (_, rest) = self.val.split_at(l.len_val());
+                let (values, tau) = rest.split_at(h.len_householder_val());
+                let rp = h.col_ptr_for_householder_row_idx();
+                let vp = h.col_ptr_for_householder_val();
+                let tp = h.col_ptr_for_tau_val();
+                let mut record = 0;
+                for s in 0..ns {
+                    if cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    let begin = l.supernode_begin()[s];
+                    let width = l.supernode_end()[s] - begin;
+                    let height = rp[s + 1] - rp[s];
+                    let columns = width + l.supernode(s).pattern().len();
+                    for i in 0..width {
+                        out.order[begin + i] = rows[rp[s] + i];
+                    }
+                    let stride = if height.min(columns) > 0 {
+                        (tp[s + 1] - tp[s]) / height.min(columns)
+                    } else {
+                        0
+                    };
+                    let mut start = 0;
+                    while start < columns && start < height {
+                        let nr = nrows[record];
+                        let nc = ncols[record];
+                        let block = bs[record];
+                        record += 1;
+                        if nc == 0
+                            || block == 0
+                            || stride == 0
+                            || start + nr > height
+                            || start + nc > columns
+                        {
+                            return Err(Error::NumericalFailure);
+                        }
+                        for j in 0..nc.min(nr) {
+                            if cancelled() {
+                                return Err(Error::Cancelled);
+                            }
+                            let mut v = out.vector(nr - j)?;
+                            v.push((rows[rp[s] + start + j], 1.));
+                            for i in j + 1..nr {
+                                v.push((
+                                    rows[rp[s] + start + i],
+                                    values[vp[s] + (start + j) * height + start + i],
+                                ));
+                            }
+                            out.push(v, 1. / tau[tp[s] + (start + j) * stride + j % block])?;
+                        }
+                        start += nc;
+                    }
+                }
+            }
+        }
+        out.finish()?;
+        Ok(out)
+    }
+}
+
+#[cfg(feature = "newell-m50")]
+impl QrRef<'_, usize, f64> {
+    /// Build the implicit right-null operator from QR of the transposed retained
+    /// R rows, in ORIGINAL variable coordinates. The caller must validate that
+    /// rank is the accepted prefix, numerical reliability and original residuals.
+    /// Returns Q2; its trailing columns are applied via apply_null(rank,...).
+    pub fn right_null_operator(
+        self,
+        rank: usize,
+        max_bytes: usize,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<super::rank::RankQrOrthogonal, super::rank::RankQrError> {
+        use super::rank::{RankQrError as Error, RankQrOrthogonal};
+        let n = self.symbolic.ncols();
+        if rank > n {
+            return Err(Error::InvalidInput);
+        }
+        if rank == 0 || rank == n {
+            let mut result = RankQrOrthogonal::new(n, max_bytes)?;
+            for (i, row) in result.order.iter_mut().enumerate() {
+                *row = i;
+            }
+            return Ok(result);
+        }
+        let perm = self.symbolic.col_perm().arrays().0;
+        let mut count = 0usize;
+        self.visit_r_entries(|i, _, _| -> Result<(), Error> {
+            if i < rank {
+                count = count.checked_add(1).ok_or(Error::WorkspaceLimit)?;
+            }
+            Ok(())
+        })?;
+        let small_nullity = n - rank <= 32;
+        let basis_columns = if small_nullity { n - rank } else { rank };
+        // A bounded thin work block for small nullity avoids the potentially
+        // quadratic fill of QR(R1^T). It is converted immediately to compact
+        // reflectors; no global dense Q/J/R or retained null basis is created.
+        let overhead = count
+            .checked_mul(64)
+            .and_then(|b| b.checked_add(n.checked_mul(128)?))
+            .and_then(|b| {
+                if small_nullity {
+                    b.checked_add(n.checked_mul(basis_columns)?.checked_mul(64)?)
+                } else {
+                    Some(b)
+                }
+            })
+            .ok_or(Error::WorkspaceLimit)?;
+        if overhead >= max_bytes {
+            return Err(Error::WorkspaceLimit);
+        }
+        let mut entries = alloc::vec::Vec::new();
+        if small_nullity {
+            let mut counts = alloc::vec![0usize; n];
+            self.visit_r_entries(|i, j, v| -> Result<(), Error> {
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                if i < rank && v != 0. {
+                    counts[j] += 1;
+                }
+                Ok(())
+            })?;
+            let mut columns = alloc::vec::Vec::new();
+            columns
+                .try_reserve_exact(n)
+                .map_err(|_| Error::WorkspaceLimit)?;
+            for count in counts {
+                let mut column = alloc::vec::Vec::new();
+                column
+                    .try_reserve_exact(count)
+                    .map_err(|_| Error::WorkspaceLimit)?;
+                columns.push(column);
+            }
+            self.visit_r_entries(|i, j, v| -> Result<(), Error> {
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                if i < rank && v != 0. {
+                    columns[j].push((i, v));
+                }
+                Ok(())
+            })?;
+            entries
+                .try_reserve_exact(n.checked_mul(basis_columns).ok_or(Error::WorkspaceLimit)?)
+                .map_err(|_| Error::WorkspaceLimit)?;
+            let mut vector = alloc::vec![0.; n];
+            for k in 0..basis_columns {
+                vector.fill(0.);
+                vector[rank + k] = 1.;
+                for &(i, v) in &columns[rank + k] {
+                    vector[i] = -v;
+                }
+                for j in (0..rank).rev() {
+                    if cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    let diagonal = columns[j]
+                        .iter()
+                        .find(|&&(i, _)| i == j)
+                        .map(|&(_, v)| v)
+                        .ok_or(Error::NumericalFailure)?;
+                    if diagonal == 0. {
+                        return Err(Error::NumericalFailure);
+                    }
+                    vector[j] /= diagonal;
+                    let x = vector[j];
+                    for &(i, v) in &columns[j] {
+                        if i < j {
+                            vector[i] -= v * x;
+                        }
+                    }
+                }
+                let norm = vector.iter().fold(0_f64, |a, &x| a.hypot(x));
+                if !norm.is_finite() || norm == 0. {
+                    return Err(Error::NumericalFailure);
+                }
+                entries.extend(vector.iter().enumerate().filter_map(|(j, &v)| {
+                    (v != 0.).then_some(crate::sparse::Triplet::new(perm[j], k, v / norm))
+                }));
+            }
+        } else {
+            entries
+                .try_reserve_exact(count)
+                .map_err(|_| Error::WorkspaceLimit)?;
+            self.visit_r_entries(|i, j, v| -> Result<(), Error> {
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                if i < rank {
+                    entries.push(crate::sparse::Triplet::new(perm[j], i, v));
+                }
+                Ok(())
+            })?;
+        }
+        let a = crate::sparse::SparseColMat::<usize, f64>::try_new_from_triplets(
+            n,
+            basis_columns,
+            &entries,
+        )
+        .map_err(|_| Error::WorkspaceLimit)?;
+        drop(entries);
+        let mut order = alloc::vec::Vec::new();
+        order
+            .try_reserve_exact(basis_columns)
+            .map_err(|_| Error::WorkspaceLimit)?;
+        order.extend(0..basis_columns);
+        let symbolic = factorize_symbolic_qr_ordered(
+            a.symbolic(),
+            &order,
+            QrSymbolicParams {
+                supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
+                ..Default::default()
+            },
+            max_bytes - overhead,
+            &mut cancelled,
+        )?;
+        let req = symbolic.factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default());
+        let numeric = (symbolic.len_idx() + symbolic.len_val())
+            .checked_mul(8)
+            .and_then(|b| b.checked_add(req.size_bytes()))
+            .ok_or(Error::WorkspaceLimit)?;
+        let operator_budget = max_bytes
+            .checked_sub(overhead)
+            .and_then(|b| b.checked_sub(numeric))
+            .ok_or(Error::WorkspaceLimit)?;
+        let mut indices = alloc::vec::Vec::new();
+        indices
+            .try_reserve_exact(symbolic.len_idx())
+            .map_err(|_| Error::WorkspaceLimit)?;
+        indices.resize(symbolic.len_idx(), 0);
+        let mut values = alloc::vec::Vec::new();
+        values
+            .try_reserve_exact(symbolic.len_val())
+            .map_err(|_| Error::WorkspaceLimit)?;
+        values.resize(symbolic.len_val(), 0.);
+        let mut memory = dyn_stack::MemBuffer::try_new(req).map_err(|_| Error::WorkspaceLimit)?;
+        let qr = symbolic.factorize_numeric_qr(
+            &mut indices,
+            &mut values,
+            a.as_ref(),
+            Par::Seq,
+            MemStack::new(&mut memory),
+            Default::default(),
+        );
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let mut operator = qr.orthogonal_operator(operator_budget, cancelled)?;
+        if small_nullity {
+            operator.column_shift = basis_columns;
+        }
+        Ok(operator)
+    }
+}
+
+/// Candidate symbolic QR with a validated explicit original-column order.
+/// Existing COLAMD/default entry and all unsafe implementation bodies are unchanged.
+#[cfg(feature = "newell-m50")]
+pub fn factorize_symbolic_qr_ordered(
+    a: SymbolicSparseColMatRef<'_, usize>,
+    order: &[usize],
+    params: QrSymbolicParams<'_>,
+    max_bytes: usize,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<SymbolicQr<usize>, super::rank::RankQrError> {
+    use super::rank::RankQrError as Error;
+    if params.supernodal_flop_ratio_threshold != SupernodalThreshold::FORCE_SIMPLICIAL
+        && params.supernodal_flop_ratio_threshold != SupernodalThreshold::FORCE_SUPERNODAL
+    {
+        return Err(Error::InvalidInput);
+    }
+    let m = a.nrows();
+    let n = a.ncols();
+    let nnz = a.compute_nnz();
+    if m < n || order.len() != n || m > isize::MAX as usize {
+        return Err(Error::InvalidInput);
+    }
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let req = StackReq::any_of(&[
+        col_etree_scratch::<usize>(m, n),
+        postorder_scratch::<usize>(n),
+        column_counts_aat_scratch::<usize>(n, m),
+        supernodal::factorize_supernodal_symbolic_qr_scratch::<usize>(m, n),
+        simplicial::factorize_simplicial_symbolic_qr_scratch::<usize>(m, n),
+    ]);
+    let scalar_slots = m
+        .checked_mul(4)
+        .and_then(|x| x.checked_add(n.checked_mul(10)?))
+        .and_then(|x| x.checked_add(nnz.checked_mul(2)?))
+        .ok_or(Error::WorkspaceLimit)?;
+    let admission = scalar_slots
+        .checked_mul(core::mem::size_of::<usize>())
+        .and_then(|x| x.checked_add(req.size_bytes()))
+        .ok_or(Error::WorkspaceLimit)?;
+    if admission > max_bytes {
+        return Err(Error::WorkspaceLimit);
+    }
+    let zeroed = |len: usize| -> Result<alloc::vec::Vec<usize>, Error> {
+        let mut v = alloc::vec::Vec::new();
+        v.try_reserve_exact(len)
+            .map_err(|_| Error::WorkspaceLimit)?;
+        v.resize(len, 0);
+        Ok(v)
+    };
+    let mut fwd = zeroed(n)?;
+    let mut inv = zeroed(n)?;
+    inv.fill(usize::MAX);
+    for (k, &j) in order.iter().enumerate() {
+        if j >= n || inv[j] != usize::MAX {
+            return Err(Error::InvalidInput);
+        }
+        fwd[k] = j;
+        inv[j] = k;
+    }
+    let perm = PermRef::new_checked(&fwd, &inv, n);
+    let mut etree = zeroed(n)?;
+    let mut post = zeroed(n)?;
+    let mut counts = zeroed(n)?;
+    let mut min_col = zeroed(m)?;
+    let mut memory = dyn_stack::MemBuffer::try_new(req).map_err(|_| Error::WorkspaceLimit)?;
+    let mut stack = MemStack::new(&mut memory);
+    let tree = col_etree(a, Some(perm), &mut etree, &mut stack);
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
+    postorder(&mut post, tree, &mut stack);
+    let at = a
+        .transpose()
+        .to_col_major()
+        .map_err(|_| Error::WorkspaceLimit)?;
+    column_counts_ata(
+        &mut counts,
+        &mut min_col,
+        at.as_ref(),
+        Some(perm),
+        tree,
+        &post,
+        &mut stack,
+    );
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
+    // Symbolic pattern upper bound; numeric front storage is separately admitted
+    // by the caller from the resulting exact scratch/length requirements.
+    let fill = counts
+        .iter()
+        .try_fold(0usize, |sum, &v| sum.checked_add(v))
+        .ok_or(Error::WorkspaceLimit)?;
+    if fill
+        .checked_mul(32)
+        .and_then(|x| x.checked_add(admission))
+        .is_none_or(|b| b > max_bytes)
+    {
+        return Err(Error::WorkspaceLimit);
+    }
+    let raw = if params.supernodal_flop_ratio_threshold == SupernodalThreshold::FORCE_SIMPLICIAL {
+        SymbolicQrRaw::Simplicial(
+            simplicial::factorize_simplicial_symbolic_qr(&min_col, tree, &counts, &mut stack)
+                .map_err(|_| Error::WorkspaceLimit)?,
+        )
+    } else {
+        SymbolicQrRaw::Supernodal(
+            supernodal::factorize_supernodal_symbolic_qr(
+                a,
+                Some(perm),
+                min_col,
+                tree,
+                &counts,
+                &mut stack,
+                params.supernodal_params,
+            )
+            .map_err(|_| Error::WorkspaceLimit)?,
+        )
+    };
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
+    Ok(SymbolicQr {
+        raw,
+        col_perm_fwd: fwd,
+        col_perm_inv: inv,
+        A_nnz: nnz,
+    })
+}
 #[cfg(test)]
 mod tests {
 	use super::*;

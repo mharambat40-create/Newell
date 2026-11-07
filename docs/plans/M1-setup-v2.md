@@ -100,13 +100,13 @@ Dropped from revision 2 (not required by `Description.md` or the backlog):
 
 | Crate | `description` |
 |-------|---------------|
-| `newell-kernel` | Anti-corruption layer over the BrepKIT kernel. |
+| `newell-kernel` | Anti-corruption layer over the SolidCore kernel. |
 | `newell-model` | Parametric feature tree and parameters. |
 | `newell-ui` | Flat cell grid, O(1) hit-testing, per-window UI state. |
 | `newell-render` | wgpu rendering of the ASCII grid and 3D viewport. |
 | `newell-app` | Binary entry point and window manager. |
 
-No inter-crate dependencies. `brepkit` is not declared anywhere (`ARCHITECTURE.md` §5.1; first use is M3.1).
+No inter-crate dependencies. `SolidCore` is not declared anywhere (`ARCHITECTURE.md` §5.1; first use is M3.1).
 
 ### 3.2 Repository files
 
@@ -128,7 +128,7 @@ No inter-crate dependencies. `brepkit` is not declared anywhere (`ARCHITECTURE.m
   deny = [
       { crate = "opencascade" },
       { crate = "opencascade-sys" },
-      { crate = "brepkit", wrappers = ["newell-kernel"] },
+      { crate = "SolidCore", wrappers = ["newell-kernel"] },
   ]
 
   [sources]
@@ -183,11 +183,11 @@ Snapshot creation (done once, 2026-10-12): `INSTA_UPDATE=always cargo nextest ru
 `tests/fixtures/golden/README.md` (new). Content:
 - Naming: `<feature>_<case>.<ext>`.
 - Each fixture has a paired insta snapshot of derived invariants (volume, face/edge/vertex counts, bounding box at fixed rounding) in `crates/newell-kernel/tests/it/snapshots/`.
-- A `brepkit` version bump requires `cargo nextest run -p newell-kernel`, and any snapshot change requires human review.
+- A `SolidCore` version bump requires `cargo nextest run -p newell-kernel`, and any snapshot change requires human review.
 - Agents do not read fixtures (`.claudesignore`).
 - Kernel tests reference fixtures via `concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/golden/<file>")`.
 
-No fixture files, no kernel tests and no `brepkit` in M1.
+No fixture files, no kernel tests and no `SolidCore` in M1.
 
 ---
 
@@ -257,7 +257,7 @@ cargo run --release                                  # exits 0 immediately
 3. Deleting a committed `.snap` makes the `INSTA_UPDATE=no` run fail.
 4. Changing a canary's `label` fails and leaves a `.snap.new`, which git ignores.
 5. `proptest`, `insta` and `thiserror` appear only under `[workspace.dependencies]` in the root and as `.workspace = true` entries in crates.
-6. `grep -rn brepkit Cargo.toml crates/*/Cargo.toml` prints nothing.
+6. `grep -rn SolidCore Cargo.toml crates/*/Cargo.toml` prints nothing.
 7. `grep -rn '@v\|@stable\|@nextest' .github/workflows/ci.yml` prints nothing (already true).
 8. `Cargo.lock` is current: `cargo check --workspace --locked` passes with the committed lock (verified 2026-10-12, after the dev-dependency change).
 8. CI is green after the §4.1 patch (checked by you on the PR).

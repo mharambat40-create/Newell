@@ -10,7 +10,7 @@
 //! Boolean has no `Solid | Surface` header: its single segmented selector is
 //! `Add | Cut | Inter` with the border topology of the active operation. Rows: `Target`,
 //! `Tools`, `Offset` (`Cut` only; `Offset all` and its `Dist`, or the explicit `Faces`),
-//! `Keep tools`, the footer. No geometry, BrepKIT, real selection or formula evaluation is
+//! `Keep tools`, the footer. No geometry, SolidCore, real selection or formula evaluation is
 //! involved.
 
 use crate::WidgetId;

@@ -476,7 +476,10 @@ fn apply_block_householder_on_the_left_in_place_generic<'M, 'N, 'K, T: ComplexFi
 
 		// essentials* × mat
 		let (mut tmp, _) = unsafe { temp_mat_uninit::<T, _, _>(N, K, stack) };
+		#[cfg(feature = "rayon")]
 		let mut tmp = tmp.as_mat_mut();
+		#[cfg(not(feature = "rayon"))]
+		let tmp = tmp.as_mat_mut();
 
 		let mut n_tasks = Ord::min(Ord::min(crate::utils::thread::parallelism_degree(par), K.unbound()), 4);
 		if (M.unbound() * K.unbound()).saturating_mul(4 * M.unbound()) < gemm::get_threading_threshold() {

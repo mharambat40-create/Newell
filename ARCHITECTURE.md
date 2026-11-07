@@ -6,7 +6,7 @@
 ## 1. Architectural Pattern: Strict MVC
 The project follows a strict Model-View-Controller (MVC) architecture, segregated by Rust crates:
 
-- **Model (`newell-kernel`, `newell-model`):** The single source of truth. Contains the parametric feature tree, parameters, and all BrepKIT topology/geometry operations. It has NO knowledge of the UI or the GPU.
+- **Model (`newell-kernel`, `newell-model`):** The single source of truth. Contains the parametric feature tree, parameters, and all SolidCore topology/geometry operations. It has NO knowledge of the UI or the GPU.
 - **View (`newell-render`):** The `wgpu` rendering pipeline. It only reads states and draws them. It draws the ASCII grid, samples the texture atlas, and renders the 3D viewport.
 - **Controller (`newell-ui`, `newell-app`):** Handles OS events (`winit`), mouse/keyboard inputs, and translates them into O(1) grid hit-testing. It updates the UI state (e.g., focus, pressed, selection, expansion) and mutates the Model. Hover is tracked exclusively for the documented ASCII border/tree
 highlighting through one Controller-owned
@@ -1148,12 +1148,14 @@ only for this scope. The decision is recorded in new ADR 0007; prior ADRs are
 preserved as historical records.
 
 - These are window-local navigation graphics, never document entities,
-  construction planes, model entity selection targets or BrepKIT geometry.
+  construction planes, model entity selection targets or kernel geometry.
 - The origin marker, positive-only dashed reference axes and positive-quadrant
   XY/XZ/YZ reference planes are renderer-owned graphics anchored at world origin
   `(0, 0, 0)`. `newell-render::Scene` derives a uniform world scale from the main
   camera projection and origin depth for fixed apparent size, retaining orbit
   foreshortening, ordinary pan, scene depth, viewport clipping and UI occlusion.
+  The finite camera depth envelope expands with that same scale to contain the
+  complete reference assembly; near/far clipping remains active.
   Reference fragments keep their existing opacity where unobstructed and use
   20% of it where sampled scene depth shows model-surface occlusion, including
   in Points, Wireframe, Line and HiddenLine display modes. This depth-aware
@@ -1287,42 +1289,69 @@ moving the camera. Rendering stays event-driven with no inertia loop.
 - The `newell-app` binary crate is responsible for spawning, tracking, and destroying window instances and wiring the event loop.
 - Closing a window drops only its local UI state and render context, leaving the global data intact.
 
-## 5. Geometric Kernel (BrepKIT) Rules
-- **Exclusivity:** BrepKIT is the ONLY geometric kernel allowed. No FFI bindings to OpenCASCADE or other engines.
-- **Safety:** The `unsafe` keyword is strictly FORBIDDEN in Newell's codebase.
-- **Error Handling:** No `unwrap()`, `expect()`, or `panic!()` in production code. All geometric operations MUST return a `Result<T, NewellError>`.
+## 5. Geometric Kernel (SolidCore) Rules
+
+The human's 2026-11-07 cutover decision selects the pinned SolidCore revision as
+Newell's sole B-Rep kernel in every supported feature configuration. Removal of
+the previous implementation and its source closure is authorized immediately;
+remaining geometry regressions are recorded and fixed on the SolidCore route.
+ADR 0010 records the source pin and ownership boundary.
+
+- **Exclusivity:** SolidCore is the only B-Rep kernel. No fallback or comparison
+  backend is permitted in the current build.
+- **Safety:** `unsafe` remains forbidden in Newell code. No new unsafe, FFI,
+  C/Fortran build or BLAS is authorized by migration.
+- **Errors:** No production unwrap/expect/panic. Geometry returns fallible
+  Newell-owned results/errors; preserve strict MVC and atomic failure.
 
 ### 5.1 Geometric Kernel Boundary (Anti-Corruption Layer)
-The integration of the `brepkit` kernel must strictly follow the Anti-Corruption Layer (ACL) pattern to immunize the broader application against upstream API breaks or topological changes.
 
-- **Strict Isolation:** BrepKIT crates (`brepkit-operations`, `brepkit-topology` and their transitive packages) MUST ONLY be declared as dependencies in `crates/newell-kernel/Cargo.toml`. No other crate (`newell-model`, `newell-ui`, etc.) is allowed to import or know about BrepKIT.
-- **No Type Leaking (Wrapping):** `brepkit` specific types (e.g., topology structures, faces, edges) MUST NEVER appear in the public API signatures of `newell-kernel`. They must be encapsulated within Newell-owned wrapper structs (e.g., `NewellSolid`, `NewellFace`).
-- **Error Translation:** `newell-kernel` MUST intercept all native `brepkit` errors and map them to a domain-specific `NewellKernelError` enum using the `thiserror` crate.
-- **Version Pinning:** Each direct BrepKIT dependency MUST be strictly pinned to an exact version in `Cargo.toml` (for example, `brepkit-operations = "=x.y.z"`). Implicit minor/patch updates are forbidden. The selected M3.1 version is recorded in ADR 0004.
-- **Golden File Validation:** Kernel updates must be validated against "Golden Files" (reference 3D models stored in `tests/fixtures/`). Any update to `brepkit` requires running geometric regression tests to ensure boolean and meshing algorithms remain mathematically consistent with the reference files.
+- **Isolation:** Only `crates/newell-kernel/Cargo.toml` declares SolidCore.
+  Native Kernel/Brep/IDs/errors remain private to that crate; public APIs use
+  Newell-owned wrappers/DTOs/errors. Model owns recipes/identity; View consumes
+  meshes; Controller owns input and worker orchestration. This is no pluggable
+  kernel abstraction. Keep native contexts on the real worker thread.
+- **Immutable pin:** Select official SolidCore Git revision
+  `85bf36811a32670e20c0e147c326129213d42cca`, full `rev` in the kernel manifest
+  and matching Cargo.lock source when Cargo resolves the Git package directly.
+  For the approved Rust 1.88 vendored corrections, Cargo resolves the local path
+  patch and therefore omits the Git source from Cargo.lock. In that case the
+  kernel manifest's full `rev`, the locked package version, and the vendor
+  source ledger's exact upstream revision and patch list together establish
+  the immutable source. Never depend on moving main or implicit updates.
+  Rust1.88 remains the workspace baseline until explicitly amended.
+  The human replaced the earlier `d4cb45e1f426a45467d8108ec076f66286f2c348`
+  qualification pin on 2026-11-06 to cut over using the latest upstream main
+  revision found when no SolidCore GitHub release was published. This is an
+  exact revision, not permission to follow moving main. Separate real-worker
+  qualification is not a prerequisite to cutover; the normal worker must retain
+  its application behavior and be verified as part of production integration.
+- **Identity:** Native indices are not persistent face identities. Resolve
+  generation-qualified Newell face/wire/edge occurrences through proven
+  construction provenance; splits/merges without unique correspondence invalidate
+  references. Never recover by visual similarity. Worker prepared authority,
+  stale-result rejection, cancellation, resource release and exactly-once commit
+  remain binding through migration.
+- **Tolerance:** Map mm/radians explicitly; preserve M4 modeling and distinct M5
+  Sketch policies. Initialize and verify effective kernel/context/BRep/entity
+  tolerances, not just options. Display deflection never changes modeling
+  tolerance. Coarse internal defaults require an explicit route/correction, not
+  silently widened tolerances or relabeled geometry.
+- **Upgrade validation:** Every new pin/options change requires source/closure,
+  MSRV/platform/license/advisory review and finite geometric/application regression
+  against retained fixtures and independent invariants, including provenance,
+  trim meshing, worker lifecycle, cancellation and memory. Native face numbering
+  or triangle identity is not the oracle. Golden changes require a specification
+  reason; upstream test totals do not establish compatibility or stability.
+- **Distribution:** Preserve upstream Apache-2.0 license, NOTICE and attribution;
+  audit the resolved closure independently. Newell remains AGPL-3.0-or-later.
 
-### 5.2 Controlled M5.0 third-party sources (2026-10-29)
+### 5.2 Independent M5 numerical work
 
-The human explicitly approved M5 revision 4 and V0 documentation followed by
-experimental V1–V4 execution. ADR 0009 records this narrow source exception.
-`vendor/faer-0.22.6`, `vendor/brepkit-math-4.2.2` and
-`vendor/brepkit-operations-4.2.2` are third-party dependencies, not Newell-authored
-code or new workspace members. Root Cargo path patches are source-resolution
-directives only; kernel dependency declarations remain isolated and exactly pinned.
-The installed registry and accepted ADR 0004 remain unchanged. Its original
-registry source selection is superseded only for these experimental candidates.
-
-Retain original licenses, notices and published-source provenance. Existing
-upstream unsafe code may be retained unchanged as dependency code; new correction
-and extension code must be safe Rust. No new unsafe block, FFI, C/Fortran build or
-BLAS dependency is authorized. Newell-authored code retains the §5 prohibition
-and workspace `unsafe_code=forbid`. Editing existing upstream unsafe requires
-separate explicit authority, not an interpretation of this exception.
-
-Candidate APIs are non-default, feature-isolated and not selected by production
-call sites. Default behavior requires upstream parity and golden regression
-checks. Experimental vendoring does not authorize production adoption, M5.1,
-external publication, license-policy weakening or unrelated dependency updates.
+The `faer` rank and sparse linear algebra work remains an independent,
+feature-isolated experiment. Its vendored MIT source, attribution and approved
+Rust 1.88 corrections remain. It does not authorize another B-Rep kernel or
+relax Newell's unsafe-code rule.
 
 ## 6. Licensing Standard
 Newell is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version (**SPDX: `AGPL-3.0-or-later`**). The `LICENSE` file contains the full text of AGPL version 3; the project-specific notice below expressly permits later versions.
@@ -1330,11 +1359,8 @@ Newell is licensed under the GNU Affero General Public License, version 3 or (at
 - **Cargo metadata:** Each applicable `Cargo.toml` package license declaration MUST use `license = "AGPL-3.0-or-later"`.
 - **Changes to licensing:** Agents MUST NOT change the project's licensing terms without explicit human approval. Third-party dependency licenses MUST be checked independently.
 
-Third-party source under the three §5.2 vendor directories retains its actual
-package licenses and original headers (faer MIT; BrepKIT AGPL-3.0-only). Do not
-apply Newell's license declaration or copyright header to those dependency files.
-This scoped exclusion does not change Newell's license or remove third-party
-license/advisory audits.
+Third-party vendored sources retain their actual licenses and original headers.
+Do not apply Newell's copyright header to dependency files.
 
 **Auditor Rule:** Every Newell-authored `.rs` file MUST begin with the following header:
 
@@ -1346,3 +1372,18 @@ license/advisory audits.
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 ```
+
+### 4.5 Adaptive world grid (2026-10-30)
+
+The focused Executor request authorizes a procedural world XY grid at Z=0.
+Controller owns visibility (existing View > Grid Overlay, initially unchecked),
+camera and derived immutable inverse camera inputs. View draws bounded fullscreen
+triangles clipped to exposed viewport regions, with no CPU line collection.
+Engineering spacings 1, 2, 5 × 10ⁿ blend continuously near 60–120 physical pixels;
+analytic coverage gives approximately one-pixel antialiased lines. Theme selects
+subtle white/dark neutral independently of Color. This is a narrow exception to
+viewport opacity/ink restrictions: density and horizon fading prevent aliasing.
+Model-surface depth obscures the grid in all display styles. Origin-axis lines
+are suppressed; existing references remain separate. Grid has no picking, model,
+tree, history, fit bounds or persistence participation. One additional procedural
+draw per exposed rectangle is permitted; ASCII remains one batched draw.

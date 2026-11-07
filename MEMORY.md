@@ -18,7 +18,7 @@
 * **Extrude variants:** Complete base boxes outrank partial snippets; a variant never deletes sibling controls (`README_UI.md` §2.6). Never edit `Action_Box_Extrude.txt`.
 * **UI doc path:** The UI specification is `docs/ui_design/README_UI.md` (not `README.md`).
 * **Texture Atlas:** The logo atlas is a single RGBA `.png` with 8px inward padding. Do NOT add external padding, as it breaks the Power of Two (POT) rule.
-* **Geometric Kernel:** BrepKIT is our ONLY geometric kernel. Do not attempt to import or suggest OpenCASCADE or Truck crates.
+* **Geometric Kernel:** SolidCore is our ONLY geometric kernel. Do not attempt to import or suggest OpenCASCADE or Truck crates.
 
 ## Completed Milestones
-* **M0:** Architecture defined, AGPL-3.0 license adopted, BrepKIT dependency validated.
+* **M0:** Architecture defined, AGPL-3.0 license adopted, SolidCore dependency validated.

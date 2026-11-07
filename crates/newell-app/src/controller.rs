@@ -2243,3 +2243,66 @@ mod treeview_addendum_tests {
         assert_eq!(c.grid.get(24, r).unwrap().content, CellContent::Glyph('│'));
     }
 }
+
+/// Owned feature-only input certificate for an actual scene query route.
+#[cfg(any())]
+#[derive(Debug)]
+pub struct M50SceneQuery {
+    pub id: crate::geometry_worker::GeometryJobId,
+    pub purpose: crate::geometry_worker::M50Purpose,
+    pub view: crate::geometry_worker::M50ViewStamp,
+    pub position: UiPoint,
+    pub surface: (u32, u32),
+    pub input: newell_kernel::M50Input,
+    pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[cfg(any())]
+impl ShellController {
+    /// Feasibility bridge through the real O(1) shell routing and camera plane
+    /// projection. Only exposed scene pixels dispatch a real certified query.
+    /// No normal command selection or production Sketch shell is installed.
+    pub fn route_m50_scene_query(
+        &mut self,
+        navigation: &crate::navigation::Navigation,
+        worker: &crate::geometry_worker::GeometryWorker,
+        mut request: M50SceneQuery,
+    ) -> Result<bool, crate::AppError> {
+        use crate::geometry_worker::M50Purpose;
+        if !matches!(request.purpose, M50Purpose::Press | M50Purpose::Motion) {
+            return Err(crate::AppError::GeometryTransport(
+                "scene query requires press or motion purpose".into(),
+            ));
+        }
+        self.pointer_moved(Some(request.position));
+        if !self.navigation_admission(request.surface, true) {
+            return Ok(false);
+        }
+        if request.purpose == M50Purpose::Press
+            && !matches!(self.press(request.surface, true), Press::Shell(_))
+        {
+            return Ok(false);
+        }
+        let Some(point) = navigation
+            .m50_sketch_plane_point((f64::from(request.position.x), f64::from(request.position.y)))
+        else {
+            return Ok(false);
+        };
+        let newell_kernel::M50Input::CurvePick {
+            point: query_point, ..
+        } = &mut request.input
+        else {
+            return Err(crate::AppError::GeometryTransport(
+                "scene query needs a point/curve recipe".into(),
+            ));
+        };
+        *query_point = point;
+        worker.submit_m50_class(
+            request.id,
+            request.purpose,
+            request.view,
+            request.input,
+            request.cancelled,
+        )?;
+        Ok(true)
+    }
+}

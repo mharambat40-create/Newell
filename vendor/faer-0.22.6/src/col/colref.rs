@@ -398,7 +398,7 @@ impl<T, Rows: Shape, RStride: Stride, Inner: for<'short> Reborrow<'short, Target
 		T: Clone,
 	{
 		fn imp<'M, T: Clone, RStride: Stride>(this: ColRef<'_, T, Dim<'M>, RStride>) -> Col<T, Dim<'M>> {
-			Col::from_fn(this.nrows(), |i| this.at(i).clone())
+			Col::from_fn(this.nrows(), |i| this.read(i))
 		}
 
 		let this = self.rb();

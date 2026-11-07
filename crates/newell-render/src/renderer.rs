@@ -78,6 +78,8 @@ pub struct Renderer {
     scene: Scene,
     navigation: crate::navigation_widgets::NavOverlay,
     scene_available: bool,
+    grid: crate::grid::Grid,
+    grid_snapshot: Option<crate::GridSnapshot>,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
 }
@@ -157,6 +159,7 @@ impl Renderer {
         }
         let navigation = crate::navigation_widgets::NavOverlay::new(&device, format);
         let scene = Scene::new(&device, format, (width, height));
+        let grid = crate::grid::Grid::new(&device, format);
         Ok(Self {
             surface,
             device,
@@ -170,6 +173,8 @@ impl Renderer {
             scene,
             navigation,
             scene_available: true,
+            grid,
+            grid_snapshot: None,
             gpu_errors,
         })
     }
@@ -284,7 +289,7 @@ impl Renderer {
     pub fn set_scene_item_selected(&mut self, index: usize, selected: bool) {
         self.scene.set_item_selected(index, selected);
     }
-    /// Uploads an owned Newell mesh to the 3D viewport. BrepKIT types cannot cross this API.
+    /// Uploads an owned Newell mesh to the 3D viewport. SolidCore types cannot cross this API.
     pub fn set_scene_mesh(&mut self, mesh: NewellMesh) {
         self.scene.set_mesh(&self.device, mesh);
     }
@@ -381,8 +386,12 @@ impl Renderer {
         self.ui.set_palette(&self.queue, palette);
     }
 
-    /// Acquires, clears to the theme background, submits, presents. Returns `Skipped` when the
-    /// surface is inactive or has nothing to draw to; errors on fatal or reported GPU errors.
+    /// Publishes the Controller-derived optional world grid.
+    pub fn set_grid(&mut self, snapshot: Option<crate::GridSnapshot>) {
+        self.grid_snapshot = snapshot;
+    }
+
+    /// Acquires, draws the scene and overlays, then presents the frame.
     pub fn render(&mut self) -> Result<FrameOutcome, RenderError> {
         self.check_gpu_errors()?;
         if !self.state.is_active() {
@@ -438,6 +447,14 @@ impl Renderer {
         if self.scene_available {
             self.scene.draw(&self.queue, &mut encoder, &view);
         }
+        if self.scene_available
+            && self.scene.viewport.width > 0
+            && self.scene.viewport.height > 0
+            && let Some(snapshot) = self.grid_snapshot
+        {
+            self.grid
+                .draw(&self.device, &mut encoder, &view, &self.scene, snapshot);
+        }
         self.navigation.draw(&mut encoder, &view);
         // Separate overlay pass: the viewport pass above stays untouched.
         let mut overlay = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -472,7 +489,7 @@ impl Renderer {
 }
 
 /// Minimal `block_on` so no async-runtime dependency is needed.
-fn block_on<F: Future>(future: F) -> F::Output {
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     struct ThreadWaker(Thread);
     impl Wake for ThreadWaker {
         fn wake(self: Arc<Self>) {

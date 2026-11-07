@@ -4,6 +4,7 @@ use pulp::Simd;
 
 use crate::internal_prelude::*;
 use crate::perm::{swap_cols_idx, swap_rows_idx};
+#[cfg(feature = "rayon")]
 use crate::utils::thread::par_split_indices;
 
 #[inline(always)]

@@ -9,7 +9,7 @@
 //!
 //! Rows: the Create header, `Profile`, `Path`, `Full path`, `Keep orientation` (with its `Twist`
 //! child, whose angle shares the row), `Scale` (whose value shares the row), `Merge with all`
-//! for `Add` and `Remove`, the footer. No geometry, BrepKIT, real selection or formula
+//! for `Add` and `Remove`, the footer. No geometry, SolidCore, real selection or formula
 //! evaluation is involved.
 
 use crate::WidgetId;

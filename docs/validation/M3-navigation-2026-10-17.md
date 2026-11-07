@@ -1,6 +1,6 @@
 # Viewport navigation validation — 2026-10-17
 
-Scope: refine existing Rust camera and input handling. BrepKIT mesh generation,
+Scope: refine existing Rust camera and input handling. SolidCore mesh generation,
 WGPU rendering, ASCII UI, event-driven redraw and constant-time grid hit testing
 are preserved. No dependency changes or commits were made. Existing working-tree
 changes were retained, including changes already present in the touched files.
@@ -49,7 +49,7 @@ without moving the eye or target. Layout changes safely end active navigation.
 - `cargo test -p newell-render`: 25 unit tests and 35 integration tests passed;
   9 hardware tests ignored in this invocation.
 - `cargo test -p newell-render -- --ignored`: all 9 hardware tests passed,
-  including a real BrepKIT mesh rendered through WGPU, navigation occlusion,
+  including a real SolidCore mesh rendered through WGPU, navigation occlusion,
   mesh replacement, resize cancellation and unobstructed fit assertions.
 - `cargo test -p newell-app --test it input::`: all 8 tests passed.
 - `cargo test -p newell-app --test it controller::`: all 34 tests passed.

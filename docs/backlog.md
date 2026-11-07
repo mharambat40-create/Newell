@@ -72,9 +72,9 @@ physical-device/visual acceptance remain open. See the
   implemented; hover regression tests and prior sampled visual checks pass.
 
 ## Milestone 3: Viewport & Kernel Boundary
-- [x] M3.1: Setup `newell-kernel` crate with BrepKIT dependency and define internal wrapping structures (e.g., NewellSolid) without leaking BrepKIT types.
-- [x] M3.2: 3D camera setup and display of a BrepKIT-generated solid through `newell-kernel`.
-- [x] M3.3: Map BrepKIT topology to the `wgpu` mesh buffers and implement 3D picking.
+- [x] M3.1: Setup `newell-kernel` crate with SolidCore dependency and define internal wrapping structures (e.g., NewellSolid) without leaking SolidCore types.
+- [x] M3.2: 3D camera setup and display of a SolidCore-generated solid through `newell-kernel`.
+- [x] M3.3: Map SolidCore topology to the `wgpu` mesh buffers and implement 3D picking.
 - [x] M3.4: Controller-owned f64 camera state and event-driven screen-space yaw/pitch
   orbit with strict Z-up zero roll; the View consumes immutable camera matrices.
   Signed pitch is clamped before rotation, with immediate reversal at the pole margin.
@@ -129,7 +129,7 @@ The zoom bounds are recalculated from each uploaded mesh's bounding sphere.
 
 ## Milestone 4: CAD Command & Parametric Interaction
 - [ ] M4.1: Define the generic command-state/controller interface used by
-  contextual Action Panels without coupling `newell-ui` to BrepKIT.
+  contextual Action Panels without coupling `newell-ui` to SolidCore.
 - [ ] M4.2: Bind the Features tree to the real parametric feature model and
   the Elements tree to resulting geometric entities.
 - [ ] M4.3: Implement shared selection state between the viewport, trees and
@@ -191,7 +191,9 @@ confirmed M4.4 validation is retained without requesting repetition.
 ## Milestone 5: Complete, responsive parametric Sketcher
 
 Plan: [M5 — Complete, responsive parametric Sketcher](plans/M5-sketcher.md),
-revision 2, §9.1. Planning is authorized; production execution follows human
+revision 6, §9.1–§9.4. M5.0 V2–V4 feasibility execution is authorized;
+the current evidence and remaining gates are recorded in
+[M5.0 validation](validation/M5-sketcher.md). Production execution follows human
 acceptance of M4's real command/parameter/geometry pipeline. Listing these
 slices does not approve implementation or establish completion.
 

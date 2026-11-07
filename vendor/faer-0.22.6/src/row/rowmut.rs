@@ -468,6 +468,7 @@ impl<'a, T, Cols: Shape, CStride: Stride> RowMut<'a, T, Cols, CStride> {
 		}
 	}
 
+	#[cfg(feature = "rayon")]
 	pub(crate) unsafe fn as_type<U>(self) -> RowMut<'a, U, Cols, CStride> {
 		RowMut::from_raw_parts_mut(self.as_ptr_mut() as *mut U, self.ncols(), self.col_stride())
 	}

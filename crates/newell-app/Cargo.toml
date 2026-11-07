@@ -18,6 +18,8 @@ path = "src/lib.rs"
 name = "newell"
 path = "src/main.rs"
 
+[features]
+
 [dependencies]
 newell-kernel = { path = "../newell-kernel", version = "0.1.0" }
 newell-model = { path = "../newell-model", version = "0.1.0" }

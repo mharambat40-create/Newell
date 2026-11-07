@@ -5,7 +5,7 @@
 
 ## 1. Scope and repository baseline
 
-Implement Onshape-style viewport navigation while preserving BrepKIT geometry generation, WGPU rendering, the ASCII interface, and event-driven redraw.
+Implement Onshape-style viewport navigation while preserving SolidCore geometry generation, WGPU rendering, the ASCII interface, and event-driven redraw.
 
 The requested interaction model is:
 
@@ -102,7 +102,7 @@ Keep viewport rectangles and UI occlusion available to rendering for viewport/sc
 
 ### Model boundary
 
-Keep all BrepKIT operations inside `newell-kernel`. Camera navigation operates on Newell-owned mesh data and entity identifiers; it must not import upstream BrepKIT types.
+Keep all SolidCore operations inside `newell-kernel`. Camera navigation operates on Newell-owned mesh data and entity identifiers; it must not import upstream SolidCore types.
 
 No new crate or mathematical dependency is required for this milestone.
 
@@ -279,7 +279,7 @@ P=O+tD
 
 Return Newell-owned hit information: point, distance, face identifier, and mesh revision.
 
-Use tessellated geometry for M3, matching the displayed BrepKIT-generated mesh. Exact analytic B-Rep intersection is outside this milestone.
+Use tessellated geometry for M3, matching the displayed SolidCore-generated mesh. Exact analytic B-Rep intersection is outside this milestone.
 
 Move the existing CPU intersection logic into the controller query module. Do not request a GPU depth readback.
 

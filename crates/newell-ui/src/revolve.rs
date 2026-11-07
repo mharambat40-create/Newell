@@ -11,7 +11,7 @@
 //! branch (`□ Full Revolve ◀ Blind ▶` / `◀ Up to ▶`) with its `Angle` or `Target`, `Start Offset`,
 //! `End Offset` (`Up to` only), `Symetric` and `2nd side`; `Merge with all` for `Add` and
 //! `Remove`; the footer. An active `Symetric` replaces `2nd side` and becomes the last child
-//! (`│ ╰╴■ Symetric`). No geometry, BrepKIT, real selection or formula evaluation is involved.
+//! (`│ ╰╴■ Symetric`). No geometry, SolidCore, real selection or formula evaluation is involved.
 
 use crate::WidgetId;
 use crate::action_box::ActionBox;

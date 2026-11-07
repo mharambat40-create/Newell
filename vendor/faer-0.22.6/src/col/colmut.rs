@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "rayon")]
 use crate::mat::matmut::SyncCell;
 use crate::utils::bound::{Array, Dim, Partition};
 use crate::{ContiguousFwd, Idx, IdxInc};
@@ -527,6 +528,7 @@ impl<'a, T, Rows: Shape, RStride: Stride> ColMut<'a, T, Rows, RStride> {
 		}
 	}
 
+	#[cfg(feature = "rayon")]
 	pub(crate) unsafe fn as_type<U>(self) -> ColMut<'a, U, Rows, RStride> {
 		ColMut::from_raw_parts_mut(self.as_ptr_mut() as *mut U, self.nrows(), self.row_stride())
 	}

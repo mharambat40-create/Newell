@@ -1,5 +1,11 @@
 # Newell
 
+> Production decision (2026-10-30): [ADR 0010](docs/adr/0010-solidcore-qualification.md)
+> and the [migration plan](docs/plans/solidcore-production-migration.md) establish
+> SolidCore is the sole production B-Rep kernel in this checkout. Outstanding
+> geometry regressions remain tracked; this does not assert feature parity or exchange
+> format support, change Newell licensing or launch implementation.
+
 **Newell** is a next-generation parametric CAD application.
 It aims for extreme performance and a minimal memory footprint. Its interface follows a "TUI / Hacker" aesthetic and takes advantage of modern hardware acceleration.
 Development follows a structured agentic (AI) workflow, under the strict supervision of a human designer.
@@ -41,14 +47,14 @@ Every constraint below must be **measurable**. A constraint that cannot be teste
 | Memory | RAM budget per reference model, defined in `ARCHITECTURE.md` | Memory benchmark on reference models |
 | Low-end target | Usable on Raspberry Pi 4/5 (aarch64) | aarch64 cross-build in CI, manual test on real hardware per release |
 | Modeling | 100% parametric, history-based | Feature tree tests (§4) |
-| Geometric kernel | **BrepKIT in Rust, exclusively**. No second, fallback or alternative B-Rep / solid-modeling kernel, including through FFI | CI checks the kernel dependency allow-list and crate boundaries; code review rejects any alternative kernel dependency |
+| Geometric kernel | **SolidCore in Rust, exclusively**. No second, fallback or alternative B-Rep / solid-modeling kernel, including through FFI | CI checks the kernel dependency allow-list and crate boundaries; code review rejects any alternative kernel dependency |
 
 ### Clarifications
 
 - **"No `unsafe`" applies to Newell's code only.** Dependencies such as `wgpu` use `unsafe` internally. That is accepted; it is audited by their maintainers, not by us.
 - **60 FPS is a navigation and UI guarantee, not a geometry guarantee.** A complex boolean or fillet can take seconds. The rule is: geometry recomputation never blocks the render thread (see §3.3). The UI shows progress and stays interactive.
 - **Raspberry Pi support depends on GPU drivers.** `wgpu` needs Vulkan (Mesa v3dv driver) or a GLES fallback on the Pi. This must be validated with an early spike before committing to the target.
-- **"BrepKIT exclusively" applies to the B-Rep / solid-modeling kernel.** Math, tessellation-support or 2D constraint-solver crates may be used when justified, but they must not introduce a second B-Rep topology/geometry kernel or an FFI bridge to one.
+- **"SolidCore exclusively" applies to the B-Rep / solid-modeling kernel.** Math, tessellation-support or 2D constraint-solver crates may be used when justified, but they must not introduce a second B-Rep topology/geometry kernel or an FFI bridge to one.
 
 ---
 
@@ -69,7 +75,7 @@ newell/
 │   ├── adr/                # Architecture Decision Records
 │   └── plans/              # Architect plans, one file per feature
 ├── crates/
-│   ├── newell-kernel/      # sole BrepKIT integration boundary and Newell geometry API
+│   ├── newell-kernel/      # sole SolidCore integration boundary and Newell geometry API
 │   ├── newell-model/       # document model: feature tree, parameters, undo/redo
 │   ├── newell-ui/          # character grid, layout, hit testing, UI state (no GPU)
 │   ├── newell-render/      # wgpu renderer: grid, glyphs, atlas, 3D viewport
@@ -84,19 +90,19 @@ Further crates (for example sketching or file I/O) are added only through an ame
 
 **Dependency rule:** `newell-ui` and `newell-model` must never depend on `newell-render` or `wgpu`. That is what keeps UI and model logic testable without a GPU.
 
-### 3.2 BrepKIT kernel boundary
+### 3.2 SolidCore kernel boundary
 
-**BrepKIT, written in Rust, is Newell's one and only geometric kernel.** Newell must not integrate, wrap, call, or fall back to any other B-Rep / solid-modeling kernel, whether native Rust or through FFI.
+**SolidCore, written in Rust, is Newell's approved sole production B-Rep kernel.** Newell must not integrate, wrap, call, or fall back to any other B-Rep / solid-modeling kernel, whether native Rust or through FFI.
 
-All BrepKIT dependencies are confined to `newell-kernel`. Other Newell crates depend on Newell-owned APIs and data types exposed by `newell-kernel`; BrepKIT-specific types must not leak across that boundary. This boundary is **not** a pluggable-kernel abstraction and must not be designed to support interchangeable kernel implementations.
+All SolidCore dependencies are confined to `newell-kernel`. Other Newell crates depend on Newell-owned APIs and data types exposed by `newell-kernel`; SolidCore-specific types must not leak across that boundary. This boundary is **not** a pluggable-kernel abstraction and must not be designed to support interchangeable kernel implementations.
 
 Why:
-- BrepKIT is the single source of truth for B-Rep construction, topology and solid-modeling operations.
-- `newell-kernel` isolates BrepKIT-specific APIs so the rest of Newell stays coherent and testable without duplicating kernel responsibilities.
-- `newell-kernel` translates BrepKIT errors into Newell errors and enforces Newell-wide units, tolerances and topology conventions.
-- BrepKIT is young and its robustness on booleans and fillets is not yet proven at scale. Robustness gaps must be handled with tests, defensive integration, reproducible bug cases and upstream fixes to BrepKIT — **never by introducing a fallback kernel**.
+- SolidCore is the single source of truth for B-Rep construction, topology and solid-modeling operations.
+- `newell-kernel` isolates SolidCore-specific APIs so the rest of Newell stays coherent and testable without duplicating kernel responsibilities.
+- `newell-kernel` translates SolidCore errors into Newell errors and enforces Newell-wide units, tolerances and topology conventions.
+- SolidCore is young and its robustness on booleans and fillets is not yet proven at scale. Robustness gaps must be handled with tests, defensive integration, reproducible bug cases and upstream fixes to SolidCore — **never by introducing a fallback kernel**.
 
-Exchange-format operations provided by BrepKIT (for example through `brepkit-io`) are also accessed only through `newell-kernel`. A future file-I/O layer (not in this workspace; see `ARCHITECTURE.md` §1) owns Newell's file-format orchestration and native document serialization, but it must not depend on BrepKIT crates directly.
+Future exchange-format operations are also accessed only through `newell-kernel`. A future file-I/O layer (not in this workspace; see `ARCHITECTURE.md` §1) owns Newell's file-format orchestration and native document serialization, but it must not depend on SolidCore crates directly.
 
 ### 3.3 Threading model
 
@@ -151,7 +157,7 @@ This is the heart of a CAD application and the part with the most technical risk
 ### 4.6 File formats
 
 - **Native format:** stores the feature tree and parameters, not just the resulting geometry. It is text-based for readable diffs (for example RON or JSON), **versioned**, with migrations for older versions.
-- **Exchange formats:** STEP export first (the industry standard), STL/3MF for 3D printing. BrepKIT's `brepkit-io` crate lists STEP, IGES, STL, 3MF, OBJ, PLY and glTF; each format must be validated with round-trip tests before it is advertised as supported. Calls into `brepkit-io` are made through `newell-kernel`; the future file-I/O layer must not import BrepKIT crates directly.
+- **Exchange formats:** STEP export first, STL/3MF for printing remain product goals, not migration acceptance or a claim of current SolidCore support. Validate each advertised format independently through the kernel boundary with round-trip tests; future file-I/O orchestration must not import native kernel crates.
 
 ---
 
@@ -201,7 +207,7 @@ Functional Specifications
 
 ### 5.5 UI Interaction Model: Flat Buffer & Hybrid Hit-Testing
 To maximize performance and UX (Fitts's Law compliance), the UI completely drops traditional DOM trees in favor of a memory-efficient Flat Buffer.
-- **O(1) Resolution:** Mouse clicks are resolved mathematically (`pixel_coord / cell_size`), ensuring zero CPU layout overhead and reserving maximum processing power for the BrepKIT geometry kernel.
+- **O(1) Resolution:** Mouse clicks are resolved mathematically (`pixel_coord / cell_size`), ensuring zero CPU layout overhead and reserving maximum processing power for the SolidCore geometry kernel.
 - **Sub-Cellular Precision:** Clicks on ASCII borders (e.g., `│`, `┬`) use modulo arithmetic to seamlessly trigger the correct adjacent button. This extends interactive hitboxes to their absolute visual limits without overlapping elements.
 ---
 
@@ -298,7 +304,7 @@ dbg_macro = "deny"
 
 ### 7.2 Layer 2: geometric validation (B-Rep)
 
-- Unit tests on BrepKIT-backed kernel operations through the `newell-kernel` boundary: intersections, normal integrity, manifoldness, watertightness, volume.
+- Unit tests on SolidCore-backed kernel operations through the `newell-kernel` boundary: intersections, normal integrity, manifoldness, watertightness, volume.
 - Nominal **and** degenerate cases (zero-length edges, coplanar faces, tangent surfaces, non-manifold input).
 - **Property-based tests** (`proptest`): random parameters, check invariants (volume ≥ 0, closed shell, booleans consistent with volumes).
 - **Golden files**: reference models in `tests/fixtures/`, exported and compared after each change.
@@ -428,7 +434,7 @@ Best practices for workflows:
 - `Cargo.lock` is committed (Newell is an application).
 - Dependabot weekly, for `cargo` and `github-actions`, grouped into one PR per ecosystem.
 - Every new dependency is justified in the PR (why, licence, maintenance status). Agents may not add dependencies without it being listed in the approved plan.
-- **Kernel dependency rule:** BrepKIT is the only approved B-Rep / solid-modeling kernel. Dependencies that provide or bridge to another kernel (including FFI bindings) are forbidden. CI validates the kernel-dependency allow-list; `newell-kernel` is the only Newell crate allowed to depend on BrepKIT crates.
+- **Kernel dependency rule:** SolidCore is the only approved B-Rep / solid-modeling kernel. Dependencies that provide or bridge to another kernel (including FFI bindings) are forbidden. CI validates the kernel-dependency allow-list; `newell-kernel` is the only Newell crate allowed to depend on SolidCore crates.
 
 ### 8.9 Releases
 
@@ -450,13 +456,16 @@ Best practices for workflows:
 
 ## 9. Licensing
 
-**This decision must be resolved in M0 before any BrepKIT-dependent production code is merged into `main` or any Newell binary is distributed.** Throwaway local spikes may be used to evaluate BrepKIT, but they are never merged or released before the licence decision.
+Newell remains **AGPL-3.0-or-later** under ARCHITECTURE §6 and its existing
+LICENSE; replacing a dependency does not authorize relicensing. ADR 0001 records
+the original SolidCore licensing decision historically. ADR 0010 supersedes kernel
+selection, not Newell's license.
 
-- According to its crate documentation, BrepKIT is licensed **AGPL-3.0-only or under a commercial licence**.
-- Using it under AGPL means Newell must be distributed under an AGPL-compatible licence, and its source must be available to users, including users of a network service.
-- Because BrepKIT is mandatory and exclusive, Newell has only two project paths under this architecture: use BrepKIT under an AGPL-compatible licensing strategy, or obtain a BrepKIT commercial licence. **Replacing BrepKIT with another kernel is not an allowed mitigation.**
-- If neither licensing path is acceptable, development of BrepKIT-dependent production code stops and the human must explicitly change the project's architectural requirements before work can continue.
-- `cargo-deny` enforces the list of allowed licences for all dependencies.
+The selected SolidCore revision is Apache-2.0. Preserve its full LICENSE, NOTICE
+and ATTRIBUTION, including derivative-work origin notices, in redistribution.
+Audit the actual resolved closure with cargo-deny; do not infer the licenses of
+all packages from the root library. No commercial-license decision is introduced
+by this migration.
 
 ---
 
@@ -466,10 +475,10 @@ Each milestone ends with a usable, tested state. Do not start a milestone before
 
 | Milestone | Content |
 |---|---|
-| **M0: Spikes** | BrepKIT licence decision first; then BrepKIT robustness spike on booleans/fillets and wgpu spike on Raspberry Pi. No BrepKIT-dependent production code merges before the licence decision. Output: ADRs. |
+| **M0: Spikes** | Historical SolidCore licence/robustness and wgpu feasibility work; ADR 0010 now establishes the SolidCore replacement. Original evidence remains historical. |
 | **M1: Skeleton** | Workspace, CI, rulesets, `CLAUDE.md`, `ARCHITECTURE.md`, window with empty grid at 60 FPS. |
 | **M2: Grid UI** | Glyph rendering, icon atlas, hit testing, keyboard navigation, strictly monochrome Light/Dark themes (M2.16), frameless window (M2.17), View settings with UI Scale and theme (M2.18), reference-exact menus, trees, Action Boxes, numeric fields and status bar (M2.19–M2.24). Hover is intentionally excluded (approved removal). |
-| **M3: Viewport** | 3D camera, display of a BrepKIT-generated solid through `newell-kernel`, picking. |
+| **M3: Viewport** | 3D camera, display of a kernel-generated solid through `newell-kernel`, picking through the SolidCore boundary. |
 | **M4: CAD Command & Parametric Interaction** | Command/controller interface, model-bound trees, shared selection, engineering units, Formula binding, real Extrude modes/modifiers/targets, preview and atomic OK/Cancel. |
 | **M5: Sketcher** | Complete, responsive parametric Sketcher: constrained drawing, regions, M4 Extrude integration, modify tools, patterns, advanced curves, references and text. See [the M5 plan](docs/plans/M5-sketcher.md) and [backlog slices M5.0–M5.15](docs/backlog.md#milestone-5-complete-responsive-parametric-sketcher). |
 | **M6: Files** | Native format with versioning, STEP and STL export. |
@@ -481,8 +490,8 @@ Each milestone ends with a usable, tested state. Do not start a milestone before
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| BrepKIT maturity is unproven (young project, robustness unknown) | Booleans and fillets may fail on real models | Spike in M0; focused regression/property tests in `newell-kernel`; minimized reproducible cases; upstream fixes/contributions to BrepKIT; no fallback kernel |
-| BrepKIT AGPL/commercial licensing | Constrains Newell's licensing/distribution model; project cannot proceed with BrepKIT-dependent production code if neither path is acceptable | Decide first in M0 (§9); use an AGPL-compatible strategy or obtain the commercial licence |
+| SolidCore maturity is unproven (young project, robustness unknown) | Booleans and fillets may fail on real models | Migration acceptance matrix; focused regression/property tests in `newell-kernel`; minimized reproducible cases; upstream fixes/contributions to SolidCore; no fallback kernel |
+| Dependency attribution and licensing | Missing notices can invalidate distribution compliance | Preserve SolidCore Apache-2.0 notices and origin, audit closure; retain Newell AGPL-3.0-or-later (§9) |
 | Topological naming | Parametric models break when edited | Stable-reference strategy for M4 geometry and M5 Sketch integration, dedicated tests |
 | Constraint solver complexity | Major delay on M5 | Evaluate existing crates and establish M5.0 feasibility evidence first |
 | wgpu on Raspberry Pi | Low-end target unreachable | Spike in M0; if it fails, redefine the target |

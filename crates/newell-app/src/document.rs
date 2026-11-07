@@ -193,7 +193,8 @@ impl DocumentSession {
         });
         Ok(())
     }
-    /// Adds startup geometry without creating a modeling operation row.
+    /// Adds an explicit seed fixture without creating a modeling operation row.
+    #[cfg(test)]
     pub fn add_seeded_solid(&mut self, name: &str) -> Result<FeatureId, AppError> {
         let revision = self.next_revision()?;
         let id = self.document.add_seeded_solid(name)?;

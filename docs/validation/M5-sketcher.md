@@ -1,13 +1,434 @@
 # M5.0 — Feasibility and requirements
 
+> Historical pre-cutover evidence. Geometry-specific source and package references
+> below are archived context; ADR 0010 and the current migration record govern
+> the present checkout. Independent rank and `faer` work remains retained.
+
 2026-10-28. Executor / Codex. Input: `docs/plans/M5-sketcher.md`, revision 2,
 explicitly approved by the human for **M5.0 only**. This is a requirements and
 experimental dossier, not a Sketcher implementation or authorization for M5.1–M5.15.
 
-## Revision 5 V1–V4 execution — 2026-10-29 (current disposition)
+## Revision 6 continuation — consolidated mandatory evidence checklist
+
+Executor / Codex; continuation explicitly authorized by the human attachment.
+Revision6 stays frozen. Entry main/HEAD29321e9efc1a18753e18a081de598b5ac2f9f70b,
+empty index, existing dirty files exactly as recorded by the preceding run;
+all are preserved. No agents/branches/worktrees/snapshots/integration/adoption.
+Fresh verification baseline runs before code changes with INSTA_UPDATE=no.
+Continuation logs: `/tmp/newell-m50-r6-cont/`. The previous run's current
+component measurements below are retained evidence, not remeasured approvals.
+
+One consolidated table is the execution inventory. **Host** rows execute on the
+available M4; **Ref** rows require the named device. **Existing** rows reference
+unchanged demonstrations without rerunning their experiments. A missing required
+implementation is a failed availability gate, not an external dependency or an
+accepted rejection. Unverified hardware is not used to excuse host work.
+
+Finite endpoints: one deterministic implementation/regression for each distinct
+failure, analytic/SVD overlapping dimensions<=256; original C1 n>=10,000 and S
+counts unchanged. V2.1 retains initial+two corrective passes and400M work/1GiB
+admission. A mandatory failed V2.1 case triggers the planned V2.2 bounded front
+experiment, never another global left-looking retry. Geometry starts with the
+existing15-family/contact/overlap matrix, original nonunit/translated/periodic
+fixtures, and the existing exact200k-operation/4096-bit/4096-box experiment
+limits. These are experimental endpoints, not product exclusions. A failed
+mandatory regular case stays Fail; run independent rows. One warmup+500 measured
+samples only after bounded correctness screening; one unchanged failure is
+sufficient evidence, not500 identical repeats. Retention has the specified1,000
+cycles. No unbounded algorithm/dependency search or repeated unavailable access.
+
+| Criterion and plan reference | Current gap | Named fixture/workload | Expected proof and threshold | Reproduction command | Status |
+|---|---|---|---|---|---|
+| P1 Existing: V2.1 ordered deferral | None for recorded cases | Chain/grid10k, two distributed dependencies, seeds2–501 | Original tau1e-9, ranks10k/9998,<=3 total passes; prior table | `NEWELL_M50_PHASE=r6-refactor NEWELL_M50_RANK_RUNS=500 cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked` | Passed bounded cases; retain prior evidence |
+| P2 Existing: V2.3 compact operators | None for recorded small cases | QtA=R, QtQ=I;4x3 left/right null;128x96 fronts | Original-coordinate residuals/adjoints<1e-11; no global dense Q | `cargo test -p newell-kernel --all-features --locked revision6_native_q` and `revision6_left_right_null` | Passed bounded cases; retain |
+| P3 Existing: V3.1 arithmetic graph | None on host | Exact pinned bigint/rational/integer/traits | MIT/integrity/MSRV/advisory and default-graph audit; previous section | `cargo deny --all-features check` | Passed; rerun only if graph changes |
+| P4 Existing: V3.2 line roots | None for recorded subproblem | Double/triple roots, nonunit domains, weights,0/1e9 | Exact isolation/multiplicity/parameter/world enclosure;1e-7mm | `cargo test -p newell-kernel --all-features --locked revision6_exact_line_roots` | Passed bounded cases; retain |
+| P5 Existing: V3.3 independent distance check | None for recorded subproblem | Exact line offset and invalid parabola translation | Whole-span source bound; never infer topology | `cargo test -p newell-kernel --all-features --locked revision6_offset_checker` | Passed checker; retain |
+| P6 Existing: V4 worker identity/recovery | None for recorded scenario | Rank64/tangency/cancel/native M4/stale completion | Same actual worker, preserve commit and latest identity | `cargo test -p newell-app --all-features --locked revision6_candidates_use_real_worker` | Passed bounded scenario; retain |
+| R1 Host: V2.3 provenance | Scaling/elimination/revisions and invalidation absent | Original equality Jacobian plus matrix/parameter/scaling mutations | Reject stale/mismatched identity before consumption; no damped-rank inference | `cargo test -p newell-kernel --all-features --locked revision6_completion_rank` | To execute |
+| R2 Host: §§6.1,9.2,V2.4 rank versus DOF | No complete classification path | Duplicates, rigid freedoms, toggle, tangent fixed circles, inconsistent equations, active contact | Analytic rank/finite-mobility/bound-feasibility distinction; uncertainty preserved | `cargo test -p newell-kernel --all-features --locked revision6_completion_rank` | To execute |
+| R3 Host: V2.4 difficult bounded corpus | Large nullity/scaling/threshold clusters/permutations incomplete | <=256 unknown chain/grid blocks, zero/full/rectangular, clustered threshold sweep and independent starts | Dense SVD + analytic ranks/null actions at original tau; uncertainty allowed only genuinely ambiguous cases | `cargo test -p newell-kernel --all-features --locked revision6_completion_rank` | To execute |
+| R4 Host: V2.4 difficult C1/operators | Distributed near-dependencies/large nullity unmeasured | Original10k chain/grid, nonterminal dependencies and implicit null actions | Correct original-matrix residuals, no dense basis; <=5s complete job, no budget reset | `NEWELL_M50_PHASE=r6-completion-rank cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked` | To execute |
+| R5 Host: V2.4 nonlinear C1 | Regular chain only | Original point/segment connected chain AND grid, >=10k free unknowns; rank in nonlinear iterations | Residual/solution error original tolerances, correct undamped rank, whole solve<=5s | `NEWELL_M50_PHASE=r6-completion-rank cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked` | To execute |
+| R6 Host: V2.3 continuation/cancel | Opaque QR/SVD; full backend drains in one advance | Cancel during assembly/symbolic/QR/rank/operator/transpose/cleanup on admitted chain/grid | Bounded advance, actual termination; ack<=16ms, obsolete release<=100ms, timings distinct | `cargo test -p newell-app --all-features --locked revision6_completion_worker` | To execute |
+| R7 Host conditional: V2.2 fronts | Escalation not exercised | Smallest failed mandatory V2.1 correctness/fill/latency fixture, then C1 if contract passes | Safe fully-assembled/deferred maps, QR/error/operator contract; no unsafe change | Same R3/R4/R6 commands; conditional front test if triggered | Conditional; do not claim exhausted |
+| R8 Host: V2/V4 memory/work | Admission/RSS only | C1 buffers, retries, operators and S1/S2/S3 shared state | Count owned bytes/copies/fill/peak live including owners, no global dense allocation, S3<=1GiB | `NEWELL_M50_PHASE=r6-completion-rank cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked` | To execute |
+| G1 Host: V3.2 regular intersections | General rational span pair certificate absent | All15 original unordered families and operand reversal;0/1e9, nonunit spans | Krawczyk inclusion with preconditions or exact original-equation isolation/lifting, complete contacts,1e-7mm | `cargo test -p newell-kernel --all-features --locked revision6_completion_geometry` | To execute |
+| G2 Host: V3.2 singular/boundary classification | Multiple-root/branch generality absent | Existing exact/near tangencies, endpoint/constant/zero derivative cases | Exact multiplicity/branch crossing/touch semantics, no missed roots or false hits | Same G1 command | To execute |
+| G3 Host: V3.2 common components | Non-affine t->t² overlap fails availability | Partial/reversed/non-affine span overlap and differently refined curve | Certified original-domain implicit correspondence, orientation/critical splitting, no proximity proof | Same G1 command | To execute |
+| G4 Host: V3.2 periodic/refinement/self contacts | No complete span decomposition/provenance | Existing periodic seam/figure-eight/refinement fixtures | Preserve seam identity, split trivial diagonal, deduplicate identities not nearby roots | Same G1 command | To execute |
+| G5 Host: V3.1 certificates/bounds | Source IDs/native error/total work accounting incomplete | Mutate source revision, pole/nonfinite/limit/cancel; translated small detail | Exact numbers hidden, no stale/partial acceptance, resource admission and measured primitives | Same G1 command | To execute |
+| G6 Host: V3.3 offset construction/error | Checker has no complete general constructor | Existing conic/Bezier/spline open/closed offsets,0/1e9 | Piecewise native approximation plus independent sup original-source error<=1e-7mm including maps/rounding | `cargo test -p newell-kernel --all-features --locked revision6_completion_regions` | To execute |
+| G7 Host: V3.3 offset topology | Cusps/joins/events unproved | Round/Miter/Bevel, zero speed/cusp, curved self contacts/collapse and small hole | Original signed/radical predicates and certified branch/event ordering; no accepted distance-only topology | Same G6 command | To execute |
+| G8 Host: V3.3 arrangement | No certified event-based traversal | Existing open branches,shared overlap,three-level nesting,holes/union | Consistent half-edge/cycle/order/nesting/provenance; actual native wires/faces | Same G6 command | To execute |
+| G9 Host: V3.3/§9.2 downstream | General certified profiles not consumed | Original exact M4 extrusion/replay plus split/merge/hole/profile-repair cases | Independent area/volume/topology; failure/Cancel atomic; required M4.D1/D2 remain gates | Same G6 command plus existing M4 replay tests | To execute |
+| W1 Host: V4 actual input/service | No frozen press/confirmation/motion routes | Real ShellController/Navigation input plus actual worker, second window/edit under continuous motion | Frozen queries and confirmation served, no surrogate scheduler or stale publication | `cargo test -p newell-app --all-features --locked revision6_completion_worker` | To execute |
+| W2 Host: V4/§10 phase/e2e |500 backend-only samples | Original S1/S2/S3/C1/X1 mixed recipes; exact counts/block/nnz/contact/region/visibility | S1/S2/S3 p95 numerical16/30/50ms, final250ms/2s/15s; C1 whole5s; X1 typed bound | `cargo test -p newell-app --release --all-features --locked revision6_completion_worker -- --nocapture` | To execute; repeat500 only passing complete paths |
+| W3 Host: V4 cancel/service | Cancel outside opaque phases only | Every expensive phase with frozen click and other-window edit immediately after cancel | ack<=16ms, actual computation termination/release<=100ms; both next-service latencies; indivisible maxima separate | Same W2 command | To execute |
+| W4 Host: V4/§10 retention | No live/copy/generation measurements |1,000 warmed edit/undo/redo/cancel cycles, old published generation retained | Live generations return to baseline, settled growth<=5%, account allocator peaks/copies/terminals | Same W2 command | To execute |
+| W5 Host: V4 failure/retry | Intermittent startup/liveness test failed baseline | Existing dead-worker explicit-OK test plus queued old wake deterministic fixture | Explain/reproduce stale wake versus liveness, preserve document, new lifetime explicit retry, no weakened assertion | `cargo test -p newell-app --all-features --locked dead_worker_keeps_the_document` plus completion worker tests | To execute |
+| H1 RefA: V2/V4 C1+cancel | M1/8GiB unavailable | Same versioned R4/R5/W2/W3 fixtures, Rust1.88 release/Seq | Whole5s; ack16ms/release100ms, correct rank/error/operators | Same R4/R5 and W2 commands on RefA | unverified — reference hardware unavailable |
+| H2 RefA: V4 S1/S2/S3/X1 | M1/8GiB unavailable | Same complete W2/W4 traces,1920x1080 | Original16/30/50ms update and250ms/2s/15s final; S3<=1GiB, bounded X1, retention<=5% | Same W2 command on RefA | unverified — reference hardware unavailable |
+| H3 RefA: V4 input/query/visibility | RefA unavailable; host path qualification separately W1/W2 | Same real input/event harness and publication traces | Input p95<=4ms,p99<=8ms; certified query p95<=5ms; local visible p95<=100ms. Full Sketch draw/FPS remains M5.15 scope | Same W2 command on RefA with recorded presentation fields | unverified — reference hardware unavailable |
+| H4 RefB: V2/V3 correctness/cancel | Pi5/8GiB 64-bit Linux/driver unavailable | Same original numerical/geometry and worker cancel corpus | Unchanged correctness/certification and ack16ms/release100ms; separately record S2/S3 characterization | Same focused R/G/W commands under Rust1.88 on RefB | unverified — reference hardware unavailable |
+| H5 RefB: V4 S1 input/result | Pi5 unavailable | Same real S1 trace and presentation on supported driver | Input p95<=8ms; local result p95<=150ms; frame p95<=33.3ms separately; no60FPS claim | Same W2 command on RefB with recorded presentation fields | unverified — reference hardware unavailable |
+
+Geometry porting proof recorded before new span/resultant/inclusion code:
+read Rump's complete §13 through Theorem13.3/Algorithm13.4 and Kerber §2.3.1,
+Theorems2.3.5/2.3.7 (specialization and exceptional degree drops), and §2.3.2
+subresultant/gcd definitions in the full author-hosted PDFs. No source code is
+copied. Narrow implementation uses exact restriction of Cox–de Boor basis on
+each original nonzero knot span (induction on degree proves shape preservation),
+then homogeneous cross equations. A Sylvester determinant only proposes
+projected roots: both equations and original domains still need checking.
+Zero resultant/common factors and exceptional leading coefficients are never
+silently discarded. For regular boxes, exact rational interval evaluation of
+Rump's S=-R*f(mid)+(I-R*J(box))*(box-mid), containing zero in box-mid and strict
+interior inclusion, supplies existence/uniqueness; failed inclusion proves
+nothing. Endpoint/exact-fiber roots require exact gcd lifting. This does not
+license treating isolated roots as general common-component branches.
+
+Offset proof recorded before the next construction/event experiment: native
+cubic Hermite values are proposals only; exact source polynomial composition
+maps each candidate unit interval back to the original source interval. The
+mean-value enclosure E(mid)+E'(box)*(box-mid) bounds all original-source offset
+error, including native rounding. For homogeneous source (X,Y,W), let
+T=(X'W-XW',Y'W-YW'), R=T·T and K=d*W²*cross(T,T'). Source speed zeros are roots
+of gcd(Tx,Ty). A regular offset cusp must satisfy R³-K²=0 AND K>0 AND R>0;
+these sign tests reject roots introduced by squaring. Common speed-zero factors
+are separated before cusp isolation. These identities follow by differentiating
+the original source normal, not the approximated output. They do not certify
+self-contact/event order or an arrangement by themselves.
+
+Additional bounded offset filter proof (before implementation): for a C4
+source-offset coordinate f on a candidate unit interval, the exact cubic Hermite
+interpolant H satisfies |f-H|<=sup|fourth derivative of f|/384. This follows from
+repeated Rolle with double endpoint interpolation zeros; max u²(1-u)²=1/16 and
+4!=24. Fourth-order interval Taylor jets bound the fourth derivative divided by
+24 over the entire original-source interval, with positive weight/speed
+denominators verified. Endpoint value/first-derivative jets enclose the exact
+Hermite controls. Bernstein convexity bounds H minus the actual rounded native
+cubic by the maximum Euclidean control difference; add the Euclidean remainder.
+Coordinates shift by the exact native anchor before filtering to preserve
+translated details. Binary64 basic operations round outward and every sqrt
+bracket is checked by exact squared comparisons. Failed filters use the exact
+checker; no sample certifies acceptance. Existing200k exact-operation/4096-box
+limits remain unchanged; filter work records a fixed upper bound per box.
+
+Common-component subalgorithm proof before implementation: positive geometric
+weight ratios wB_i/wA_i=c*lambda^i and identical rational-Bezier controls imply
+A(t(s))=B(s) for t=lambda*s/(1+(lambda-1)*s). This follows directly from the
+Bernstein identity after multiplying by the positive denominator to degree p.
+The map is bijective on[0,1] with positive derivative; reversal gives the opposite
+orientation. A source coordinate with a nonzero rational derivative numerator
+and no odd-multiplicity interior roots proves strict monotonicity/injectivity;
+even stationary roots do not break it. Original finite knot domains map exactly.
+This proves a non-affine curved overlap, not arbitrary algebraic common factors.
+Exact span restrictions also permit direct polynomial-identity verification of
+common knot refinements; mismatching spans must not be accepted by samples.
+
+Hardware result fields: commit+dirty patch IDs, exact command/feature/seed, Rust
+version/profile, CPU/RAM/OS/driver/GPU/power, viewport, entities/equations/free
+block/nnz/contact/region/visible counts; p50/p95/p99/max for each phase and whole
+job, numerical/geometry residuals and certificate status, largest indivisible
+call, cancel request/ack/termination/release/next-query/next-edit times, live
+bytes/allocations/copies/peak/retained generations and settled growth. Missing
+complete host path is recorded as its failed availability criterion, not hidden
+under these hardware-only rows. No device attempt is made without access.
+
+Budget interpretation: the preceding60.224ms incidence rank p95 is **not** an
+S1/S2/S3 incremental measurement and cannot be used to pass them (it also exceeds
+each16/30/50ms update threshold if incorrectly compared). C1<=5s concerns the
+whole nonlinear solve including rank, not a rank-phase percentile. The recorded
+53.149ms regular nonlinear chain p95 is below5s on M4, but does not establish
+interactive budgets, worst-case whole-job acceptance, grids, or RefA/RefB.
+The old31.196s generic bridge remains a demonstrated C1 failure.
+
+## Revision 6 bounded execution — 2026-10-30 (preceding execution evidence)
+
+Executor / Codex. The human explicitly approved revision6 as the fixed V2/V3/V4
+baseline in the attached execution request. No plan edits/revision7, new review,
+additional agents, integration or production adoption are authorized. Existing
+main HEAD29321e9efc1a18753e18a081de598b5ac2f9f70b; index empty. The only entry
+change is the approved unstaged revision6 plan; preserve it byte-for-byte.
+M5.0 remains open until every mandatory exit criterion is demonstrated.
+
+Fresh baseline: check, fmt, strict Clippy and doc tests pass. The first Nextest
+run failed an inherited timing assertion in app.rs:6732
+(dead_worker_keeps_the_document_and_explicit_ok_rebuilds_in_a_new_lifetime),
+before experimental code changes. A full no-fail-fast rerun passed all1,093 tests
+(21 skipped,83.480s); retain both results as intermittent baseline evidence.
+Logs are under `/tmp/newell-m50-r6/`, INSTA_UPDATE=no. No app.rs test was changed;
+historical revision5 results below are not this run's baseline.
+The host is characterized separately from the prescribed RefA/RefB hardware.
+
+### V2 acceptance checklist and finite experiment bounds (before execution)
+
+| Requirement | Finite fixture / independent check | Entry status |
+|---|---|---|
+| Reproduce current fallback limitation | One10,000-unknown grid, same400,000,000 work-unit/1GiB envelope; record failure/time, no hidden retries | Unverified this run |
+| Explicit numerical permutation and correct column deferral | Small nonterminal/near-dependent/rectangular cases against original-matrix reconstruction and <=256 dense SVD | Unverified |
+| V2.1 bounded refactorization | Initial QR plus at most two corrective passes, original threshold/equations; analytic chain/grid dependencies and original-column maps | Unverified |
+| V2.2 escalation if V2.1 fails | Smallest front-local experiment exposing the failed hypothesis, then same C1 envelope only if small contract passes; no open-ended algorithm search | Unverified |
+| Implicit Q/null operators and provenance | Original and transposed operator residuals, scaling/revision invalidation, regular vs singular/boundary semantics | Unverified |
+| Numeric/admission/cancel limits | Actual allocations/phase counters and cancellation inside expensive work; <=16ms acknowledgement and<=100ms release | Unverified |
+| Scale and complete worker budget | >=10,000 free unknown chain AND grid, distributed/nonterminal dependencies and nonlinear geometry;500 warmed samples only for a candidate that passes bounded correctness/admission screening | Unverified |
+
+V2.1 has a hard limit of two corrective refactorizations after the initial pass.
+For unspecified investigation limits use one deterministic reproducer per distinct
+failure and bounded small analytic/SVD comparisons; no repeated unchanged failure
+runs. Retain the existing400M generic-bridge limit. Follow only the already
+planned safe front-local alternative if required. New unsafe/edits to existing
+unsafe, global dense fallback, new numerical packages, reduced counts/tolerances
+or increasing the failed bridge allowance are outside this execution. A failed
+mandatory gate remains failed; preserve evidence and continue independent V3/V4.
+
+### V3 acceptance checklist and finite experiment bounds (before execution)
+
+| Requirement | Finite experiment / reference | Entry status |
+|---|---|---|
+| Named exact arithmetic graph | Only num-bigint=0.4.6, num-rational=0.4.2 with planned features and necessary transitives; integrity/MSRV/license/advisory/default-feature checks | Unverified |
+| Exact polynomial/root certificates | Finite dyadic conversion, checked denominators, square-free/gcd/Sturm isolation with endpoint/multiple-root and bit/work/cancel tests | Unverified |
+| General intersection/overlap | Existing15-family matrix plus smallest exact line/rational-span, singular and non-affine overlap counterexamples; original-parameter and independent analytic roots | Unverified |
+| Offsets/topology | Existing analytic circle and general curved-offset failures, then bounded source-offset enclosure experiment; exact source/error and topology separated | Unverified |
+| Regions/extrusion | Existing exact profile/extrusion regression corpus; required general joins/holes/repair remain open unless actually certified | Unverified |
+| Resource/cancellation/translation | Conservative arithmetic limits, unresolved rather than fabricated hits; original versus1e9-translated representable fixtures | Unverified |
+
+For unspecified algebraic investigation limits start with degree<=3 single-span
+rational fixtures, <=4096 coefficient bits and explicit arithmetic/root-box work
+budgets. Those are prototype experiment bounds, not new admitted-workload limits.
+Escalate only along the revision6 exact-polynomial/interval algorithms. One
+counterexample suffices to disprove completeness of an attempted shortcut; do
+not launch an unbounded search or call unsupported families certified. No change
+to product tolerances, reference geometry or default SolidCore calls.
+
+### V4 acceptance checklist and finite experiment bounds (before execution)
+
+| Requirement | Finite actual-path experiment | Entry status |
+|---|---|---|
+| Actual worker-linked candidate execution | Feature-only Newell kernel input/job/report, existing GeometryWorker inbox/thread/wake/result path; one known-rank job and one exact geometry job | Unverified |
+| In-flight cancellation and subsequent work | Cancel inside candidate computation after observing phase entry, then complete a real normal preparation and another probe; report acknowledgement and availability separately | Unverified |
+| Stale identity / retained data | Same GeometryJobId epoch/source/serial checks, replace active probe, preserve normal committed generations and reject stale report | Unverified |
+| Full service classes and real input | Frozen press queries, confirmation and continuous motion on actual input routes; no simulation counted as proof | Unverified |
+| Memory/workload/device gates | Whole-path live allocation/retained-generation measurements,500 mixed samples per admitted class, RefA/RefB | Unverified |
+
+Use one deterministic in-flight cancel/recovery/stale transport scenario and
+small geometry correctness jobs before any repeated latency experiment. Rank
+screening is one warmup/one measured sample, followed by500 warmed samples only
+when correct. Do not run timing qualification concurrently with builds/tests.
+Do not call worker-phase or incidence timing full nonlinear/interaction/memory
+acceptance. Missing real-input integration/hardware remains explicitly unverified.
+
+### Revision 6 outcome and reproduction contract
+
+**V2 partial, V3 partial, V4 partial; none is closed. M5.0 remains unchecked.**
+The bounded experiments below produce positive component evidence and concrete
+negative geometry evidence. They do not establish that all authorized algorithms
+have been exhausted. Missing implementation/qualification is recorded as
+Unverified, not as an impossibility or a request for another plan approval.
+Revision 6 remains the execution baseline; no M5.1 or production adoption.
+
+Host for all new measurements: Apple M4, 24 GiB, macOS 27.2 (26B123),
+arm64, Mac16,12; battery power, low-power mode 1 on battery / 0 on AC
+in the recorded power profile.
+This is neither RefA (M1/8 GiB) nor RefB (Pi 5). Both hardware qualifications
+remain **Unverified**. Development checks use rustc1.99.0; release benchmarks
+and minimum-version checks use installed Rust1.88.0. Numerical probes force
+`faer::Par::Seq`; no nested numerical pool. No installation was performed.
+Timings below ran sequentially without concurrent builds/tests; development
+worker timings are labelled and are not release acceptance.
+
+The reproducible sources are the existing Sketch tests and benchmark, plus the
+feature-only worker test. Logs in `/tmp/newell-m50-r6/` are local session evidence,
+not committed artifacts; commands, fixtures and outcomes are retained here.
+Use `INSTA_UPDATE=no` throughout. Common benchmark invocation:
+
+```sh
+NEWELL_M50_PHASE=r6-repro cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked
+NEWELL_M50_PHASE=r6-refactor NEWELL_M50_RANK_RUNS=500 cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked
+NEWELL_M50_PHASE=r6-geometric NEWELL_M50_RANK_RUNS=500 cargo +1.88.0 bench -p newell-kernel --bench sketch --all-features --locked
+INSTA_UPDATE=no cargo test -p newell-kernel --all-features --locked revision6_ -- --nocapture
+INSTA_UPDATE=no cargo test -p newell-kernel --all-features --locked curve_capability_dossier_executes -- --nocapture
+INSTA_UPDATE=no cargo test -p newell-app --all-features --locked revision6_candidates_use_real_worker_transport_cancel_and_normal_recovery -- --nocapture
+```
+
+For process-resident observations, build the benchmark with the above Rust1.88
+command, then run that exact reported executable under `/usr/bin/time -l`, with
+`NEWELL_M50_PHASE` and `NEWELL_M50_RANK_RUNS` set as above. This session used
+`target/release/deps/sketch-1ae314bf2f135529`. Do not include compiler memory in a
+backend-memory claim: `refactor-phase-screen.log` includes compilation, whereas
+`refactor-resident.log` runs the executable directly. One warmup precedes each
+500-sample distribution. Incidence starts use seeds2–501 (warmup seed1);
+nonlinear geometry is the same deterministic recipe, without claiming varied
+mixed edits or independent nonlinear geometry seeds.
+
+### V2 disposition — method, numerical evidence and open contracts
+
+Implementation M50-FAER-002 adds safe feature-only explicit ordered symbolic QR,
+compact full Q/Q^T extraction, null apply/adjoints and bounded rank refactoring in
+vendored faer0.22.6. Original factorization kernels/unsafe bodies are unchanged.
+SSI proposals and stable original-column IDs move suspected columns to a terminal
+partition; no new COLAMD pass undoes that order. Maximum three factorizations
+(initial + two corrective), original equations/threshold retained. Each admitted
+pass checks the full rejected tail/aggregate perturbation and SSI separation;
+rank is `EstimatedReliable`, not a rigorous rank theorem. Underdetermined jobs
+use a sparse transpose and explicitly distinguish original-row permutations.
+The generic left-looking bridge remains a bounded reference only.
+
+| Revision-6 criterion | Fixture / observed evidence | Disposition and consequence |
+|---|---|---|
+| Reproduce failed scalable fallback before modification | Original generic deferral on 10,000-column/19,801-row grid: WorkLimit at400,000,001 units,31.196s,72,484,689 admitted bytes (`reproduce-general.log`) | **Pass reproduction / Fail old C1 route**. The allowance was not raised; the old route is not the scalable solution. |
+| Explicit permutation, nonterminal holes, unchanged tau/equations | Analytic/dense-SVD small matrices in `revision6_explicit_qr_order_and_nonterminal_refactor_preserve_original_rank`: zero3x2, over/underdetermined shapes, exact duplicate columns, interior1e-12 pivot, large-diagonal near-dependence `[[1,1e8],[0,1]]`, forward/reverse order; ranks match at original tau | **Pass bounded cases**. No claim of general rank qualification. |
+| At most two corrective passes; distributed dependencies | Analytic chain/grid n=10,000, regular and two dependencies at n/3 and2n/3; expected ranks10,000 /9,998,500 measured starts each; all reliable estimates, regular one pass / dependent two passes | **Pass bounded V2.1 screening**. Retrying with fresh budgets/thresholds is not used. |
+| Reconstruction and full implicit operators | Simplicial/supernodal64-column chain/grid; dense128x96 fronts crossing32/64 reflector blocks; QtA=R and QtQ=I; left/right null actions and adjoints annihilate original4x3 dependent matrix and preserve orthonormality | **Pass bounded residual tests**. Right-null extraction uses an additional QR of retained R transpose; large-nullity/operator cost is not qualified. |
+| Complete semantic provenance and invalidation | `M50Report.source_revision`, original dimensions/order/axis and GeometryJobId; source replacement/stale transport tested | **Unverified complete contract**: no full RankInputProvenance scaling/elimination/undamped-policy certificate/cache, no singular finite-mobility or active-bound classification. A rank estimate alone is not DOF. |
+| Continuations and V2.2 escalation | V2.1 correctness/admission/host screening passes the four chosen C1 incidence cases. Separate phase sample observes native QR<=13.659ms, SVD<=0.390ms and symbolic call<=2.249ms; nonlinear maxima below | **Unverified global cancellation**. No measured screened release case requires V2.2 on this host, so no speculative rank_front module was added. Opaque QR/SVD and full symbolic calls remain; regular larger/reference-machine failures would trigger the already-authorized V2.2 route. This route is not declared exhausted. |
+| Memory/work budget charged per original job | Cumulative sparse/SSI work, transpose/copy admission and native owner/scratch estimates; largest grid admission89,490,569 bytes; direct-process incidence screening maximum RSS44,351,488 bytes, peak footprint42,680,776 bytes | **Pass bounded screening / Unverified full memory gate**. Admission counters are not allocation instrumentation; RSS is not live ownership/retained-generation accounting. Native QR arithmetic/symbolic work has no complete work-unit/continuation accounting. |
+| Difficult rank corpus | Small original-SVD/analytic cases above and existing revision5 SSI uncertainty regressions | **Unverified** large nullity, distributed near-dependencies/threshold clusters at C1 scale, scaling maps, operator/cancellation timings for every stage, inconsistent/singular/active-bound nonlinear classifications. |
+| Original nonlinear geometry with rank included | 10,002 actual points +10,001 segment constraints,20,004 unknowns,50,007 Jacobian nonzeros; two Newton iterations; rank20,004 on the original undamped Jacobian at each iteration. Maximum residual1.819e-12mm and solution error1.092e-11mm,500 measured full jobs | **Pass regular chain component**. No incidence-only claim of full nonlinear C1; nonlinear grid/distributed dependencies and full mixed worker remain unverified. |
+
+Release distributions on the actual M4 host (milliseconds; refactor timing includes
+all symbolic/numeric/rank passes, but fixture assembly/initial COLAMD is separately
+reported and operators are not requested by these incidence jobs):
+
+| Fixture | n / passes | p50 | p95 | p99 | Maximum |
+|---|---:|---:|---:|---:|---:|
+| Regular incidence chain |500 /1|7.095|7.311|8.393|9.297|
+| Distributed-dependent incidence chain |500 /2|10.326|11.779|11.907|12.421|
+| Regular incidence grid |500 /1|37.645|38.894|39.799|40.437|
+| Distributed-dependent incidence grid |500 /2|58.396|60.224|61.210|79.940|
+| Full nonlinear point/segment chain with both rank analyses |500 /1 per analysis|51.866|53.149|53.943|55.125|
+
+Initial incidence assembly/COLAMD takes approximately1.3–4.9ms per fixture, outside
+the incidence distributions above; the nonlinear timer includes assembly, Newton
+solve, both rank analyses and local cleanup. The nonlinear direct-process run
+observes maximum RSS40,927,232 bytes / peak footprint39,387,592 bytes. Its worst
+measured individual rank-backend numeric QR is3.767ms and thin SVD0.546ms over501 runs; these
+are distinct from total rank-phase latency. The grid opaque maxima quoted in
+the table come from a separate one-warmup/one-measured sample, not hidden
+500-sample instrumentation. Logs: `refactor-500.log`, `nonlinear-500.log`,
+`refactor-phase-screen.log`, `refactor-resident.log`.
+
+The <=5s C1 component hypothesis passes these particular host runs. Complete V2
+closure still requires the original null/provenance/continuation/difficult-case
+and reference-hardware gates. No threshold, block size, workload or budget was
+changed to obtain these results.
+
+### V3 disposition — exact arithmetic and concrete geometry limitations
+
+M50-MATH-002 uses safe bounded exact rational arithmetic in the two approved math
+helper modules. Finite stored binary64 coefficients are imported as dyadics;
+this certifies those stored coefficients, not lost analytic-circle precision.
+Univariate polynomial division/gcd, square-free isolation, Sturm counts and
+multiplicity are original implementations of the elementary identities, tested
+against analytic roots. No bivariate Kerber algorithm was ported, and no general
+resultant/lifting proof or Krawczyk implementation is claimed. No copied CGAL,
+MATLAB, GMP or foreign code. All exact-number types remain inside SolidCore math.
+
+Dependency audit: only num-bigint0.4.6, num-rational0.4.2 and necessary
+num-integer0.1.47 were added to Cargo.lock; num-traits0.2.19 and unrelated pins
+are preserved. Manifest features exactly match V3.1. SHA-256 of all four cached
+published archives matches their Cargo.lock registry checksums
+(`arithmetic-integrity.json`). All declare MIT OR Apache-2.0; MIT is selected;
+MSRVs1.60/1.60/1.31/1.60. `cargo deny --all-features check` passes advisories,
+bans, licenses and sources (`arithmetic-all-deny.log`); inherited policy warnings
+remain. No registry editing, additional vendor tree or dependencies outside the
+approved math placement. Minimum-toolchain verification is recorded below.
+
+| Revision-6 criterion | Fixture / observed evidence | Disposition and consequence |
+|---|---|---|
+| Exact import/denominators/root certificates | Degree<=3 positive-weight single spans, exact dyadic coefficients, gcd/multiplicity/Sturm roots and outward f64 enclosures, original nonunit domains and rational line weights | **Pass bounded line/span subproblem**. Broader polynomial/interval/certificate ownership and total live-byte accounting remain unverified. |
+| Tangency / multiple roots / original parameters | Parabola at origin and1e9: double tangency1 root; positive representable1e-6 perturbation2 roots; negative0; cubic triple root on domain[2,6] gives t=4; unequal-weight line domain[-3,5] encloses-1/3 | **Pass analytic roots**, original-parameter intervals and native representative error<=1e-7mm. Translation tests use the actually stored representable delta; no precision is invented. |
+| All15 family pairs / general isolated intersections | Fresh existing curve dossier exercises every unordered pair at0 and1e9. Default SolidCore still misses parabola tangency/crossings and periodic-seam contact; some rational-conic pair residuals≈0.667mm, exceeding the unchanged tolerance | **Fail general backend capability / Unverified complete candidate**. New exact line/span path corrects its tested subproblem but does not replace general Bezier clipping, knot refinement or solve arbitrary pair equations. Passing the diagnostic test means the dossier ran, not that geometry passed. |
+| Common components/non-affine overlap | Exact same-image segment with quadratic map t->t^2 returns Unresolved from the isolated-root API (`R6_NONAFFINE_OVERLAP`), never fabricated empty accepted contacts | **Pass conservative rejection / Fail mandatory availability** for this general overlap with current candidate. No certified implicit branch correspondence exists yet; identity/reversal regressions do not close it. |
+| Periodicity, refinement, singular/self-contact topology | Existing figure-eight/seam probes reproduced; no new common-component lifting, seam splitting, branch/crossing certificate or multispan algorithm | **Unverified** completeness and topology; do not accept these results into arrangements. |
+| Source offset versus supplied approximation | Whole-span exact interval normal-offset check certifies the exact0.125mm line candidate (upper bound5e-324mm); rejects vertically translated parabola by an exact endpoint counterexample | **Pass bounded distance checker**. A sample-only shortcut is disproved, not accepted. |
+| General offset construction/cusps/joins/topology | Checker always reports topology_certified=false. Existing analytic circle/native extrusion regression retained; no general candidate constructor, zero-speed/cusp branch isolation or event ordering | **Unverified mandatory general offset/arrangement gate**. DistanceCertified alone cannot form an accepted profile. |
+| Arithmetic bounds/cancellation | Default prototype200,000 primitive calls,4096 coefficient bits,4096 root boxes; preadmission per rational operation; zero-work and pre-cancel tests return ResourceLimit/Cancelled | **Pass bounded failure semantics / Unverified complete memory/cancel contract**. Not all comparisons/conversions are timed primitives and no total allocator instrumentation; no claim of <=16ms across arbitrary admitted curves. These prototype limits do not reduce product scope. |
+| Regions/native topology/M4 extrusion/replay | Existing default/candidate analytic regressions remain in full verification. No new certified general regions, holes, joins, repair or original-offset branch topology | **Unverified** complete native/error/topology/extrusion/replay chain. M4.D1/D2 remain original unresolved gates. |
+
+Affected implementation files: approved math helpers and conditional module
+registration/intersection API; operations `certified_offset.rs`. No default
+bezier_clip/knot_ops/offset_wire/offset_trim/boolean/tolerance algorithm changed.
+The smallest concrete negative examples above stop those dependent geometry
+paths; repeated500-sample timing of an uncertified algorithm would not prove
+correctness and was not performed. The unimplemented general algebraic/interval
+routes remain authorized engineering work, not proven incompatible with Rust.
+
+### V4 disposition — actual worker, authority and remaining qualification
+
+The app's non-default `m50-feasibility` forwards the kernel feature. Kernel
+`M50Input/M50Job/M50Report` own Newell types only; faer remains an exact-pinned
+optional kernel dependency. Feature-only jobs enter the existing GeometryWorker
+inbox, wake channel, thread and GeometryJobId epoch/document/serial authority.
+There is no second worker/scheduler or production Sketch shell. The recipes are
+real incidence/rational-curve computations, not full production constraint/edit
+schemas. Assembly and backend execution advance separately; backend continuation
+allowances are not fully implemented. Opaque kernels still run synchronously.
+
+| Revision-6 criterion | Actual path / observed result | Disposition and consequence |
+|---|---|---|
+| Real request/backend/result transport | Real worker rank64 grid with two distributed dependencies returns rank62; queue60.167us, worker19.508ms, end-to-end19.568ms in development profile; exact parabola tangent job returns one contact | **Pass bounded transport/backend execution**. Not S1/S2/S3 mixed workload or reference release qualification. |
+| In-flight cancel and actual normal-work recovery | Wait for Rank phase and>=256 backend callbacks, cancel, submit real M4 ParameterDefinitions preparation of existing solid; cancelled report, native prepared scene, actual accept_prepared commit | **Pass this scenario**: observed acknowledgement0.573ms; cancel-to-normal-native-Ready6.231ms. This waits beyond numeric entry/preflight; it does not target interruption inside an opaque QR/SVD call. |
+| Stale identity/source replacement | Replace another active rank job with exact geometry; only latest completion delivered, retired result quarantined, previously committed native token preserved | **Pass this bounded authority scenario**. Retired full worker time2.735s includes pre-cancel computation in development profile and is not an obsolete-release measurement or a latency exemption. |
+| Worst indivisible duration distinct from ack/release | Numeric QR/SVD and exact primitive maxima exposed separately; symbolic whole-call upper bound named as such. Development completed64 rank QR3.427ms/SVD0.770ms; larger release measurements above | **Pass separate instrumentation / Unverified all-phase bound**. Source/queue/publication phase instrumentation is incomplete; callbacks do not make opaque calls preemptible. |
+| Full scheduling, confirmation/frozen queries/motion/other session | No controller/navigation input route added; no actual confirmation/frozen press/mixed continuous-input scenario or complete worker service policy | **Unverified**. The current feature route drains its backend before returning to ordinary pending work; no fairness/<=100ms claim for every phase. |
+| Live memory/retained generations/cleanup | Source/candidate state drops on terminal; normal committed token preserved; separate backend process RSS recorded above | **Unverified full ownership/peak gate**. No instrumented live allocations, copies, old native generations, pending terminals or retained-cache bound. Process RSS alone does not satisfy it. |
+| 500 mixed S1/S2/S3/C1/X1, devices/manual | Four incidence distributions and one complete regular nonlinear chain distribution on available M4; no500 actual mixed-worker interactions; RefA/RefB unavailable | **Unverified** all class/device/manual gates, including S3<=1GiB and visibility/input/frame budgets. No hardware surrogate or M4 timing substituted. |
+
+### Revision 6 verification, source scope and remaining work
+
+Final verification (all with snapshot updates disabled):
+
+| Command | Actual result / evidence |
+|---|---|
+| `cargo check --workspace --locked` | Pass (`final-check.log`) |
+| `cargo fmt --all -- --check` | Pass (`final-fmt.log`) |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass (`final-clippy.log`); inherited vendored faer warnings and block0.1.6 future-incompatibility notice retained, no lint disabled |
+| `INSTA_UPDATE=no cargo nextest run --workspace --all-features --locked --no-fail-fast` | **1,103 passed,21 skipped**,83.716s (`final-tests.log`); inherited initial baseline timing failure did not recur, remains recorded above |
+| `cargo test --workspace --doc --locked` | Pass (`final-doc.log`) |
+| `cargo test -p newell-render --locked -- --ignored` | **14 GPU tests passed** plus6 renderer unit tests (`final-gpu.log`); no physical-device/manual acceptance inferred |
+| `cargo +1.88.0 check --workspace --all-features --locked` | Pass on this arm64 Mac (`msrv-check.log`); no RefB target/hardware claim |
+| `cargo +1.88.0 check --workspace --locked` | Pass (`msrv-default-check.log`) |
+| `INSTA_UPDATE=no cargo +1.88.0 test -p newell-kernel --all-features --locked revision6_ -- --nocapture` | **9 passed** (`msrv-focused.log`), including explicit Unresolved non-affine overlap |
+| `cargo test -p newell-kernel --locked` | **68 passed,1 ignored** (29 unit +39 integration; `default-kernel.log`), no feature activation or snapshot changes |
+| `cargo deny --all-features check` | Pass advisories/bans/licenses/sources for the final unchanged dependency graph (`arithmetic-all-deny.log`) |
+| `cargo tree -p newell-kernel --edges normal --locked` | Default normal graph excludes optional faer/num-bigint/num-rational (`default-normal-tree.log`) |
+| `git diff --check` and source/index inspection | Pass; numerical vendor diffs strictly additive, no new unsafe/FFI, main/index preserved |
+
+The nine focused tests also passed under the development toolchain before final
+verification. The actual-worker test passed independently and in the full suite.
+Final suite success establishes regression checks, not completion of feasibility
+requirements: diagnostic probes deliberately report unproven geometry without
+claiming it certified. The21 Nextest skips remain explicit; the separately
+required14 ignored GPU tests were run. Full S-class/mixed input, RefA/RefB and
+manual qualification were not run and remain Unverified.
+
+
+Source ledgers M50-FAER-002, M50-MATH-002 and M50-OPERATIONS-002 inventory the
+exact feature-only changes. New files: kernel `sketch/feasibility.rs` and the two
+approved math helpers. Other changed sources: kernel/app manifests, kernel lib
+and sketch registration, existing Sketch tests/bench, existing geometry_worker,
+faer qr/rank, math conditional intersection/registration/manifest and operations
+offset candidate. Cargo.lock/manifest ledgers and this dossier/backlog complete
+the execution scope. The existing approved revision6 plan diff is preserved;
+it is not an Executor edit. Existing headers/licenses and all upstream unsafe
+remain unchanged; no automatic snapshot update, commit or external publication.
+
+No new generic human approval or architectural choice is needed to describe
+these results. Remaining work is already authorized by revision6: complete
+provenance/continuations/operator scale and hard rank corpus; complete exact
+bivariate/common-component/offset/arrangement/native proof chain; actual input
+service, live-memory and reference-device qualification. Access to RefA/RefB is
+a concrete prerequisite for those device runs. Maintenance ownership and explicit
+production adoption are later human decisions; neither is silently assumed here.
+No alternative is declared exhausted merely because it is not implemented in
+this bounded experiment. M5.0 and dependent capability gates remain open.
+
+## Revision 5 V1–V4 execution — 2026-10-29 (historical disposition)
 
 Executor / Codex, explicitly requested after the human approved plan revision 5.
-Started with V2's factor contract. Rust without FFI, BrepKIT alone and all
+Started with V2's factor contract. Rust without FFI, SolidCore alone and all
 original requirements/budgets remain binding. **M5.0 remains open.** No M5.1,
 production adoption, default runtime switching, agent dispatch, commit or
 publication. This section supersedes earlier current-state summaries; historical
@@ -29,7 +450,7 @@ baselines. Comparing every shipped file to its archive found no missing file.
 Exact local deltas are now recorded as M50-FAER-001, M50-MATH-001 and
 M50-OPERATIONS-001 in `vendor/manifest.toml` and per-package `NEWELL_CHANGES.md`.
 Metadata confirms five Newell workspace members, exactly the three named local
-packages, and registry brepkit-topology4.2.2. No other package/version was added.
+packages, and registry retired geometry topology package4.2.2. No other package/version was added.
 
 V0 remains accepted and applied. Third-party original MIT/AGPL-3.0-only notices
 and Cargo.toml.orig remain present. New correction/extension code is safe Rust;
@@ -134,7 +555,7 @@ adapter is not a production diagnostic or worker integration. Broad adversarial
 large-rank cases, singular finite-mobility/active-bound handling, nonlinear mixed
 C1/S traces and hardware acceptance still require evidence. **V2 is partial.**
 
-### V3 — BrepKIT candidates and limits
+### V3 — SolidCore candidates and limits
 
 Preserved earlier feature-isolated affine/quadratic/circle APIs. Added
 `intersect_mapped` with original non-unit knot-domain enclosures for the exact
@@ -203,7 +624,7 @@ There is no new request for generic vendoring permission or a reduced budget.
 ## Revision 3 recovery execution — 2026-10-29 (historical disposition)
 
 Executor / Codex. The human explicitly approved revision 3 and requested M5.0
-packages A–G, Rust without FFI, BrepKIT only, unchanged requirements, no M5.1.
+packages A–G, Rust without FFI, SolidCore only, unchanged requirements, no M5.1.
 This section supersedes earlier current-source/check summaries, preserving their
 historical evidence below. **M5.0 remains open.** Investigations and bounded
 probes progressed; the complete recovery exit gates have not been achieved.
@@ -284,7 +705,7 @@ An independent affine overlap oracle now checks interval endpoints and parameter
 maps at both translations: A(u)=-2+4u; B(v)=3v or1-2v. These prove the expected
 partial/reversed intervals, not a repaired upstream implementation.
 
-Concrete proposed upstream changes to `brepkit-math-4.2.2/src/nurbs/bezier_clip.rs`:
+Concrete proposed upstream changes to `retired geometry math package-4.2.2/src/nurbs/bezier_clip.rs`:
 
 1. Carry original curve ordering and original parameter maps through recursive
    role swaps, subdivision and merging; return/validate both original parameters.
@@ -614,7 +1035,7 @@ none were patched.
 
 | Dependency | Pin / declared MSRV / license | Investigated public APIs |
 |---|---|---|
-| brepkit math/operations/topology | =4.2.2 / 1.88 / AGPL-3.0-only | Curve evaluation, clipping, topology builders, native extrusion, measurement/validation; sole B-Rep engine. |
+| SolidCore math/operations/topology | =4.2.2 / 1.88 / AGPL-3.0-only | Curve evaluation, clipping, topology builders, native extrusion, measurement/validation; sole B-Rep engine. |
 | faer | =0.22.6 / 1.84 / MIT | `Mat::singular_values`, dense column-pivoted QR reference; high-level `SymbolicQr`/`Qr`; safe low-level `factorize_symbolic_qr`, `factorize_numeric_qr`, `solve_in_place_with_conj`, workspace size APIs. |
 | rstar | =0.12.2 / 1.63 / MIT option | Bulk load, envelope query, remove/insert; point fixtures only. |
 | ab_glyph | =0.2.32 / undeclared / Apache-2.0 | Raw `Font::outline` line/quadratic/cubic curves, not raster output. |
@@ -744,7 +1165,7 @@ implementation checks from M5.1–M5.2, not permission to omit them.
 
 ## Exact curves and operation-family matrix — §§5, 7.1, 9.2
 
-API: `brepkit_math::nurbs::bezier_clip::curve_curve_intersect_full`, exact clamped
+API: `retired_geometry_math::nurbs::bezier_clip::curve_curve_intersect_full`, exact clamped
 NURBS input, explicit 1e-7 tolerance. Thirty representative pair observations
 (15 unordered families × origin/1e9 translation) retain returned parameter intervals.
 Residuals are independently reevaluated on **both original curves**. A good residual

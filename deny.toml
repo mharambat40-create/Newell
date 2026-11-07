@@ -23,9 +23,6 @@ wildcards = "deny"
 deny = [
     { crate = "opencascade" },
     { crate = "opencascade-sys" },
-    # BREPkit enters the dependency graph through this façade only. Its
-    # constituent crates are necessarily transitive dependencies of operations.
-    { crate = "brepkit-operations", wrappers = ["newell-kernel"] },
 ]
 
 [sources]

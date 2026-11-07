@@ -10,7 +10,7 @@
 //! Rows: the Create header, `Profile`, `Start type` and `End type` (each `◀ Normal | Tengent |
 //! Match ▶` with a `Magnitude` or `Entity` child), `Guide`, `Path`, `Connection` (with `Start`
 //! and `End`), `Merge with all` for `Add` and `Remove`, the footer. The reference spells the
-//! second value `Tengent`; it is reproduced as written. No geometry, BrepKIT, real selection
+//! second value `Tengent`; it is reproduced as written. No geometry, SolidCore, real selection
 //! or formula evaluation is involved.
 
 use crate::action_box::ActionBox;

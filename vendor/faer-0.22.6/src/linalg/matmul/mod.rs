@@ -1,5 +1,6 @@
 //! matrix multiplication
 
+#[cfg(feature = "rayon")]
 use super::temp_mat_scratch;
 use crate::col::ColRef;
 use crate::internal_prelude::*;
@@ -9,7 +10,9 @@ use crate::utils::bound::Dim;
 use crate::utils::simd::SimdCtx;
 use crate::{Conj, ContiguousFwd, Par, Shape};
 use core::mem::MaybeUninit;
-use dyn_stack::{MemBuffer, MemStack};
+#[cfg(feature = "rayon")]
+use dyn_stack::MemBuffer;
+use dyn_stack::MemStack;
 use equator::assert;
 use faer_macros::math;
 use faer_traits::{ByRef, ComplexField, Conjugate};
@@ -914,9 +917,13 @@ mod matvec_rowmajor {
 mod matvec_colmajor {
 	use super::*;
 	use crate::col::ColMut;
+	#[cfg(feature = "rayon")]
 	use crate::linalg::temp_mat_uninit;
+	#[cfg(feature = "rayon")]
 	use crate::mat::AsMatMut;
+	#[cfg(feature = "rayon")]
 	use crate::utils::bound::IdxInc;
+	#[cfg(feature = "rayon")]
 	use crate::{unzip, zip};
 	use faer_traits::SimdArch;
 
@@ -1371,7 +1378,7 @@ fn matmul_imp<'M, 'N, 'K, T: ComplexField>(
 							rhs.col_stride(),
 							match beta {
 								Accum::Replace => core::mem::zeroed(),
-								Accum::Add => 1.0.into(),
+								Accum::Add => faer_traits::math_utils::one::<$ty>(),
 							},
 							alpha,
 							conj_lhs == Conj::Yes,
@@ -1443,7 +1450,7 @@ fn matmul_imp<'M, 'N, 'K, T: ComplexField>(
 								rhs.row_stride(),
 								match beta {
 									Accum::Replace => core::mem::zeroed(),
-									Accum::Add => 1.0.into(),
+									Accum::Add => faer_traits::math_utils::one::<$ty>(),
 								},
 								alpha,
 								false,

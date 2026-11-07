@@ -143,7 +143,7 @@ The goal of M2 is to establish Newell's UI grammar and interaction mechanics, no
 
 M2 must not implement:
 
-- BrepKIT integration;
+- SolidCore integration;
 - real geometry;
 - real parametric features;
 - Boolean geometry;
@@ -519,7 +519,7 @@ It must not carry:
 - callbacks;
 - closures;
 - model entities;
-- BrepKIT objects;
+- SolidCore objects;
 - layout rectangles.
 
 ### 8.2 Cell size target
@@ -559,7 +559,7 @@ The renderer may expand `StyleId` into GPU-ready values during upload.
 - stable across recomposition;
 - independent of screen coordinates;
 - independent of GPU resources;
-- independent of BrepKIT/model types;
+- independent of SolidCore/model types;
 - usable by multiple cells belonging to the same control;
 - suitable for future per-window UI instances.
 
@@ -1009,7 +1009,7 @@ No invisible reserved rows are required.
 
 The Extrude mock must not:
 
-- call BrepKIT;
+- call SolidCore;
 - create a feature;
 - update geometry;
 - perform Boolean operations;

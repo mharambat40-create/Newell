@@ -185,7 +185,10 @@ pub(crate) fn dense_cases(iterations: usize) -> ProbeResult {
     Ok(())
 }
 type Sparse = SparseColMat<usize, f64>;
-fn fixture(n: usize, grid: bool) -> Result<(Sparse, Mat<f64>, usize), Box<dyn std::error::Error>> {
+pub(crate) fn fixture(
+    n: usize,
+    grid: bool,
+) -> Result<(Sparse, Mat<f64>, usize), Box<dyn std::error::Error>> {
     let width = if grid { n.isqrt() } else { n };
     let mut entries = Vec::new();
     let mut rhs = Vec::new();
@@ -382,41 +385,6 @@ fn sparse_backend_solves_independent_analytic_chain() -> ProbeResult {
 #[test]
 fn pinned_backend_cancellation_boundaries_are_measurable() -> ProbeResult {
     cancellation()
-}
-
-pub(crate) fn gcs_reference(iterations: usize) -> ProbeResult {
-    use brepkit_operations::sketch::{GcsConstraint, GcsSystem, PointData};
-    let mut times = Vec::new();
-    let mut worst = 0_f64;
-    for _ in 0..iterations {
-        let mut g = GcsSystem::new();
-        let a = g.add_point(PointData {
-            x: 0.,
-            y: 0.,
-            fixed: true,
-        });
-        let b = g.add_point(PointData {
-            x: 4.2,
-            y: 0.1,
-            fixed: false,
-        });
-        g.add_constraint(GcsConstraint::Distance(a, b, 5.))?;
-        g.add_constraint(GcsConstraint::FixY(b, 0.))?;
-        let t = Instant::now();
-        let result = g.solve(100, 1e-9)?;
-        times.push(t.elapsed().as_secs_f64() * 1e6);
-        let point = g.point(b).ok_or("lost point")?;
-        assert!(result.converged && result.max_residual < 1e-9);
-        assert!((point.x - 5.).abs() < 1e-8 && point.y.abs() < 1e-8);
-        worst = worst.max(result.max_residual);
-    }
-    println!("GCS,bounded_oracle,max_residual={worst:e},unknowns=2,equations=2,branch=positive_x");
-    distribution("gcs_bounded_nonlinear_solve", times);
-    Ok(())
-}
-#[test]
-fn upstream_nonlinear_reference_matches_analytic_branch() -> ProbeResult {
-    gcs_reference(1)
 }
 
 pub(crate) fn spatial(iterations: usize) -> ProbeResult {
@@ -660,6 +628,10 @@ fn configured_sparse_methods_preserve_analytic_solution() -> ProbeResult {
 /// y coordinates are constrained to zero; unit distances connect every point.
 /// Off-axis initial guesses exercise nonlinear length residuals and Jacobians.
 pub(crate) fn geometric_chain(points: usize) -> ProbeResult {
+    geometric_chain_ranked(points, false)
+}
+
+pub(crate) fn geometric_chain_ranked(points: usize, include_rank: bool) -> ProbeResult {
     use faer::{
         Conj,
         dyn_stack::{MemBuffer, MemStack},
@@ -740,6 +712,41 @@ pub(crate) fn geometric_chain(points: usize) -> ProbeResult {
             Default::default(),
         );
         let factor_us = factor_start.elapsed().as_secs_f64() * 1e6;
+        if include_rank {
+            #[cfg(feature = "rank-research")]
+            {
+                use faer::sparse::linalg::rank::{
+                    RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank,
+                };
+                let started = Instant::now();
+                let report = refactorize_rank(
+                    a.as_ref(),
+                    symbol.col_perm().arrays().0,
+                    1e-9,
+                    RankQrLimits {
+                        max_bytes: 1 << 30,
+                        max_work: 400_000_000,
+                    },
+                    RankQrOptions::default(),
+                    || false,
+                )?;
+                let rank = report.rank.ok_or("missing nonlinear rank")?;
+                assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+                assert_eq!(rank.rank, 2 * points);
+                println!(
+                    "R6_GEOMETRIC_RANK,iteration={iteration},unknowns={},rank={},factorizations={},us={},native_qr_max_ns={},dense_svd_max_ns={}",
+                    2 * points,
+                    rank.rank,
+                    report.factorizations,
+                    started.elapsed().as_secs_f64() * 1e6,
+                    report.native_qr_max_ns,
+                    report.dense_svd_max_ns
+                );
+            }
+            #[cfg(not(feature = "rank-research"))]
+            return Err("ranked nonlinear probe requires m50-feasibility".into());
+        }
+
         let mut scratch = MemBuffer::new(symbol.solve_in_place_scratch::<f64>(1, Par::Seq));
         let solve_start = Instant::now();
         qr.solve_in_place_with_conj(
@@ -763,7 +770,7 @@ pub(crate) fn geometric_chain(points: usize) -> ProbeResult {
         .fold(0., f64::max);
     assert!(converged && max_residual < 1e-9 && error < 1e-6);
     println!(
-        "GEOMETRIC_CHAIN,points={points},segments={},entities={},unknowns={},equations={},nnz={},blocks=1,intersections=0,regions=0,visible=0,iterations={iterations},residual_mm={max_residual:e},solution_error_mm={error:e},total_us={:.3},rank=Unavailable,workspace_reuse=not_yet",
+        "GEOMETRIC_CHAIN,points={points},segments={},entities={},unknowns={},equations={},nnz={},blocks=1,intersections=0,regions=0,visible=0,iterations={iterations},residual_mm={max_residual:e},solution_error_mm={error:e},total_us={:.3},rank_checked={include_rank},workspace_reuse=not_yet",
         points - 1,
         2 * points - 1,
         2 * points,
@@ -783,7 +790,7 @@ fn nonlinear_point_segment_chain_matches_analytic_solution() -> ProbeResult {
     geometric_chain(32)
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_factor_bridge_preserves_original_columns_and_rejection_error()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -884,7 +891,7 @@ fn m50_rank_factor_bridge_preserves_original_columns_and_rejection_error()
     Ok(())
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_factor_bridge_invalidates_partial_cancelled_and_over_budget_jobs()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -953,7 +960,7 @@ fn m50_rank_factor_bridge_invalidates_partial_cancelled_and_over_budget_jobs()
     Ok(())
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 fn rank_protocol_probe(
     dense: &Mat<f64>,
     tau: f64,
@@ -992,7 +999,7 @@ fn rank_protocol_probe(
     )?)
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_protocol_corrects_diagonal_count_and_checks_threshold_separation() -> ProbeResult {
     use faer::sparse::linalg::rank::RankQrReliability;
@@ -1058,7 +1065,7 @@ fn m50_rank_protocol_corrects_diagonal_count_and_checks_threshold_separation() -
     Ok(())
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 pub(crate) fn rank_large(iterations: usize, n: usize) -> ProbeResult {
     use faer::dyn_stack::{MemBuffer, MemStack};
     use faer::sparse::linalg::{
@@ -1207,13 +1214,13 @@ pub(crate) fn rank_large(iterations: usize, n: usize) -> ProbeResult {
     Ok(())
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_sparse_chain_and_grid_characterization() -> ProbeResult {
     rank_large(0, 64)
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_imported_r_preserves_gram_permutation_and_reliability() -> ProbeResult {
     use faer::dyn_stack::{MemBuffer, MemStack};
@@ -1300,7 +1307,7 @@ fn m50_rank_imported_r_preserves_gram_permutation_and_reliability() -> ProbeResu
     Ok(())
 }
 
-#[cfg(feature = "m50-feasibility")]
+#[cfg(feature = "rank-research")]
 #[test]
 fn m50_rank_bridge_mid_phase_cancellation_and_sparse_input_errors() -> ProbeResult {
     use faer::sparse::linalg::rank::{RankQrError, RankQrLimits, RankQrSymbolic, RankQrWorkspace};
@@ -1343,5 +1350,1126 @@ fn m50_rank_bridge_mid_phase_cancellation_and_sparse_input_errors() -> ProbeResu
         work.advance(invalid.as_ref(), 1, || false),
         Err(RankQrError::InvalidInput)
     );
+    Ok(())
+}
+
+/// Revision6 pre-change reproduction, forced through the existing general bridge.
+#[cfg(feature = "rank-research")]
+pub(crate) fn revision6_reproduce_deferral(n: usize) -> ProbeResult {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::sparse::linalg::{
+        colamd,
+        rank::{RankQrLimits, RankQrProgress, RankQrSymbolic, RankQrWorkspace},
+    };
+    let (a, _, _) = fixture(n, true)?;
+    let mut order = vec![0; n];
+    let mut inverse = vec![0; n];
+    let mut memory = MemBuffer::new(colamd::order_scratch::<usize>(
+        a.nrows(),
+        n,
+        a.compute_nnz(),
+    ));
+    colamd::order(
+        &mut order,
+        &mut inverse,
+        a.symbolic(),
+        Default::default(),
+        MemStack::new(&mut memory),
+    )?;
+    let symbolic = RankQrSymbolic::new(a.as_ref(), &order, 1 << 30)?;
+    let mut work = RankQrWorkspace::new(
+        &symbolic,
+        RankQrLimits {
+            max_bytes: 1 << 30,
+            max_work: 400_000_000,
+        },
+    )?;
+    work.start(1e-9)?;
+    let began = Instant::now();
+    let outcome = loop {
+        match work.advance(a.as_ref(), 16, || false) {
+            Ok(RankQrProgress::Pending) => {}
+            other => break other,
+        }
+    };
+    println!(
+        "R6_REPRO,grid=true,unknowns={n},rows={},outcome={outcome:?},elapsed_us={},bytes={},work={},budget_units=400000000,limit_bytes=1073741824",
+        a.nrows(),
+        began.elapsed().as_secs_f64() * 1e6,
+        work.usage().0,
+        work.usage().1
+    );
+    if n <= 256 {
+        assert_eq!(outcome?, RankQrProgress::Complete);
+        assert_eq!(work.preliminary_rank()?, n);
+    }
+    Ok(())
+}
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_general_bridge_reproducer_has_known_small_rank() -> ProbeResult {
+    revision6_reproduce_deferral(64)
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_explicit_qr_order_and_nonterminal_refactor_preserve_original_rank() -> ProbeResult {
+    use faer::sparse::linalg::rank::{
+        RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank,
+    };
+    for (dense, tau, rank) in [
+        (
+            faer::mat![[1., 0., 0.], [0., 1e-12, 0.], [0., 0., 1.]],
+            1e-9,
+            2,
+        ),
+        (faer::mat![[1., 1e8], [0., 1.]], 1e-6, 1),
+        (
+            faer::mat![[1., 1., 0.], [0., 0., 1.], [0., 0., 0.]],
+            1e-9,
+            2,
+        ),
+        (faer::mat![[1., 0.], [0., 1.], [1., 1.]], 1e-9, 2),
+        (Mat::zeros(3, 2), 1e-9, 0),
+        (faer::mat![[1., 0., 1.], [0., 1., 1.]], 1e-9, 2),
+        (
+            faer::mat![[1., 0., 1., 0.], [1., 0., 1., 0.], [0., 1., 0., 1.]],
+            1e-9,
+            2,
+        ),
+    ] {
+        let entries: Vec<_> = (0..dense.ncols())
+            .flat_map(|j| {
+                (0..dense.nrows()).filter_map({
+                    let d = &dense;
+                    move |i| (d[(i, j)] != 0.).then_some(Triplet::new(i, j, d[(i, j)]))
+                })
+            })
+            .collect();
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(
+            dense.nrows(),
+            dense.ncols(),
+            &entries,
+        )?;
+        let expected = dense
+            .singular_values()
+            .map_err(|e| format!("SVD {e:?}"))?
+            .iter()
+            .filter(|&&s| s > tau)
+            .count();
+        assert_eq!(expected, rank);
+        for reverse in [false, true] {
+            let mut order: Vec<_> = (0..dense.ncols()).collect();
+            if reverse {
+                order.reverse();
+            }
+            let result = refactorize_rank(
+                a.as_ref(),
+                &order,
+                tau,
+                RankQrLimits {
+                    max_bytes: 1 << 24,
+                    max_work: 10_000_000,
+                },
+                RankQrOptions::default(),
+                || false,
+            )?;
+            println!("R6_REFACTOR,reverse={reverse},{result:?}");
+            assert!(result.factorizations <= 3);
+            let actual = result.rank.ok_or("no bridge")?;
+            assert_eq!(actual.reliability, RankQrReliability::EstimatedReliable);
+            assert_eq!(actual.rank, expected);
+        }
+    }
+    Ok(())
+}
+
+/// Revision6 C1 bounded refactorization, regular and two distributed dependencies.
+#[cfg(feature = "rank-research")]
+pub(crate) fn revision6_refactor_workloads(runs: usize, n: usize) -> ProbeResult {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::sparse::linalg::{
+        colamd,
+        rank::{RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank},
+    };
+    for (grid, dependent) in [(false, false), (false, true), (true, false), (true, true)] {
+        let build = Instant::now();
+        let (original, _, _) = fixture(n, grid)?;
+        let mut entries = Vec::new();
+        for j in 0..n {
+            let source = if dependent && j == n / 3 {
+                0
+            } else if dependent && j == 2 * n / 3 {
+                n - 1
+            } else {
+                j
+            };
+            entries.extend(
+                original
+                    .row_idx_of_col(source)
+                    .zip(original.val_of_col(source))
+                    .map(|(i, &v)| Triplet::new(i, j, v)),
+            );
+        }
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(original.nrows(), n, &entries)?;
+        let mut order = vec![0; n];
+        let mut inverse = vec![0; n];
+        let mut memory = MemBuffer::new(colamd::order_scratch::<usize>(
+            a.nrows(),
+            n,
+            a.compute_nnz(),
+        ));
+        colamd::order(
+            &mut order,
+            &mut inverse,
+            a.symbolic(),
+            Default::default(),
+            MemStack::new(&mut memory),
+        )?;
+        let setup_us = build.elapsed().as_secs_f64() * 1e6;
+        let mut samples = Vec::new();
+        for sample in 0..=runs {
+            let began = Instant::now();
+            let report = refactorize_rank(
+                a.as_ref(),
+                &order,
+                1e-9,
+                RankQrLimits {
+                    max_bytes: 1 << 30,
+                    max_work: 400_000_000,
+                },
+                RankQrOptions {
+                    seed: 1 + sample as u64,
+                    ..Default::default()
+                },
+                || false,
+            )?;
+            let elapsed = began.elapsed().as_secs_f64() * 1e6;
+            let rank = report.rank.ok_or("no admissible refactored bridge")?;
+            println!(
+                "R6_C1,grid={grid},dependent={dependent},n={n},rows={},nnz={},sample={sample},expected_rank={},rank={},reliability={:?},factorizations={},setup_us={setup_us},numeric_total_us={elapsed},admitted_bytes={},counted_work={},seed={},native_qr_max_ns={},dense_svd_max_ns={},symbolic_call_upper_ns={}",
+                a.nrows(),
+                a.compute_nnz(),
+                n - 2 * usize::from(dependent),
+                rank.rank,
+                rank.reliability,
+                report.factorizations,
+                report.numeric_admitted_bytes,
+                report.counted_work,
+                rank.seed,
+                report.native_qr_max_ns,
+                report.dense_svd_max_ns,
+                report.symbolic_call_upper_ns
+            );
+            if rank.reliability != RankQrReliability::EstimatedReliable {
+                return Err("refactored rank remains uncertain".into());
+            }
+            assert_eq!(rank.rank, n - 2 * usize::from(dependent));
+            assert!(report.factorizations <= 3);
+            if sample > 0 {
+                samples.push(elapsed);
+            }
+        }
+        distribution(
+            &format!("r6_refactor_grid_{grid}_dependent_{dependent}"),
+            samples,
+        );
+    }
+    Ok(())
+}
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_distributed_dependencies_match_analytic_chain_grid_rank() -> ProbeResult {
+    revision6_refactor_workloads(0, 64)
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_native_q_and_full_complement_reconstruct_original_matrix() -> ProbeResult {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::sparse::linalg::{
+        SupernodalThreshold,
+        qr::{QrSymbolicParams, factorize_symbolic_qr},
+    };
+    for grid in [false, true] {
+        let (a, _, _) = fixture(64, grid)?;
+        for threshold in [
+            SupernodalThreshold::FORCE_SIMPLICIAL,
+            SupernodalThreshold::FORCE_SUPERNODAL,
+        ] {
+            let symbolic = factorize_symbolic_qr(
+                a.symbolic(),
+                QrSymbolicParams {
+                    supernodal_flop_ratio_threshold: threshold,
+                    ..Default::default()
+                },
+            )?;
+            let mut indices = vec![0; symbolic.len_idx()];
+            let mut values = vec![0.; symbolic.len_val()];
+            let mut memory = MemBuffer::new(
+                symbolic.factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default()),
+            );
+            let qr = symbolic.factorize_numeric_qr(
+                &mut indices,
+                &mut values,
+                a.as_ref(),
+                Par::Seq,
+                MemStack::new(&mut memory),
+                Default::default(),
+            );
+            let q = qr.orthogonal_operator(1 << 24, || false)?;
+            let perm = symbolic.col_perm().arrays().0;
+            for (k, &j) in perm.iter().enumerate() {
+                let mut x = vec![0.; a.nrows()];
+                for (i, &v) in a.row_idx_of_col(j).zip(a.val_of_col(j)) {
+                    x[i] = v;
+                }
+                q.apply(&mut x, true, || false)?;
+                qr.visit_r_entries(
+                    |i, col, v| -> Result<(), faer::sparse::linalg::rank::RankQrError> {
+                        if col == k {
+                            x[i] -= v;
+                        }
+                        Ok(())
+                    },
+                )?;
+                assert!(
+                    x.iter().all(|v| v.abs() < 1e-12),
+                    "grid={grid},threshold={threshold:?},column={k},residual={}",
+                    x.iter().copied().map(f64::abs).fold(0., f64::max)
+                );
+            }
+            for j in [0, 63, a.nrows() - 1] {
+                let mut x = vec![0.; a.nrows()];
+                x[j] = 1.;
+                q.apply(&mut x, false, || false)?;
+                q.apply(&mut x, true, || false)?;
+                for (i, v) in x.iter().enumerate() {
+                    assert!((v - f64::from(i == j)).abs() < 1e-12);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_left_right_null_actions_are_orthonormal_and_annihilate_original_matrix() -> ProbeResult
+{
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::sparse::linalg::{
+        SupernodalThreshold,
+        qr::{QrSymbolicParams, factorize_symbolic_qr_ordered},
+    };
+    let dense = faer::mat![[1., 1., 0.], [0., 0., 1.], [1., 1., 1.], [2., 2., -1.]];
+    let entries: Vec<_> = (0..3)
+        .flat_map(|j| {
+            (0..4).filter_map({
+                let a = &dense;
+                move |i| (a[(i, j)] != 0.).then_some(Triplet::new(i, j, a[(i, j)]))
+            })
+        })
+        .collect();
+    let a = SparseColMat::<usize, f64>::try_new_from_triplets(4, 3, &entries)?;
+    let symbolic = factorize_symbolic_qr_ordered(
+        a.symbolic(),
+        &[0, 2, 1],
+        QrSymbolicParams {
+            supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
+            ..Default::default()
+        },
+        1 << 24,
+        || false,
+    )?;
+    let mut indices = vec![0; symbolic.len_idx()];
+    let mut values = vec![0.; symbolic.len_val()];
+    let mut memory =
+        MemBuffer::new(symbolic.factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default()));
+    let qr = symbolic.factorize_numeric_qr(
+        &mut indices,
+        &mut values,
+        a.as_ref(),
+        Par::Seq,
+        MemStack::new(&mut memory),
+        Default::default(),
+    );
+    let left = qr.orthogonal_operator(1 << 24, || false)?;
+    let right = qr.right_null_operator(2, 1 << 24, || false)?;
+    let mut previous = None;
+    for j in 0..2 {
+        let mut coefficients = vec![0.; 2];
+        coefficients[j] = 1.;
+        let mut vector = vec![0.; 4];
+        left.apply_null(2, &coefficients, &mut vector, false, || false)?;
+        for col in 0..3 {
+            assert!(
+                (0..4)
+                    .map(|i| dense[(i, col)] * vector[i])
+                    .sum::<f64>()
+                    .abs()
+                    < 1e-12
+            );
+        }
+        let mut back = vec![0.; 2];
+        left.apply_null(2, &vector, &mut back, true, || false)?;
+        for (a, b) in back.iter().zip(coefficients) {
+            assert!((a - b).abs() < 1e-12);
+        }
+        if let Some(old) = previous {
+            let old: Vec<f64> = old;
+            assert!(
+                old.iter()
+                    .zip(&vector)
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>()
+                    .abs()
+                    < 1e-12
+            );
+        }
+        previous = Some(vector);
+    }
+    let mut vector = vec![0.; 3];
+    right.apply_null(2, &[1.], &mut vector, false, || false)?;
+    for row in 0..4 {
+        assert!(
+            (0..3)
+                .map(|j| dense[(row, j)] * vector[j])
+                .sum::<f64>()
+                .abs()
+                < 1e-12
+        );
+    }
+    assert!((vector.iter().map(|v| v * v).sum::<f64>() - 1.).abs() < 1e-12);
+    let mut back = [0.];
+    right.apply_null(2, &vector, &mut back, true, || false)?;
+    assert!((back[0] - 1.).abs() < 1e-12);
+    Ok(())
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_native_q_dense_front_blocking_preserves_orthogonal_complement() -> ProbeResult {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::sparse::linalg::{
+        SupernodalThreshold,
+        qr::{QrSymbolicParams, factorize_symbolic_qr_ordered},
+    };
+    let (m, n) = (128, 96);
+    let entries: Vec<_> = (0..n)
+        .flat_map(|j| {
+            (0..m).map(move |i| {
+                Triplet::new(
+                    i,
+                    j,
+                    if i == j {
+                        4.
+                    } else {
+                        ((i * 37 + j * 13 + 17) % 101) as f64 / 101. - 0.5
+                    },
+                )
+            })
+        })
+        .collect();
+    let a = SparseColMat::<usize, f64>::try_new_from_triplets(m, n, &entries)?;
+    let order: Vec<_> = (0..n).rev().collect();
+    let symbolic = factorize_symbolic_qr_ordered(
+        a.symbolic(),
+        &order,
+        QrSymbolicParams {
+            supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
+            ..Default::default()
+        },
+        1 << 26,
+        || false,
+    )?;
+    let mut indices = vec![0; symbolic.len_idx()];
+    let mut values = vec![0.; symbolic.len_val()];
+    let mut memory =
+        MemBuffer::new(symbolic.factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default()));
+    let qr = symbolic.factorize_numeric_qr(
+        &mut indices,
+        &mut values,
+        a.as_ref(),
+        Par::Seq,
+        MemStack::new(&mut memory),
+        Default::default(),
+    );
+    let q = qr.orthogonal_operator(1 << 26, || false)?;
+    for k in [0, 31, 32, 63, 64, 95] {
+        let mut x = vec![0.; m];
+        for (i, &v) in a.row_idx_of_col(order[k]).zip(a.val_of_col(order[k])) {
+            x[i] = v;
+        }
+        q.apply(&mut x, true, || false)?;
+        qr.visit_r_entries(
+            |i, j, v| -> Result<(), faer::sparse::linalg::rank::RankQrError> {
+                if j == k {
+                    x[i] -= v;
+                }
+                Ok(())
+            },
+        )?;
+        assert!(x.iter().all(|v| v.abs() < 1e-11));
+    }
+    let mut x = vec![0.; m];
+    x[m - 1] = 1.;
+    q.apply(&mut x, false, || false)?;
+    q.apply(&mut x, true, || false)?;
+    for (i, v) in x.iter().enumerate() {
+        assert!((v - f64::from(i == m - 1)).abs() < 1e-11);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_nonlinear_point_segment_solve_includes_undamped_rank() -> ProbeResult {
+    geometric_chain_ranked(32, true)
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_difficult_svd_corpus() -> ProbeResult {
+    use faer::sparse::linalg::rank::{
+        RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank,
+    };
+    faer::set_global_parallelism(Par::Seq);
+    for (name, matrix, tau) in [
+        (
+            "large_nullity",
+            Mat::from_fn(64, 64, |i, j| if i == j && i < 8 { 1. } else { 0. }),
+            1e-9,
+        ),
+        ("rectangular_rigid", faer::mat![[-1., 0., 1., 0.]], 1e-9),
+        (
+            "duplicated_equations",
+            faer::mat![[1., -1.], [2., -2.]],
+            1e-9,
+        ),
+        (
+            "tangent_fixed_circles",
+            faer::mat![[2., 0.], [-2., 0.]],
+            1e-9,
+        ),
+        ("toggle", faer::mat![[1., 0.], [0., 0.]], 1e-9),
+        (
+            "many_large_diagonal_dependencies",
+            Mat::from_fn(32, 32, |i, j| {
+                if i == j {
+                    1.
+                } else if j == i + 1 && i % 2 == 0 {
+                    1e8
+                } else {
+                    0.
+                }
+            }),
+            1e-6,
+        ),
+        (
+            "threshold_cluster",
+            Mat::from_fn(32, 32, |i, j| {
+                if i == j {
+                    if i < 8 {
+                        1.
+                    } else if i < 16 {
+                        1.001e-8
+                    } else if i < 24 {
+                        0.999e-8
+                    } else {
+                        1e-12
+                    }
+                } else {
+                    0.
+                }
+            }),
+            1e-8,
+        ),
+    ] {
+        for scale in [1e-3, 1., 1e3] {
+            for reverse in [false, true] {
+                let mut dense = matrix.clone();
+                for j in 0..dense.ncols() {
+                    for i in 0..dense.nrows() {
+                        dense[(i, j)] *= scale;
+                    }
+                }
+                let tau = tau * scale;
+                let singular = dense
+                    .singular_values()
+                    .map_err(|e| format!("reference SVD {e:?}"))?;
+                let expected = singular.iter().filter(|&&s| s > tau).count();
+                let entries: Vec<_> = (0..dense.ncols())
+                    .flat_map(|j| {
+                        (0..dense.nrows()).filter_map({
+                            let d = &dense;
+                            move |i| (d[(i, j)] != 0.).then_some(Triplet::new(i, j, d[(i, j)]))
+                        })
+                    })
+                    .collect();
+                let a = SparseColMat::<usize, f64>::try_new_from_triplets(
+                    dense.nrows(),
+                    dense.ncols(),
+                    &entries,
+                )?;
+                let mut order: Vec<_> = (0..a.ncols()).collect();
+                if reverse {
+                    order.reverse();
+                }
+                for seed in [1, 17, 12345] {
+                    let result = refactorize_rank(
+                        a.as_ref(),
+                        &order,
+                        tau,
+                        RankQrLimits {
+                            max_bytes: 1 << 28,
+                            max_work: 400_000_000,
+                        },
+                        RankQrOptions {
+                            seed,
+                            ..Default::default()
+                        },
+                        || false,
+                    );
+                    println!(
+                        "R6_DIFFICULT,name={name},scale={scale},reverse={reverse},seed={seed},expected={expected},result={result:?}"
+                    );
+                    let r = result?;
+                    let rank = r.rank.ok_or("missing difficult-case report")?;
+                    assert_eq!(
+                        rank.reliability,
+                        RankQrReliability::EstimatedReliable,
+                        "{name}"
+                    );
+                    assert_eq!(rank.rank, expected, "{name}");
+                    assert!(r.factorizations <= 3);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Real nonlinear length constraints on a connected rectangular point grid.
+#[cfg(feature = "rank-research")]
+pub(crate) fn completion_geometric_grid(points: usize) -> ProbeResult {
+    use faer::sparse::linalg::rank::{
+        RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank,
+    };
+    let began = Instant::now();
+    let width = points.isqrt();
+    if width * width != points || width < 2 {
+        return Err("square grid required".into());
+    }
+    let mut xy: Vec<_> = (0..points)
+        .map(|i| {
+            [
+                (i % width) as f64 + 0.01 * (i as f64).sin(),
+                (i / width) as f64 + 0.01 * (i as f64).cos(),
+            ]
+        })
+        .collect();
+    let rows = points + width + 2 * width * (width - 1);
+    let mut symbolic = None;
+    let mut iterations = 0;
+    let mut max_residual = 0.;
+    let mut converged = false;
+    for iteration in 0..10 {
+        let mut entries = Vec::new();
+        let mut rhs = Mat::zeros(rows, 1);
+        let mut row = 0;
+        for (i, p) in xy.iter().enumerate() {
+            entries.push(Triplet::new(row, 2 * i + 1, 1.));
+            rhs[(row, 0)] = (i / width) as f64 - p[1];
+            row += 1;
+            if i % width == 0 {
+                entries.push(Triplet::new(row, 2 * i, 1.));
+                rhs[(row, 0)] = -p[0];
+                row += 1;
+            }
+        }
+        for i in 0..points {
+            for j in [
+                if i % width + 1 < width {
+                    Some(i + 1)
+                } else {
+                    None
+                },
+                if i + width < points {
+                    Some(i + width)
+                } else {
+                    None
+                },
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let dx = xy[j][0] - xy[i][0];
+                let dy = xy[j][1] - xy[i][1];
+                let length = dx.hypot(dy);
+                if length < 1e-12 {
+                    return Err("collapsed grid edge".into());
+                }
+                for (column, value) in [
+                    (2 * i, -dx / length),
+                    (2 * i + 1, -dy / length),
+                    (2 * j, dx / length),
+                    (2 * j + 1, dy / length),
+                ] {
+                    entries.push(Triplet::new(row, column, value));
+                }
+                rhs[(row, 0)] = 1. - length;
+                row += 1;
+            }
+        }
+        assert_eq!(row, rows);
+        max_residual = rhs.norm_max();
+        if max_residual < 1e-9 {
+            converged = true;
+            break;
+        }
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(rows, 2 * points, &entries)?;
+        if symbolic.is_none() {
+            symbolic = Some(SymbolicQr::try_new(a.symbolic())?);
+        }
+        let symbol = symbolic.as_ref().ok_or("missing grid symbolic")?.clone();
+        let factor = Instant::now();
+        let qr = Qr::try_new_with_symbolic(symbol, a.as_ref())?;
+        let factor_ns = factor.elapsed().as_nanos();
+        let rank_started = Instant::now();
+        let order: Vec<_> = (0..a.ncols()).collect();
+        let report = refactorize_rank(
+            a.as_ref(),
+            &order,
+            1e-9,
+            RankQrLimits {
+                max_bytes: 1 << 30,
+                max_work: 400_000_000,
+            },
+            RankQrOptions::default(),
+            || false,
+        )?;
+        let rank = report.rank.ok_or("missing nonlinear grid rank")?;
+        assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+        assert_eq!(rank.rank, 2 * points);
+        let step = qr.solve_lstsq(&rhs);
+        for (i, p) in xy.iter_mut().enumerate() {
+            p[0] += step[(2 * i, 0)];
+            p[1] += step[(2 * i + 1, 0)];
+        }
+        iterations = iteration + 1;
+        println!(
+            "R6_GRID_PHASE,iteration={iteration},equations={rows},nnz={},factor_ns={factor_ns},rank_and_solve_ns={},rank={},qr_max_ns={},svd_max_ns={}",
+            a.compute_nnz(),
+            rank_started.elapsed().as_nanos(),
+            rank.rank,
+            report.native_qr_max_ns,
+            report.dense_svd_max_ns
+        );
+    }
+    let error = xy
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            (p[0] - (i % width) as f64)
+                .abs()
+                .max((p[1] - (i / width) as f64).abs())
+        })
+        .fold(0_f64, f64::max);
+    assert!(
+        converged && max_residual < 1e-9 && error < 1e-6,
+        "grid residual={max_residual},error={error}"
+    );
+    println!(
+        "R6_GEOMETRIC_GRID,points={points},entities={},unknowns={},equations={rows},largest_free_block={},eliminations=0,iterations={iterations},residual={max_residual},solution_error={error},total_us={}",
+        points + 2 * width * (width - 1),
+        2 * points,
+        2 * points,
+        began.elapsed().as_secs_f64() * 1e6
+    );
+    Ok(())
+}
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_nonlinear_grid() -> ProbeResult {
+    completion_geometric_grid(16)
+}
+
+#[cfg(feature = "rank-research")]
+pub(crate) fn completion_rank_workloads(n: usize) -> ProbeResult {
+    use faer::{
+        dyn_stack::{MemBuffer, MemStack},
+        sparse::linalg::{
+            SupernodalThreshold,
+            qr::{QrSymbolicParams, factorize_symbolic_qr_ordered},
+            rank::{RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank},
+        },
+    };
+    for grid in [false, true] {
+        for large_nullity in [false, true] {
+            println!("R6_DIFFICULT_BEGIN,grid={grid},large_nullity={large_nullity},n={n}");
+            let began = Instant::now();
+            let (original, _, _) = fixture(n, grid)?;
+            let mut entries = Vec::new();
+            for j in 0..n {
+                if large_nullity && j % 2 == 1 {
+                    continue;
+                }
+                let source = if !large_nullity && j == n / 3 {
+                    0
+                } else if !large_nullity && j == 2 * n / 3 {
+                    n - 1
+                } else {
+                    j
+                };
+                entries.extend(
+                    original
+                        .row_idx_of_col(source)
+                        .zip(original.val_of_col(source))
+                        .map(|(i, &v)| Triplet::new(i, j, v)),
+                );
+                if source != j {
+                    entries.extend(
+                        original
+                            .row_idx_of_col(j)
+                            .zip(original.val_of_col(j))
+                            .map(|(i, &v)| Triplet::new(i, j, v * 1e-12)),
+                    );
+                }
+            }
+            let a =
+                SparseColMat::<usize, f64>::try_new_from_triplets(original.nrows(), n, &entries)?;
+            let order: Vec<_> = (0..n).rev().collect();
+            let report = refactorize_rank(
+                a.as_ref(),
+                &order,
+                1e-9,
+                RankQrLimits {
+                    max_bytes: 1 << 30,
+                    max_work: 400_000_000,
+                },
+                RankQrOptions {
+                    seed: 17,
+                    ..Default::default()
+                },
+                || false,
+            )?;
+            let rank = report.rank.ok_or("missing difficult C1 bridge")?;
+            println!(
+                "R6_DIFFICULT_STAGE,stage=rank,rank={},native_qr_max_ns={},svd_max_ns={},admitted_bytes={}",
+                rank.rank,
+                report.native_qr_max_ns,
+                report.dense_svd_max_ns,
+                report.numeric_admitted_bytes
+            );
+            let expected = if large_nullity { n.div_ceil(2) } else { n - 2 };
+            assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+            assert_eq!(rank.rank, expected);
+            let symbolic = factorize_symbolic_qr_ordered(
+                a.symbolic(),
+                &report.permutation,
+                QrSymbolicParams {
+                    supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
+                    ..Default::default()
+                },
+                1 << 30,
+                || false,
+            )?;
+            let mut indices = vec![0; symbolic.len_idx()];
+            println!(
+                "R6_DIFFICULT_STAGE,stage=operator_symbolic,indices={},values={}",
+                symbolic.len_idx(),
+                symbolic.len_val()
+            );
+            let mut values = vec![0.; symbolic.len_val()];
+            let mut scratch = MemBuffer::new(
+                symbolic.factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default()),
+            );
+            let qr = symbolic.factorize_numeric_qr(
+                &mut indices,
+                &mut values,
+                a.as_ref(),
+                Par::Seq,
+                MemStack::new(&mut scratch),
+                Default::default(),
+            );
+            let null = qr.right_null_operator(rank.rank, 1 << 30, || false)?;
+            let input: Vec<_> = (0..n - rank.rank)
+                .map(|i| (i as f64 + 0.5).sin() / ((n - rank.rank) as f64).sqrt())
+                .collect();
+            let mut output = vec![0.; n];
+            null.apply_null(rank.rank, &input, &mut output, false, || false)?;
+            let mut residual = vec![0.; a.nrows()];
+            for (j, &x) in output.iter().enumerate() {
+                for (i, &v) in a.row_idx_of_col(j).zip(a.val_of_col(j)) {
+                    residual[i] += v * x;
+                }
+            }
+            let error = residual.iter().fold(0_f64, |s, &v| s.hypot(v));
+            assert!(error < 1e-8, "original null residual={error}");
+            let mut adjoint = vec![0.; input.len()];
+            null.apply_null(rank.rank, &output, &mut adjoint, true, || false)?;
+            assert!(
+                input
+                    .iter()
+                    .zip(&adjoint)
+                    .all(|(&a, &b)| (a - b).abs() < 1e-10)
+            );
+            let null_bytes = null.owned_bytes();
+            drop(null);
+            drop(residual);
+            drop(output);
+            drop(adjoint);
+            drop(scratch);
+            drop(values);
+            drop(indices);
+            drop(symbolic);
+            drop(a);
+            drop(original);
+            drop(entries);
+            let elapsed = began.elapsed().as_secs_f64() * 1e6;
+            println!(
+                "R6_DIFFICULT_C1,grid={grid},large_nullity={large_nullity},n={n},rank={},null_residual={error},whole_job_us={elapsed},native_qr_max_ns={},svd_max_ns={},admitted_rank_bytes={},owned_null_bytes={null_bytes},under_5s={}",
+                rank.rank,
+                report.native_qr_max_ns,
+                report.dense_svd_max_ns,
+                report.numeric_admitted_bytes,
+                elapsed <= 5e6
+            );
+        }
+    }
+    Ok(())
+}
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_large_nullity_operators_small_reference() -> ProbeResult {
+    completion_rank_workloads(64)
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_front_contract_reconstructs_original_equations() -> ProbeResult {
+    use faer::sparse::linalg::rank::{
+        RankQrError, RankQrLimits, RankQrOptions, RankQrReliability,
+        front::{FrontProgress, RankQrContinuation},
+    };
+    for grid in [false, true] {
+        let (a, _, _) = fixture(16, grid)?;
+        let order: Vec<_> = (0..16).rev().collect();
+        let mut job = RankQrContinuation::new(
+            a.as_ref(),
+            &order,
+            1e-9,
+            RankQrLimits {
+                max_bytes: 1 << 27,
+                max_work: 400_000_000,
+            },
+        )?;
+        while job.advance(1, || false)? != FrontProgress::Complete {}
+        let rank = job.assess(RankQrOptions::default(), || false)?;
+        assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+        assert_eq!(rank.rank, 16);
+        for j in 0..16 {
+            let mut x = vec![0.; a.nrows()];
+            for (i, &v) in a.row_idx_of_col(j).zip(a.val_of_col(j)) {
+                x[i] = v;
+            }
+            job.apply_q(&mut x, true, || false)?;
+            job.visit_r(|i, k, v| {
+                if k == j {
+                    x[i] -= v;
+                }
+            })?;
+            assert!(x.iter().all(|v| v.abs() < 1e-10), "frontal QtA-R col{j}");
+        }
+        let mut x: Vec<_> = (0..a.nrows()).map(|i| (i as f64).sin()).collect();
+        let original = x.clone();
+        job.apply_q(&mut x, true, || false)?;
+        job.apply_q(&mut x, false, || false)?;
+        assert!(x.iter().zip(original).all(|(&a, b)| (a - b).abs() < 1e-10));
+        let mut cancelled = RankQrContinuation::new(
+            a.as_ref(),
+            &order,
+            1e-9,
+            RankQrLimits {
+                max_bytes: 1 << 27,
+                max_work: 400_000_000,
+            },
+        )?;
+        assert_eq!(cancelled.advance(1, || false)?, FrontProgress::Pending);
+        assert_eq!(
+            cancelled.advance(1, || true).err(),
+            Some(RankQrError::Cancelled)
+        );
+        assert!(cancelled.apply_q(&mut x, false, || false).is_err());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_semantics_do_not_confuse_rank_convergence_or_mobility() -> ProbeResult
+{
+    use faer::sparse::linalg::rank::{
+        RankQrLimits, RankQrOptions, RankQrReliability, refactorize_rank,
+    };
+    for (name, dense, expected, mobility) in [
+        (
+            "regular_fixed_point",
+            faer::mat![[1., 0.], [0., 1.]],
+            2,
+            "RegularLocalDimension0",
+        ),
+        (
+            "duplicate_equalities",
+            faer::mat![[1., -1.], [2., -2.]],
+            1,
+            "RegularLocalDimension1",
+        ),
+        (
+            "rigid_segment",
+            faer::mat![[-1., 0., 1., 0.]],
+            1,
+            "RegularLocalDimension3",
+        ),
+        (
+            "toggle_and_tangent_fixed_circles",
+            faer::mat![[2., 0.], [-2., 0.]],
+            1,
+            "Singular_infinitesimal1_finite0_analytic",
+        ),
+        (
+            "active_contact_bound",
+            faer::mat![[0., 1.]],
+            1,
+            "Boundary_feasible_cone_not_regular_DOF",
+        ),
+        (
+            "contradictory_equalities",
+            faer::mat![[1.], [1.]],
+            1,
+            "Inconsistent_despite_full_column_rank",
+        ),
+    ] {
+        let entries: Vec<_> = (0..dense.ncols())
+            .flat_map(|j| {
+                (0..dense.nrows()).filter_map({
+                    let d = &dense;
+                    move |i| (d[(i, j)] != 0.).then_some(Triplet::new(i, j, d[(i, j)]))
+                })
+            })
+            .collect();
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(
+            dense.nrows(),
+            dense.ncols(),
+            &entries,
+        )?;
+        let order: Vec<_> = (0..dense.ncols()).collect();
+        let report = refactorize_rank(
+            a.as_ref(),
+            &order,
+            1e-9,
+            RankQrLimits {
+                max_bytes: 1 << 26,
+                max_work: 400_000_000,
+            },
+            RankQrOptions::default(),
+            || false,
+        )?;
+        let rank = report.rank.ok_or("no semantic rank report")?;
+        assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+        assert_eq!(rank.rank, expected);
+        let reference = dense
+            .singular_values()
+            .map_err(|e| format!("semantic SVD {e:?}"))?;
+        assert_eq!(reference.iter().filter(|&&s| s > 1e-9).count(), expected);
+        if name == "contradictory_equalities" {
+            // Exact rational witness [-1,1]^T A=0 and [-1,1]^T [0,1]=1.
+            assert_eq!(-dense[(0, 0)] + dense[(1, 0)], 0.);
+            let rhs = faer::mat![[0.], [1.]];
+            let x = Qr::try_new_with_symbolic(SymbolicQr::try_new(a.symbolic())?, a.as_ref())?
+                .solve_lstsq(&rhs);
+            assert!((x[(0, 0)] - 0.5).abs() < 1e-12);
+            assert!((x[(0, 0)] - rhs[(0, 0)]).abs() > 1e-7);
+        }
+        if name == "active_contact_bound" {
+            let inward = [1., 0.];
+            let outward = [-1., 0.];
+            assert!(inward[0] >= 0.);
+            assert!(outward[0] < 0.);
+            assert_eq!(dense[(0, 0)] * outward[0] + dense[(0, 1)] * outward[1], 0.);
+        }
+        // Tangent unit-circle equations subtract to x=0, then y²=0;
+        // the null direction therefore does not extend to a finite motion.
+        println!(
+            "R6_SEMANTICS,{name},rank={},infinitesimal_nullity={},classification={mobility},rank_does_not_certify_finite_mobility=true",
+            rank.rank,
+            dense.ncols() - rank.rank
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rank-research")]
+#[test]
+fn revision6_completion_rank_front_compression_keeps_q_r_and_deferral() -> ProbeResult {
+    use faer::sparse::linalg::rank::{
+        RankQrLimits, RankQrOptions, RankQrReliability,
+        front::{FrontProgress, RankQrContinuation},
+    };
+    for dependent in [false, true] {
+        let dense = Mat::from_fn(192, 17, |i, j| {
+            if j == 0 || i == if dependent && j == 2 { 1 } else { j } {
+                1.
+            } else {
+                0.
+            }
+        });
+        let entries: Vec<_> = (0..17)
+            .flat_map(|j| {
+                (0..192).filter_map({
+                    let a = &dense;
+                    move |i| (a[(i, j)] != 0.).then_some(Triplet::new(i, j, a[(i, j)]))
+                })
+            })
+            .collect();
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(192, 17, &entries)?;
+        let order: Vec<_> = (0..17).collect();
+        let mut job = RankQrContinuation::new(
+            a.as_ref(),
+            &order,
+            1e-9,
+            RankQrLimits {
+                max_bytes: 1 << 27,
+                max_work: 400_000_000,
+            },
+        )?;
+        while job.advance(1, || false)? != FrontProgress::Complete {}
+        let rank = job.assess(RankQrOptions::default(), || false)?;
+        assert_eq!(rank.reliability, RankQrReliability::EstimatedReliable);
+        assert_eq!(rank.rank, 17 - usize::from(dependent));
+        let reference = dense
+            .singular_values()
+            .map_err(|e| format!("compression SVD {e:?}"))?;
+        assert_eq!(reference.iter().filter(|&&s| s > 1e-9).count(), rank.rank);
+        for j in 0..17 {
+            let mut column: Vec<_> = (0..192).map(|i| dense[(i, j)]).collect();
+            job.apply_q(&mut column, true, || false)?;
+            job.visit_r(|i, k, v| {
+                if k == j {
+                    column[i] -= v;
+                }
+            })?;
+            assert!(
+                column.iter().all(|v| v.abs() < 1e-10),
+                "compression QtA-R,{dependent},{j}"
+            );
+        }
+        let mut x: Vec<_> = (0..192).map(|i| (i as f64).cos()).collect();
+        let saved = x.clone();
+        job.apply_q(&mut x, true, || false)?;
+        job.apply_q(&mut x, false, || false)?;
+        assert!(x.iter().zip(saved).all(|(&a, b)| (a - b).abs() < 1e-10));
+    }
     Ok(())
 }

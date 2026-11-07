@@ -6,7 +6,7 @@ The approved mechanics plan replaces the previous fixed-target trackball.
 `newell-app` owns f64 camera pose/projection, quaternion math, drag snapshots,
 trackpad stream ownership, CPU picking and exposed-view bounds. `newell-render`
 consumes immutable finite-f32 matrices and writes the existing 96-byte scene
-uniform. BrepKIT mesh generation, WGPU pipelines/shaders, the ASCII interface,
+uniform. SolidCore mesh generation, WGPU pipelines/shaders, the ASCII interface,
 UI hit testing and event-driven redraw are preserved. No dependencies changed.
 
 Right-drag applies camera-relative yaw, levels the horizon against Z-up, and
@@ -62,7 +62,7 @@ These details are also recorded in §13 of the approved mechanics plan.
 - Focused input suite: **9 passed**. Existing controller integration tests also
   pass in the workspace run.
 - `cargo test -p newell-render -- --ignored`: **all 9 GPU tests passed**, including
-  BrepKIT mesh rendering, immutable-camera consumption across mesh/layout updates,
+  SolidCore mesh rendering, immutable-camera consumption across mesh/layout updates,
   UI monochrome output, atlas reuse and surface cropping.
 - `git diff --check`: passed.
 - Git index checked byte-for-byte via the staged binary diff: unchanged.
@@ -156,7 +156,7 @@ No manual acceptance of the running application is claimed. Check:
 - Perspective/orthographic switches after anchored zoom, principal-axis views,
   extreme model sizes, near-surface clipping and Home/View-menu recovery.
 
-Ray hits use the displayed BrepKIT tessellation rather than exact analytic
+Ray hits use the displayed SolidCore tessellation rather than exact analytic
 B-Rep intersections. Exposed bounds do not remove surfaces hidden behind other
 model surfaces. Geometry queries remain O(T) in triangle count with cached bounds;
 UI lookup remains O(1). Native pinch uses the last pointer position because its

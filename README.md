@@ -5,7 +5,7 @@ Designed for extreme performance and a minimal memory footprint, Newell adopts a
 
 ## Technical Vision & Stack
 * **Language:** Rust (Memory safety, Zero-cost abstractions).
-* **Geometric Kernel:** [BrepKIT](https://github.com/brepkit/brepkit) (Pure-Rust B-Rep engine).
+* **Geometric Kernel:** [SolidCore](https://github.com/tangency-labs/solidcore) (sole production B-Rep kernel; outstanding geometry regressions are tracked). See [ADR 0010](docs/adr/0010-solidcore-qualification.md) and the [migration plan](docs/plans/solidcore-production-migration.md).
 * **Graphics:** `wgpu` rendering a hardware-accelerated Character Grid over a 3D viewport.
 * **Performance:** 60 FPS UI guarantee; geometry runs on background threads.
 * **License:** **AGPL-3.0** (Open Source).

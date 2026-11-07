@@ -6,6 +6,8 @@
 // (at your option) any later version.
 //! View: wgpu rendering pipeline for the viewport and ASCII overlay (ARCHITECTURE.md §1).
 
+mod grid;
+pub use grid::GridSnapshot;
 mod camera;
 pub use camera::{CameraMatrix, CameraSnapshot, SceneViewport, exposed_regions};
 pub use scene::SceneDisplayMode;

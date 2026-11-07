@@ -1,19 +1,33 @@
 # M5 — Complete, responsive parametric Sketcher
 
-Revision 5 — accessible sparse-rank method and execution boundary, 2026-10-29.
+> Historical pre-cutover evidence. Geometry-specific source and package references
+> below are archived context; ADR 0010 and the current migration record govern
+> the present checkout. Independent rank and `faer` work remains retained.
+
+> Kernel migration amendment — 2026-10-30: [ADR 0010](../adr/0010-solidcore-qualification.md)
+> and [production migration revision 1 §7](solidcore-production-migration.md#7-m5-reuse-removal-and-blockers)
+> supersede only this plan's SolidCore-exclusive implementation direction and native
+> API/vendor correction targets. Original requirements, fixtures and evidence
+> remain. Retain independent faer rank/solver/scheduler work; port geometry-facing
+> adapters and remeasure their evidence with SolidCore. Historical V packages
+> below do not authorize new SolidCore investment after migration or adoption of
+> experimental faer APIs in production. Full M5 is not part of migration approval.
+
+Revision 6 — sparse column deferral, certified geometry and exact arithmetic, 2026-10-29.
 Role/provider: Architect / Codex.
 
-The human interrupted revision-4 execution and requested an English Architect
-revision comparing solver/rank alternatives and selecting an accessible,
-documented method. This revision selects a safe-Rust adaptation of Foster–Davis
-SPQR_RANK inside vendored faer, retaining faer's solve baseline. It replaces the
-inaccessible Pierce–Lewis implementation prerequisite; it does not declare the
-new method implemented or qualified. Rust without FFI, BrepKIT alone, every
-Sketcher requirement and S1/S2/S3/C1/X1 budget remain unchanged.
+The human approved the revision-5 execution recommendations and requested this
+English Architect revision for V2–V4 and exact arithmetic. Retain faer0.22.6 and
+the Foster–Davis rank protocol; specify bounded refactorization followed, when
+needed, by front-local deferral. Complete general curve/offset certificates in
+SolidCore with the named pure-Rust arithmetic candidates and actual-worker probes.
+Rust without FFI, SolidCore alone, every Sketcher tool/accuracy requirement and all
+S1/S2/S3/C1/X1 budgets remain unchanged. This is planned development, not a claim
+that the remaining numerical or geometric methods are qualified.
 
-This request authorizes **this plan only**. Preserve partial V0–V4 work;
-no further implementation, dependency change, test execution, production
-adoption, M5.1, agent dispatch or publication occurs in this Architect stage.
+This request authorizes **this plan only**. Preserve the integrated V0–V4 work;
+no implementation, dependency installation/change, build/test execution,
+production adoption, M5.1, agent dispatch or publication occurs in this stage.
 
 ## 1. Task contract and inspected state
 
@@ -47,7 +61,7 @@ implementation; no snapshot or commit is a prerequisite.
 
 Correction-pass entry: same HEAD and `main`, 98 status entries, including 16
 untracked entries; index empty. This plan is an existing untracked input.
-Reinspected the worker and parameter-draft paths, pinned BrepKIT offset and
+Reinspected the worker and parameter-draft paths, pinned SolidCore offset and
 tolerance sources, and current architecture/UI selection and navigation rules.
 The worker now also carries prepared-result authority and liveness state;
 reuse those safeguards. Navigation specifications have changed since revision
@@ -55,14 +69,49 @@ reuse those safeguards. Navigation specifications have changed since revision
 targets intercept input. References below defer to that current contract.
 Existing source, UI, architecture and navigation changes remain untouched.
 
-### Revision 5 inspected state and authority
+### Revision 6 inspected state and authority
+
+Existing `main`, HEAD `29321e9efc1a18753e18a081de598b5ac2f9f70b`
+(`Add sketcher kernel and controlled vendoring`). Working tree and index were
+clean at entry: the prior partial implementation, vendor trees, ledgers and
+validation record have been integrated by the human since the earlier execution.
+This stage changes only this tracked plan. Do not reinterpret integration as
+production adoption or as passing M5.0. Preserve the accepted V0 architecture
+boundary and ADR0009; neither needs to be reapplied or edited for this revision.
+
+Read the shared workflow/Architect role, binding architecture, accepted ADR0009,
+current revision-5 dossier, named manifests/patch ledgers, faer rank/import seams
+and existing worker/provenance interfaces. The dossier reports1,093 passing
+workspace tests,14 GPU tests, Rust1.88 checks and partial rank/geometry evidence.
+These are historical results, not checks run at this HEAD by Architect.
+
+V1's named source import/isolation/provenance is verified in that dossier. V2 now
+contains the safe factor bridge, R visitor and an estimated-reliability rank
+candidate. Regular/one-zero-column incidence chain/grid cases are fast on M4,
+but the general deferral grid took15.441s before WorkLimit; implicit operators,
+continuations and broad numerical/worker qualification are incomplete. V3 covers
+restricted affine/quadratic/circle/control-net identity domains, not general
+curves, offsets or arrangements. V4 lacks complete actual-worker, live-memory,
+reference-device and geometry acceptance. M5.0 remains open.
+
+The human validated the recommended direction: first bounded QR refactorization,
+then front-local deferral if required; adaptive certified geometry with an exact
+arithmetic fallback; and qualification through the actual worker. §9.5 defines
+precise future scope including optional registry num-bigint0.4.6/num-rational0.4.2.
+Approval of this **planning** stage does not itself authorize their installation.
+After explicit revision-6 approval plus Executor request, the named additions and
+fallback route do not need renewed generic permission. Hardware access and a
+maintenance owner are not assumed; their acceptance/adoption gates remain.
+
+### Revision 5 inspected state and authority (historical entry)
+
 
 Same `main` checkout and HEAD `7019c300ff12ff6a1aeee974ca59f865e00b045e`;
 index empty. The revision-4 plan and earlier source/document changes remain
 unstaged. Additional inputs now include architecture §§5.2/6 and accepted
 ADR0009 (V0), three untracked vendor package trees and their provenance files,
 root patch/exclusion/lock changes, candidate kernel feature wiring and partial
-BrepKIT candidate curve/offset APIs with focused test additions. Preserve all
+SolidCore candidate curve/offset APIs with focused test additions. Preserve all
 of these, including unrelated work; only this plan changes in this stage.
 
 V0 is already applied under explicit human authority. V1 imported the published
@@ -89,7 +138,7 @@ nonlinear chain benchmark/test additions, actual-worker recovery test and
 updated M5 validation record. At that historical revision-4 entry no vendor
 tree existed; revision-5 entry above records the subsequent partial execution.
 Reinspected workspace/kernel manifests, ADR 0004, architecture §§5–6, the
-published faer0.22.6 and BrepKIT4.2.2 manifests and relevant local source seams.
+published faer0.22.6 and SolidCore4.2.2 manifests and relevant local source seams.
 The existing dossier reports1,082 passing tests and remaining feasibility gaps;
 that is historical evidence, not a new check run by this Architect.
 
@@ -98,7 +147,7 @@ Rust sources, rather than only searching for an already qualified library.
 §9.5 supersedes revision-3 clauses requiring another generic permission merely
 to develop those **named** sources. Concrete unrelated dependencies, changed
 upstream baselines, licensing terms, FFI or production adoption remain outside
-that scope. Existing D1–D3 Sketch specification prerequisites are unchanged.
+that scope; revision6 separately specifies its named arithmetic additions. Existing D1–D3 Sketch specification prerequisites are unchanged.
 
 ### Revision 3 inspected state and decision authority
 
@@ -121,11 +170,11 @@ M5's exact-curve/profile requirements or establish current M4 acceptance.
 
 | Authority / finding | Revision-3 disposition |
 |---|---|
-| Human approved Rust without FFI as priority, one BrepKIT kernel, unchanged requirements | Binding direction for this revision. No FFI fallback is authorized; absence of a viable Rust method yields an explicit blocked package. |
+| Human approved Rust without FFI as priority, one SolidCore kernel, unchanged requirements | Binding direction for this revision. No FFI fallback is authorized; absence of a viable Rust method yields an explicit blocked package. |
 | D1–D5 approved as the revision-2 M5.0 requirements baseline | Preserve that approval. D1–D3 authoritative Sketch amendments remain a separate prerequisite before dependent production UI/camera work; this plan does not edit binding specifications. |
 | Forced-supernodal faer with reusable workspace improved measured chain/grid phases | Preferred solve candidate; not proof of large numerical rank, nonlinear convergence or actual app responsiveness. |
 | Large-block numerical rank unavailable in the investigated contract | §9.3 B requires an established method/API and independent evidence before adoption; no custom factorization or dense global fallback. |
-| Pinned contact/overlap/offset failures | §9.3 C–D plan targeted BrepKIT corrections and certified algorithms, not a general untested kernel upgrade. |
+| Pinned contact/overlap/offset failures | §9.3 C–D plan targeted SolidCore corrections and certified algorithms, not a general untested kernel upgrade. |
 | Scalar fixtures and service surrogates leave integration evidence missing | §9.3 E–F require a real-worker feasibility harness and mixed geometry traces; no production Sketch shell is needed to run those proofs. |
 
 ### Revision 2 correction traceability
@@ -148,7 +197,7 @@ an old validation report, or this plan as evidence that M4 is currently green.
 | Source inspected | Consequence for this plan |
 |---|---|
 | `docs/agents/{README,architect}.md`, `ARCHITECTURE.md` | Five existing crates, strict MVC, safe Rust, one ASCII draw, Controller input ownership, kernel boundary, sequential work |
-| ADRs 0001–0006 and current §3.7/ADR 0007 | BrepKIT 4.2.2, Rust 1.88, AGPL project; navigation exception is narrowly scoped and cannot silently authorize Sketch graphics |
+| ADRs 0001–0006 and current §3.7/ADR 0007 | retired kernel version 4.2.2, Rust 1.88, AGPL project; navigation exception is narrowly scoped and cannot silently authorize Sketch graphics |
 | `docs/ui_design/README_UI.md` §§2–5, 18–23, 25–29, 34–40, 41 | Fixed-cell controls, numeric/formula lifecycle, modal precedence, trees, current Sketch command is a mock; current navigation semantic targets retain input precedence without rectangular scene occlusion |
 | `docs/ui_design/{Action_Box_Sketch,Sketch_Bar,Command_Bar,Application_Menu_Bar,Interface_Elements}.txt` | Existing Sketch artwork is real input, with unresolved semantics and inconsistencies listed in §2 |
 | `docs/backlog.md`, `Description.md` §10 | Current M4 is CAD Command & Parametric Interaction; Description's older M4 Sketch / M5 Parametric Core numbering is stale |
@@ -160,9 +209,9 @@ an old validation report, or this plan as evidence that M4 is currently green.
 Pinned-source inspection used the local Cargo registry under
 `/Users/martin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`:
 
-- `brepkit-operations-4.2.2/src/sketch.rs` re-exports `GcsSystem`,
+- `retired geometry operations package-4.2.2/src/sketch.rs` re-exports `GcsSystem`,
   `GcsConstraint`, points, lines, circles, arcs and rank/solve results.
-- `brepkit-sketch-4.2.2/src/gcs/{system,constraint,solver}.rs` supplies a useful
+- `SolidCore-sketch-4.2.2/src/gcs/{system,constraint,solver}.rs` supplies a useful
   basic-entity reference solver. DogLeg builds and clones a dense row-major
   Jacobian before QR. Its public solve has an iteration limit but no
   cooperative-cancellation callback. The observed public constraint family
@@ -331,8 +380,8 @@ declares Rust 1.84 and MIT. Its exact usable API, transitive MSRV, allocation
 behavior and cancellation granularity must be proven in M5.0 before adoption.
 No BLAS/FFI integration, dependency upgrade or unsafe adapter is authorized.
 
-Use the existing `brepkit_operations::sketch` re-exports as a bounded test
-oracle for common constraints. Do not add a direct `brepkit-sketch` dependency,
+Use the existing `retired_geometry_operations::sketch` re-exports as a bounded test
+oracle for common constraints. Do not add a direct `SolidCore-sketch` dependency,
 copy private upstream internals, or present its dense solve as the scalable
 production implementation. Custom code is restricted to Sketch semantics,
 incremental dependency handling, residual/derivative assembly, trust-region
@@ -354,10 +403,12 @@ faer 0.22.6's safe public forced-supernodal QR and reusable numerical workspace
 for solving, while keeping undamped rank analysis separate. Research compatible
 established pure-Rust rank methods under §9.3 B. A newly selected library/version
 requires an exact candidate inventory and explicit adoption decision first.
-No FFI, BLAS or unsafe Newell adapter is authorized. Revision4 §9.5 permits
+No FFI, BLAS or unsafe Newell adapter is authorized. Revisions4–6 §9.5 permit
 an algorithmically specified extension inside the controlled third-party faer
-source, not a private factorization in Newell or an automatic fallback.
-BrepKIT corrections follow §9.3 C's patch/pin decision procedure; the currently
+source, not a private factorization in Newell. Revision6 specifies the bounded
+refactorization/front route and named geometry-arithmetic additions; no unrelated
+solver/dependency switch or production adoption is implicit.
+SolidCore corrections follow §9.3 C's patch/pin decision procedure; the currently
 accepted 4.2.2 pin remains authoritative until that procedure is approved.
 Executor verifies the full resolved graph, advisories, licenses and Rust 1.88
 on supported architectures before merging any dependency change. If a candidate
@@ -371,14 +422,14 @@ do not silently replace the solver with an unbounded dense fallback.
 | Owner | Responsibility |
 |---|---|
 | `newell-model` | Document Sketch recipes, entity/constraint IDs, parameter ownership, reference DAG, journal actions, validity/commit policies and stable logical outputs; no UI, GPU or native kernel handles |
-| `newell-kernel` | Numerical Sketch evaluation, exact curve queries/intersections/arrangements, exact profile construction and BrepKIT topology; Newell-owned public DTOs only |
+| `newell-kernel` | Numerical Sketch evaluation, exact curve queries/intersections/arrangements, exact profile construction and SolidCore topology; Newell-owned public DTOs only |
 | `newell-app` | Window-local Sketch sessions, tool/gesture ownership, certificates, job scheduling, app-to-model/kernel adapters, atomic commit, document notifications and frame publication |
 | `newell-ui` | Fixed-cell panels/menus, numeric/formula editors, diagnostic/selection lists and immutable view projections; never authoritative geometry or constraint solving |
 | `newell-render` | Immutable curve/stroke/point packets and existing-font labels, viewport clipping and GPU uploads; no solve, geometric query, selection or camera mutation |
 
 No `newell-sketch` crate or second B-Rep kernel. Model and kernel input DTOs are
 mapped in the app/worker so the kernel never imports model IDs or the model
-imports BrepKIT. Pure semantic validation stays in Model; geometric and
+imports SolidCore. Pure semantic validation stays in Model; geometric and
 numerical validation stays in kernel.
 
 ### 3.2 Model additions
@@ -547,7 +598,7 @@ intersection, trim, profile identity, measurement or extrusion.
 | Mirror | Choose axis; independent copied geometry by default; explicit associative option adds source/group relations |
 | Linear / Circular Pattern | Count, spacing or angle, direction/center; retain an associative pattern recipe by default; instances share master definitions and transform parameters rather than duplicating every master solve variable |
 | Projected | Orthogonal projection along support normal; choose linked reference (default), independent copy, or explicit conversion into profile geometry |
-| Intersect | Intersection of supported upstream faces/curves with the Sketch plane, through BrepKIT; retain upstream generation and return exact planar curves |
+| Intersect | Intersection of supported upstream faces/curves with the Sketch plane, through SolidCore; retain upstream generation and return exact planar curves |
 | Insert | Select another same-document sketch and copy supported entities into the current frame using an explicit rigid transform; reject noncoplanar copies unless Projected is selected |
 
 An associative pattern instance is edited via the master or detached explicitly
@@ -634,7 +685,7 @@ must satisfy the corresponding dimensional tolerance, not just a raw norm.
 This proposed policy must be reconciled with the pinned kernel's actual
 tolerances in M5.0. Interactive snap distance never changes exact closure.
 Record each construction/intersection/validation/extrusion call's actual
-absolute, relative, angular and parameter-space thresholds. BrepKIT 4.2.2
+absolute, relative, angular and parameter-space thresholds. retired kernel version 4.2.2
 `Tolerance::new()` uses linear `1e-7`, angular `1e-12` and relative `1e-10`,
 with relative comparisons based on operand magnitude rather than Sketch local
 extent. Do not treat these policies as interchangeable. Keep planar predicates
@@ -820,7 +871,7 @@ unless explicitly converted into participating profile geometry.
    alone is insufficient at T/X junctions, circles and tangencies.
 6. Extract bounded cells and ordered boundary components; discard the unbounded
    exterior. Track nesting and material-side semantics for holes/islands.
-7. Validate chosen cells, construct BrepKIT wires/faces with correct orientation,
+7. Validate chosen cells, construct SolidCore wires/faces with correct orientation,
    and map topology/region generations back to the source entities.
 
 Retain analytic arcs/conics/NURBS throughout. Polygonal display chords may help
@@ -842,7 +893,7 @@ same line/quadratic/cubic cases; this adds no new tool or curve family.
 Each matrix entry names the pinned API or the required complementary algorithm
 inside the scoped kernel Sketch modules; its error/root-isolation guarantee,
 tolerance/frame conversion, cancellation points, workspace bound and adversarial
-fixture; and status `Proven`, `Unproven` or `Unsupported`. The existing BrepKIT
+fixture; and status `Proven`, `Unproven` or `Unsupported`. The existing SolidCore
 `offset_wire_with_join` calls `face_polygon`; that path alone is not evidence
 of certified curved offsets. A proposed complementary algorithm is not green
 until independently checked. Missing capabilities stop only dependent slices;
@@ -1132,7 +1183,7 @@ Exit: a named vetted method/API with demonstrated regular rank reliability,
 explicit uncertainty/singularity/bound handling, bounded workspace and §10
 latency/cancellation evidence. Fast QR solves alone cannot close this package.
 
-#### C — Correct BrepKIT contacts, overlaps and parameter provenance
+#### C — Correct SolidCore contacts, overlaps and parameter provenance
 
 Use the existing exact NURBS corpus as executable failures, not API names as
 support: missed parabola tangency/near crossings, periodic seam, figure-eight
@@ -1149,7 +1200,7 @@ proven bounded indivisible calls. Sampled proximity cannot certify overlap;
 recursion exhaustion must not manufacture a hit. Independent root isolation or
 analytic proofs are required where the current heuristic is insufficient.
 
-**Patch/pin procedure:** §9.5 now specifies the named BrepKIT4.2.2 vendor
+**Patch/pin procedure:** §9.5 now specifies the named SolidCore4.2.2 vendor
 source and local correction process. Keep installed registry sources untouched;
 prepare minimal failures and guarantees in the existing validation report.
 The earlier revision-4 request authorized development/testing of this exact
@@ -1178,7 +1229,7 @@ construct exact arrangements with T/X branches, point contacts, seams, overlaps,
 three nested levels and regular selected-cell unions; preserve oriented source
 parameter provenance. A caller-preordered face with holes proves extrusion,
 not automatic arrangement. Complementary algorithms stay kernel-owned and
-use BrepKIT topology; no second B-Rep engine or new generic geometry dependency
+use SolidCore topology; no second B-Rep engine or new generic geometry dependency
 is implied. An additional library requires its own concrete adoption decision.
 
 Retain §5's absolute/relative/angular/parameter distinctions. Compute near the
@@ -1280,7 +1331,7 @@ The named third-party source changes and Cargo overrides are explicitly
 scoped in §9.5. Other dependencies, baselines or architectural changes require
 an exact additional scope; they are not hidden inside this table.
 
-### 9.5 Controlled vendoring and dependency development (revisions 4–5)
+### 9.5 Controlled vendoring and dependency development (revisions 4–6)
 
 #### V0 — Authority and compatibility prerequisites
 
@@ -1312,7 +1363,7 @@ Executor stage together; an extra review cycle is not required.
 - Exact versions, kernel-only dependency declarations, Newell-owned public ACL
   types, error translation and golden regressions remain binding. Root Cargo
   patch entries are resolution directives only, never workspace geometry deps.
-- Vendor packages retain their actual licenses (faer MIT; selected BrepKIT
+- Vendor packages retain their actual licenses (faer MIT; selected SolidCore
   AGPL-3.0-only), copyright, license files and attribution. Do not relicense
   third-party Rust files or apply Newell's headers to them. Newell's own package
   licenses remain AGPL-3.0-or-later. Do not weaken `deny.toml` to pass an audit.
@@ -1320,15 +1371,15 @@ Executor stage together; an extra review cycle is not required.
 Until these authoritative changes exist, leave the dependent import/override
 unexecuted and report the exact conflict. Approval of a plan alone cannot
 rewrite binding architecture. This prerequisite does not reopen the already
-approved Rust/no-FFI/BrepKIT-only direction or make an optional Challenger mandatory.
+approved Rust/no-FFI/SolidCore-only direction or make an optional Challenger mandatory.
 
 #### V1 — Import, identify and isolate the named candidates
 
 The source baselines are the **published Cargo packages** faer0.22.6,
-brepkit-math4.2.2 and brepkit-operations4.2.2. Import them into
-`vendor/faer-0.22.6/`, `vendor/brepkit-math-4.2.2/` and
-`vendor/brepkit-operations-4.2.2/` in the existing main checkout. Keep topology
-and other BrepKIT crates on their current exact registry pins unless a later
+retired geometry math package4.2.2 and retired geometry operations package4.2.2. Import them into
+`vendor/faer-0.22.6/`, `vendor/retired geometry math package-4.2.2/` and
+`vendor/retired geometry operations package-4.2.2/` in the existing main checkout. Keep topology
+and other SolidCore crates on their current exact registry pins unless a later
 concrete change is separately approved. No Git worktree, task branch, embedded
 Git repository or separate execution checkout. Do not edit Cargo registry files.
 
@@ -1348,8 +1399,8 @@ in source plus manifest/patch ledger, never misrepresented as an upstream releas
 
 Root `Cargo.toml` explicitly excludes the vendor directories from the workspace
 and adds `[patch.crates-io]` paths for the three named packages. It must not add
-BrepKIT to `[workspace.dependencies]` or another Newell crate. Kernel direct
-BrepKIT pins remain `=4.2.2`; the ledger/ADR identifies their patched resolution.
+SolidCore to `[workspace.dependencies]` or another Newell crate. Kernel direct
+SolidCore pins remain `=4.2.2`; the ledger/ADR identifies their patched resolution.
 faer remains `=0.22.6` with defaults off and `std,sparse-linalg` only initially.
 Update Cargo.lock normally; retain all unrelated lock entries. Inspect metadata
 for one consistent math/operations/topology type graph and no accidental
@@ -1378,7 +1429,7 @@ that a drop-in pure-Rust sparse-rank package has been found.
 | Existing solution / method | Solve and rank capability | M5 disposition |
 |---|---|---|
 | Pinned faer0.22.6 sparse QR | Existing sparse solve baseline; inspected QR does not supply the required numerical-rank/reliability contract | Retain solve path and extend the numerical library; solve timing cannot stand in for rank timing |
-| BrepKIT4.2.2 GCS DogLeg | Existing common-constraint reference; dense Jacobian and no cooperative cancellation in the inspected API | Bounded semantic oracle; insufficient for scalable advanced Sketch constraints |
+| SolidCore4.2.2 GCS DogLeg | Existing common-constraint reference; dense Jacobian and no cooperative cancellation in the inspected API | Bounded semantic oracle; insufficient for scalable advanced Sketch constraints |
 | faer dense SVD / column-pivoted QR | Bounded dense numerical tools; global dense allocation defeats C1/S3 | SVD reference for <=256 reduced unknowns; never densify a large global Jacobian |
 | [rsparse1.2.1](https://docs.rs/rsparse/1.2.1/rsparse/) | Documented sparse QR/least-squares and triangular solves; no demonstrated M5 rank-reliability/cancellation contract | No dependency switch: another solve API does not resolve the missing evidence; full dependency audit not performed |
 | Structural matching, normal equations or iterative least-squares alone | Structural sparsity or a step/residual is insufficient to distinguish numerical dependence at the chosen threshold | May support ordering/diagnostics; cannot certify DOF or replace undamped numerical-rank analysis |
@@ -1470,17 +1521,121 @@ coding. These names identify methods, not Rust APIs already present in faer.
   actual worker fairness, hardware and retained-generation acceptance unchanged.
 
 V2 is complete only with a qualified safe Rust implementation and reproducible
-independent evidence. The selected port is not yet implemented. Excess fill,
+independent evidence. Revision5 implemented a partial candidate; the completion
+path below supersedes its insufficient general fallback. Excess fill,
 reliability failure, unsafe-only access or missed timing keeps M5.0 open; return
 that evidence rather than lower counts, omit rank work, add FFI or claim that
 an accessible paper guarantees a feasible schedule. V3 geometry corrections
 remain independent and mandatory; this method change does not qualify them.
 
-#### V3 — BrepKIT corrections and certified geometry
+##### Revision-6 completion path: nonterminal column deferral
 
-Primary edit scope: `vendor/brepkit-math-4.2.2/src/nurbs/{bezier_clip.rs,knot_ops.rs}`
+The revision-5 rank module and safe R visitor are existing inputs. Keep their
+small independent tests and working native-R path. The general left-looking
+bridge exceeded C1 at10,000 grid unknowns (15.441s with row ordering and a
+400,000,000-unit allowance). It may remain a bounded reference, but cannot be
+advertised as the scalable fallback. Increasing its allowance is not the fix.
+
+**V2.1 — Explicit ordering and bounded refactorization, selected first route.**
+Add a safe candidate symbolic entry accepting a checked caller column permutation.
+Compose original-column IDs, fill-reducing order and numeric accepted/deferred
+order explicitly; do not let a fresh COLAMD pass interleave deferred columns
+back into the accepted prefix. Order within admitted partitions for fill control.
+Use the original undamped, scaled Jacobian for every refactorization.
+
+Use the existing QR and SSI assessment to propose suspect columns, including
+near dependence without small R diagonals. Candidate selection may use sparse
+singular-vector information or bounded local pivot refinement; it is a proposal,
+not a rank proof. Break ties by stable original-column identity. Move proposed
+columns to a terminal partition and refactor with faer's existing kernels.
+Allow at most **two corrective refactorizations after the initial factorization**
+per job on this route. Charge symbolic reanalysis, copies, all passes and cleanup
+to the original job budget; no fresh budget per retry or hidden restart loop.
+
+Validate the entire rejected transformed block and aggregate perturbation, the
+retained block's numerical conditioning, SSI/BASIC separation and original-matrix
+null residuals. Check the QR reconstruction/permutation independently. A terminal
+small diagonal is insufficient; an accepted prefix must not contain an unhandled
+hole. No column is deleted from the original equations or variable inventory.
+Failed separation retains uncertainty at the original threshold; it never raises
+tau. The total pass cap is not permission to reject mandatory regular workloads.
+
+**V2.2 — Front-local deferral, selected escalation within the same scope.**
+If V2.1 fails a mandatory correctness/fill/latency case, develop front-local
+rank-aware elimination in the vendored faer module rather than iterating the
+failed global left-looking path. Preserve the Foster–Davis factor contract and
+Heath-style column rejection; use the accessible Davis multifrontal references
+in §13 for organization, not a different unreviewed rank criterion. This route
+is explicitly planned; its necessity does not require another generic permission.
+
+Own front/panel buffers in safe Rust, reuse established safe dense QR/matmul
+kernels, and admit fill before allocating. Carry original row/column maps,
+Householder actions and rejected-tail error through front assembly and column
+movement. Record which columns are fully assembled, which remain candidates for
+later elimination and which are numerically rejected. Preserve enough residual
+information to validate the final global contract. Do not equate structural
+matching with numerical rank or apply a local threshold as an unexamined global
+error bound. Local rank/error accounting must be proved against the final
+original-matrix assessment before treating this route as qualified.
+
+A state machine advances bounded assembly, panel and scatter work and yields to
+the existing worker service policy. No new unsafe or edit to existing upstream
+unsafe is authorized. If a needed internal access cannot be exposed through
+additive safe interfaces or new safe state, report the exact seam and failed
+alternative; do not weaken architecture. This remains an implementation gate,
+not an assumed incompatibility or an automatic unsafe exception.
+
+**V2.3 — Complete operators, provenance and cancellation.**
+Provide implicit `Q`, `Q^T`, left/right numerical-null-space apply operations and
+their needed adjoints. Reuse sparse Householder plus small SSI bases; do not form
+a global dense null basis. For right-null analysis based on a transpose, preserve
+original equation/variable and scaling maps. R-only imports must obtain the
+needed compact orthogonal operator through an additive safe faer interface or
+explicitly remain unavailable for that operation; never synthesize identity Q.
+Optional convenience solvers are required only where the approved nonlinear
+probe needs them, not as a general pseudoinverse library expansion.
+
+Extend the candidate contract with `RankJobIdentity`/`RankInputProvenance`
+(original dimensions and IDs, matrix revision, undamped equality designation,
+scaling/elimination map and threshold policy), `RankQrContinuation` and bounded
+`advance(allowance, cancel)`. Newell owns semantic provenance and singular/
+finite-mobility/active-bound decisions; faer owns factorization/operator state.
+The report separates empirical reliability estimates from rigorous bounds and
+records combined perturbation, operator residuals, initialization/restarts,
+passes, fill, peak live bytes and uninterruptible-call durations. A source,
+parameter, matrix or scaling change invalidates cached numerical results.
+
+No phase is excused from <=16ms cancellation acknowledgement and <=100ms obsolete
+release by an outer callback. Split safe work into admitted chunks and measure
+existing kernels. A kernel too long for the required bound needs a smaller
+panel/batch or safe continuation before acceptance; more threads, a child-process
+kill or an early flag acknowledgement while retaining the worker do not qualify.
+
+**V2.4 — Evidence that closes the numerical gap.**
+Retain zero-column tests but add nonterminal and distributed dependencies on
+10,000-free-unknown chain and grid cases, column permutations, rectangular shapes,
+large nullity, near dependencies with large diagonals, threshold clusters and
+multiple independent recorded starts. Compare bounded overlapping cases with
+analytic/dense-SVD references and verify full implicit-null-space actions.
+Exercise original geometric nonlinear C1 fixtures with rank included in the job,
+not an incidence matrix alone. Validate regular, singular, inconsistent and
+active-bound outcomes separately. Every V2.1/V2.2 retry, transpose, operator and
+cleanup phase participates in the unchanged timing/memory/worker gates. Neither source access nor this planned
+algorithmic escalation guarantees a passing implementation or a delivery date.
+
+Exact future V2 source additions are limited to
+`vendor/faer-0.22.6/src/sparse/linalg/{rank.rs,rank_front.rs,qr.rs,mod.rs}` and
+`vendor/faer-0.22.6/src/sparse/solvers.rs` for minimal safe operator/ordering
+exposure, plus the already scoped kernel rank adapter, probes and ledgers.
+`rank_front.rs` is needed only for V2.2; do not create a parallel general solver.
+Existing unsafe implementations remain unchanged. No new numerical package,
+BLAS, SuiteSparse runtime or private Newell factorization is selected.
+
+#### V3 — SolidCore corrections and certified geometry
+
+Primary edit scope: `vendor/retired geometry math package-4.2.2/src/nurbs/{bezier_clip.rs,knot_ops.rs}`
 and new `src/nurbs/{certified_intersection.rs,certified_overlap.rs}` with module
-registration; `vendor/brepkit-operations-4.2.2/src/{offset_wire.rs,offset_trim.rs}`
+registration; `vendor/retired geometry operations package-4.2.2/src/{offset_wire.rs,offset_trim.rs}`
 and new `src/certified_offset.rs` with module registration. Add focused tests in
 those packages and Newell's already scoped curve/region probes. Do not change
 boolean/meshing/tolerance defaults or unrelated APIs as incidental cleanup.
@@ -1499,11 +1654,12 @@ unresolved/resource/cancel status and must not manufacture accepted topology.
 Exact/certified offsets retain analytic line/circle cases; general conic/spline
 results may change degree/representation but require a bounded geometric error
 and checked topology of joins/self intersections. Candidate arrangement traversal
-stays Newell kernel-owned in `src/sketch/regions.rs` and constructs BrepKIT
-wires/faces. A geometry algorithm library is not automatically approved. If
-higher precision/exact arithmetic is required, identify the exact pure-Rust
-candidate/version/license/MSRV/feature graph and request that concrete addition;
-no arbitrary new dependency is preapproved and no native arithmetic library/FFI.
+stays Newell kernel-owned in `src/sketch/regions.rs` and constructs SolidCore
+wires/faces. A geometry algorithm library is not automatically approved.
+Revision6 V3.1 below names and scopes the exact-arithmetic candidates; those
+additions may be executed only after explicit approval/request for this revision.
+Other arithmetic/geometry packages still need their exact scope. No arbitrary
+new dependency, native arithmetic library or FFI is preapproved.
 
 Use existing C/D matrices without reducing families. Repeat contact/overlap,
 periodic/self-intersection, all joins/open/closed, small holes/nesting/union and
@@ -1517,6 +1673,154 @@ Every expensive phase exposes a bounded continuation or a measured indivisible
 bound leaving cleanup headroom under100 ms. Do not replace this requirement with
 extra threads or subprocess termination. Preserve cancellation and uncertainty
 through the vendor API, ACL, worker certificates and final acceptance path.
+
+##### Revision-6 exact arithmetic boundary and geometry completion
+
+The human approved the recommended direction for exact arithmetic and general
+geometry; the current request authorizes planning only. Subsequent explicit
+revision-6 approval plus Executor instruction may develop the named candidates
+below without another generic dependency permission. They are not installed or
+adopted by this Architect stage. Numerical rank remains floating-point numerical
+analysis; exact arithmetic here serves geometric predicates/algebraic isolation.
+
+**V3.1 — Named arithmetic dependencies and bounded certificates.**
+
+| Registry dependency | Exact baseline / features | Placement and compatibility |
+|---|---|---|
+| num-bigint | `=0.4.6`, defaults off, `std` only | Optional in vendored retired geometry math package, enabled by `newell-m50`; published MIT OR Apache-2.0, choose MIT; declared MSRV1.60 |
+| num-rational | `=0.4.2`, defaults off, `std,num-bigint` only | Same feature/owner; MIT option; declared MSRV1.60; uses compatible num-bigint0.4 |
+
+Use registry packages, not two new vendor trees. Their necessary num-integer and
+num-traits transitive graph must be inventoried under the exact lock resolution;
+retain existing compatible num-traits resolution and unrelated lock entries.
+Do not activate rand, serde, native acceleration or a second big-integer backend.
+Executor verifies published integrity, resolved graph, licenses/advisories and
+Rust1.88 on supported targets before accepting the addition. Failure of that
+concrete audit returns its evidence; no version substitution or audit-policy edit
+is implicit. No dependency is added to workspace.dependencies, another Newell
+crate, or the faer package for geometry. SolidCore operations consumes checked math
+APIs, and Newell's ACL continues to hide all third-party types.
+
+Implement only the polynomial/interval operations needed by these Sketch curve
+algorithms in `vendor/retired geometry math package-4.2.2/src/nurbs/certified_arithmetic.rs` and
+`certified_polynomial.rs`: exact dyadic import of finite stored f64 coefficients,
+checked rational operations, square-free/gcd/subresultant tools, root isolation
+and outward interval conversion. Check nonzero denominators and finite inputs
+before APIs that could panic. Never use approximate rational reconstruction as
+an exact witness. Existing analytic circle/conic semantics and any transformation
+error must be preserved explicitly; converting rounded controls to rationals
+cannot recover previously lost precision or turn an approximate circle into an
+exact analytic one. Keep local coordinates and original parameter maps through
+translation, with checked native/world conversion under §5's tolerances.
+
+Use outward f64 interval filters first; escalate ambiguous operations to exact
+integer/rational predicates and dyadic isolating intervals. Enclose square roots
+by checked rational/dyadic bounds and sign predicates; no MPFR/GMP/FFI or general
+arbitrary-precision floating dependency. Charge coefficient bit growth, temporary
+polynomials, root boxes, caches and output to job-wide memory/work limits before
+expensive growth. Yield between admitted arithmetic operations; measure the
+largest individual big-integer operation and limit its operand size/work before
+entry. Exhaustion returns ResourceLimit/Unresolved with no accepted topology.
+These bounds do not excuse systematic failure on mandatory regular fixtures.
+
+SolidCore owns opaque `CertifiedParameter`, `RootBox`, `ContactWitness`,
+`OverlapCorrespondence` and `GeometryCertificate` concepts, with names adjusted
+to existing conventions. Certificates retain source IDs/revisions, original knot
+spans, parameter domains, multiplicity/branch information, physical/parameter
+error bounds and proof/uncertainty provenance. Newell owns wrapped stable identity,
+arrangement/session state and acceptance; exact-number types never escape it.
+
+**V3.2 — Intersections and general overlaps, selected algorithm.**
+Decompose supported rational curves into spans with shape-preserving homogeneous
+knot refinement and explicit maps to original parameters. Use analytic cases and
+Bernstein convex-hull/interval exclusion to prune pairs. Subdivision may propose
+boxes, not silently terminate as a hit. For regular intersections, select the
+Krawczyk/Rump inclusion test (Rump §13, Theorem13.3, linked in §13): enclose the
+Jacobian on a parameter box and verify the preconditioned error map lies strictly
+inside it. This establishes the required existence/uniqueness only when every
+theorem precondition holds. Boundary roots and failed inclusions go to exact
+isolation; Newton convergence is never a substitute. Keep interval overflow,
+underflow, denominator uncertainty and nonfinite results conservative.
+
+For rational spans form the two parameter-space equations by cross-multiplying
+homogeneous x/y coordinates. Exclude denominator zeros. Use exact gcd and
+square-free/subresultant/resultant analysis, followed by real-root isolation and
+lifting, to classify isolated solutions, multiplicities and common components.
+Verify lifted candidates in **both original equations and parameter domains**;
+elimination can produce extraneous candidates or exceptional leading-coefficient
+fibers. Handle those fibers explicitly, not by a generic-position assumption.
+The accessible Kerber thesis §2.3–2.4 and curve/curve-pair analysis chapters in
+§13 provide algorithmic foundations; record the exact subalgorithms/sections and
+porting proof before implementation. This is a narrow SolidCore implementation,
+not an import or rewrite of CGAL's entire algebraic kernel.
+
+For a common component in parameter space, isolate its real branches inside the
+original span rectangle and certify correspondence on each branch. Split at
+critical/end/seam values so correspondence and orientation are unambiguous;
+retain an implicit algebraic correspondence when no affine formula exists.
+This must handle different knot refinement, reversal and partial overlap, not
+only identical control nets. Classify degenerate constant spans separately.
+For self-intersections separate the trivial same-parameter diagonal from genuine
+nonadjacent branches; preserve periodic seam identities while deduplicating the
+same geometric contact. Do not merge nearby distinct roots merely by distance.
+Multiplicity alone does not settle crossing versus touching at singular points;
+use the certified local branches/derivatives. Every advertised family pair still
+requires completeness, provenance and error/topology evidence.
+
+**V3.3 — Certified offsets and arrangements, selected construction/check split.**
+Retain exact analytic lines/circles and the approved Round/Miter/Bevel semantics.
+On each regular curved branch define the original-source offset
+`O(t) = C(t) + d * R90(C'(t)) / ||C'(t)||` in the oriented Sketch plane.
+Construct piecewise native rational/Bezier approximants, then independently bound
+`sup ||O(t)-B(t)||` by conservative interval evaluation over the whole mapped
+span. Subdivide/refine until the existing geometric error budget, including
+source conversion, approximation, join/trim and native/world rounding, is met.
+This parameter-correspondence bound also controls Hausdorff error on the covered
+branch. Samples alone cannot certify it. Approximation here is already permitted
+by §4.3/§7.1; it does not replace exact source curves or relax their tolerances.
+
+Isolate zero-speed, offset-cusp and branch-transition parameters, including the
+signed `1-d*kappa` condition under the chosen orientation. Preserve radicals or
+introduce positive auxiliary variables for speed; elimination/squaring requires
+checking the original signs and equations. Use these branch certificates to
+resolve offset contacts, joins and self-intersections. A bound on distance alone
+cannot establish topology. Certify intersection/event ordering and separation of
+unrelated branches, refine where error tubes overlap, and preserve collapse/cusp
+outcomes explicitly. Approximate-output intersections alone do not prove the
+source offset topology; the original offset equations/certificates remain the
+reference for trimming and branch selection. No regular small hole may disappear
+because the approximation error was convenient. Uncertified topology stays out
+of an accepted profile.
+
+Build the bounded arrangement in kernel `src/sketch/regions.rs` from certified
+events and mapped spans: consistent half-edge order, shared-overlap handling,
+closed cycles, holes/nesting and stable provenance. Construct real SolidCore wires/
+faces from the approved native representations. Native validation complements
+rather than substitutes for these certificates. Exercise real M4 extrusion and
+replay/profile repair atomically. M4.D1/D2 intersections remain unresolved gates
+where required; do not expand this package into unrelated M4 functionality or
+claim their deferrals as exemptions. A required correction outside the listed
+M5/M4 bridge files needs a concrete file/failure scope amendment.
+
+**V3.4 — Exact geometry scope and completion evidence.**
+In addition to the existing V3 files, permit the two math helper modules named
+above, their registration in nurbs/mod.rs and optional manifest dependencies.
+Use `certified_intersection.rs`/`certified_overlap.rs` for the curve algorithms and
+operations `certified_offset.rs` for candidate offset construction/validation.
+Minimal safe fixes to `bezier_clip.rs`, `knot_ops.rs`, `offset_wire.rs` and
+`offset_trim.rs` remain scoped; default-call changes still require parity and
+separate production adoption. Do not add new geometry packages, change topology
+pins or alter global boolean/meshing/tolerance defaults.
+
+All15 curve-family pairs, tangencies/multiple roots, non-affine overlap maps,
+different refinement, periodic seams, self intersections, arbitrary original
+span domains, translation/small detail, offset policies and degenerate derivatives
+must pass their original gates. Cross-check filters against the exact path on
+bounded fixtures and use independent analytic/algebraic answers, symmetry and
+original-curve reevaluation. Verify native output/error certificates and topology
+through actual extrusion. Cancellation/resource/error paths must not publish a
+partial accepted arrangement. Existing affine/control-identity/circle tests are
+regressions, not evidence that this broader capability is already implemented.
 
 #### V4 — Qualification, adoption and maintenance
 
@@ -1537,8 +1841,8 @@ comparisons, coverage and every unresolved failure. A qualified candidate may be
 accepted only for its demonstrated capabilities; any mandatory missing capability
 keeps M5.0 open and blocks dependent production use.
 
-V0 and the original experimental execution were explicitly authorized under
-revision4; the current role switch and revision-5 resumption boundary are in §12.
+V0 and earlier experimental execution were explicitly authorized under revisions4–5;
+the current Architect boundary and revision-6 resumption conditions are in §12.
 Production switching/default feature changes require
 a separate explicit adoption request against the concrete dossier, not renewed
 permission for already authorized test-only work. Do not start M5.1 or mark
@@ -1554,12 +1858,86 @@ fixes and rerunning the corpus, not merely a newer release number. No automatic
 upstream issue/PR, commit, push or publication. Proposals/patch descriptions can
 be prepared locally; sending them still needs explicit authorization.
 
+##### Revision-6 actual-worker harness and acceptance boundary
+
+Begin the harness while V2/V3 progress. Use a non-default app
+`m50-feasibility` feature forwarding the kernel candidate feature. In the kernel,
+faer may additionally become the **same pinned optional normal dependency**
+(defaults off, std/sparse-linalg and candidate feature selected only by
+m50-feasibility); retain the dev declaration needed by existing default probes.
+This narrowly enables actual worker-linked feasibility code instead of an
+unavailable cfg(test)-only rank adapter. Do not add faer or exact arithmetic to
+app/model/UI/render dependencies. Verify default and all-feature resolution.
+
+Expose a feature-only Newell-owned kernel probe API from
+`src/sketch/feasibility.rs` through minimal lib.rs wiring: compile the private
+sketch module for tests or m50-feasibility and re-export only the feature-only
+Newell-owned probe types. Normal Sketch API/runtime selection remains unchanged.
+`M50Input` carries real geometry/constraint/edit
+recipes, stable source IDs and version/scaling provenance. `M50Job` owns backend
+state; bounded `advance(allowance, cancel)` returns Pending, a typed terminal
+failure, or a Newell-owned result plus measured phase/certificate data. Do not
+send faer/SolidCore/exact-number objects across the ACL. Kernel owns numerical and
+geometry state; the app owns scheduling, session authority and publication.
+
+Add feature/test-scoped routes to the **existing** geometry worker and input
+controller/navigation event seams, reusing GeometryJobId, latest-work bounded
+transport, prepared-result authority, cancellation and liveness checks. No second
+worker implementation, additional runtime executor, test-only scheduler or
+production Sketch shell. Each expensive kernel phase actually executes the
+candidate backend; sleeps, queue preparation or surrogate second-session work
+are not proofs. Until a backend phase exists, list that missing phase explicitly.
+The event harness must enter the real input routing path for frozen press queries,
+confirmation, continuous pointer motion and another window/session's work.
+
+Record dispatch, queue wait, assembly, symbolic/reordering/retries, numeric QR,
+rank/operators, geometry/isolation/offset/arrangement, native conversion/replay,
+result certification/publication and cleanup. Correlate all phases to one job
+identity. Count peak live allocations/copies including old retained generations,
+exact coefficients, native QR owners, messages and pending terminal results;
+phase-local admitted scratch is insufficient for the <=1GiB S3 gate.
+
+Test cancellation inside every expensive phase and immediately service the next
+click/query and another window; preserve <=16ms acknowledgement and <=100ms
+obsolete release. Obsolete completions cannot publish, erase another commit or
+retain the only worker indefinitely. Separate input, query, numeric, visibility,
+frame and final-validation budgets exactly as §§6/10 require. Do not remove rank
+or geometry work from a timed path when the published result depends on it.
+
+Use at least500 warmed, versioned mixed interactions per fixture with recorded
+seeds/independent rank restarts, unchanged S1/S2/S3/C1/X1 counts and convergence,
+accuracy and topology checks. The revision-5 10,000-column incidence timings are
+historical phase characterization, not acceptance of the nonlinear/mixed worker.
+Measure RefA and RefB separately under §10. If hardware is unavailable, complete
+all portable evidence and mark the hardware gate pending; do not replace it with
+M4 timings or silently redesignate the reference machine.
+
+Exact additional harness files: kernel `src/sketch/{mod,rank,feasibility,regions,
+curve,query}.rs`, `src/{lib,profile}.rs`, existing Sketch tests/bench; app
+`src/{geometry_worker,controller,navigation,lib}.rs` only for feature-only routing,
+existing authority/liveness reuse and event tests, and app/kernel manifests for
+the wiring above. Existing §9.4 task-specific test seams remain available.
+No production UI/renderer additions, normal command switching or M5.1 work.
+
+Keep the single validation dossier and per-patch source ledgers current. V2 closes
+only after general nonterminal rank/operator and cancellation performance gates;
+V3 only after complete certified geometry/topology/offset coverage; V4 only after
+real-worker, live-memory, hardware and applicable M5.0 manual gates. These are
+feasibility input/service checks, not implementation of the later Sketch UI or
+premature claims of M5.15 complete physical acceptance. No individual
+passing component closes another lot. Assign patch/advisory/rebase ownership
+before production adoption; absence of that owner does not block this bounded
+experimental work. Production adoption still needs a separate explicit request.
+
 #### Additional exact future output scope
 
 - `vendor/{README.md,manifest.toml}`; the three package trees above with original
   notices, `NEWELL_CHANGES.md`, focused tests and only V2/V3 algorithm edits.
-- Root `Cargo.toml`, `Cargo.lock`; existing kernel/app manifests solely for
-  exclusion, patch resolution and non-default feasibility feature/test wiring.
+- Root `Cargo.toml`, `Cargo.lock`; named vendor manifests for optional exact
+  arithmetic and candidate features; kernel/app manifests for the explicit
+  optional/faer and actual-worker wiring in revision6 V3.1/V4. No unrelated deps.
+- Additional exact files in revision6 V2–V4 are additive to §9.4 and this list;
+  they do not authorize editing the whole dependency tree or production UI.
 - Existing §9.4 kernel/app seams, tests/benchmarks and validation record; only
   the M5.0 backlog item if all exit gates truly pass.
 - **V0 documentation already applied:** `ARCHITECTURE.md` scoped third-party
@@ -1703,35 +2081,43 @@ acceptance. Passing CPU tests alone is not visual or latency acceptance.
 
 ## 12. Decisions, remaining gates and Architect handoff
 
-Revision5 selects faer for sparse solves and a Foster–Davis SPQR_RANK adaptation
-inside that library for rank, replacing the unavailable Pierce–Lewis reading
-prerequisite. §9.5 V2 compares the alternatives and fixes the method, factor
-bridge, exact files, result semantics and qualification. No new package, FFI,
-unsafe extension or second geometry kernel is selected. All Sketcher goals and
-performance/accuracy gates remain unchanged; no success date is asserted.
+Revision6 incorporates the human's validated direction and defines the remaining
+V2–V4 work. Keep faer/Foster–Davis: bounded explicit-permutation refactorization
+first, front-local safe-Rust deferral when necessary, complete implicit operators
+and real cancellation. Keep SolidCore alone: certified general roots/overlaps,
+checked offsets/arrangements and optional exact registry num-bigint0.4.6 plus
+num-rational0.4.2 under the candidate math feature. The named algorithms, APIs,
+exact files, dependency features/audits and qualification are in §9.5.
 
-V0 is already applied and accepted. V1 import/parity and V3 candidate probes are
-partial existing work; preserve them and reconcile the patch provenance at
-resumption. V2 is not implemented; V3 coverage and V4 qualification remain
-incomplete. M5.0 is still open. Existing D1–D3 authoritative Sketch amendments
-and M4 acceptance prerequisites persist. The present role switch suspends
-Executor work; the earlier revision-4 execution request does not authorize
-continuing implementation during this Architect stage.
+V0 is accepted/applied; V1 is verified in the historical dossier. Preserve the
+integrated partial rank and geometry code at this clean main entry. V2, V3 and
+V4 remain incomplete; source integration and small/fast fixtures do not close
+their general numerical, geometry, service/memory or hardware gates. All original
+accuracy, tools, S1/S2/S3/C1/X1, safety, MVC/ACL and M4/D1–D3 prerequisites persist.
+No architectural rule, accepted ADR, project/third-party license or reference
+hardware definition is amended by this plan.
 
-There is no unresolved new product choice within the selected method. The human
-may approve revision5 and explicitly resume the bounded Executor work, beginning
-with the V2 factor-contract proof while completing V1/V3 evidence and V4 gates.
-That is a recommended next stage only. An optional Challenger is not required.
-A concrete failure requiring new unsafe, another baseline/package, architectural
-change or altered scope must return with evidence and its specific decision.
-Production adoption requires the V4 dossier and separate explicit authorization.
-Do not begin M5.1.
+No additional product choice is left open within the selected route. The next
+human instruction may approve revision6 and request its bounded Executor stage
+including the named arithmetic dependencies and conditional V2.2 route together.
+That instruction would authorize experiment/development and verification, not
+production adoption. Do not ask again for generic vendoring/dependency permission
+once that exact approval and execution request exists. An optional Challenger
+review is not required. A concrete audit failure or necessary change outside the
+listed packages/files/safety boundary returns with exact evidence and scope.
 
-Only `docs/plans/M5-sketcher.md` changed during this Architect revision. No build,
-test, benchmark, numerical experiment, source import, application, agent,
-commit or publication was run. Historical checks above are not current
-verification. The dirty checkout and index were preserved; textual checks do
-not qualify implementation. Stop after delivering this plan.
+Human-supplied RefA/RefB access remains necessary for their device evidence;
+complete portable checks while access is unavailable, keeping acceptance pending.
+Maintenance/advisory/rebase ownership must be named before production adoption;
+it is not a new prerequisite for experimental execution. No success schedule is
+promised. Production adoption still requires the qualification dossier and a
+separate explicit human request. Do not start M5.1.
+
+Only `docs/plans/M5-sketcher.md` changed in this Architect turn. No implementation,
+dependency installation, build/test/application/benchmark, numerical experiment,
+agent, commit or publication was performed. Primary-source investigation and
+textual diff checks are not implementation validation. Preserve the index and
+stop after delivering this revision.
 
 ## 13. External primary references
 
@@ -1759,3 +2145,19 @@ These support dependency/API investigation, not benchmark or integration claims:
 - [Pierce–Lewis sparse multifrontal RRQR](https://doi.org/10.1137/S0895479893244353):
   revision4 historical selection; full text unavailable in that investigation,
   superseded by revision5 and no longer required for execution.
+
+- [num-bigint0.4.6 upstream manifest](https://raw.githubusercontent.com/rust-num/num-bigint/num-bigint-0.4.6/Cargo.toml)
+  and [num-rational0.4.2 published manifest](https://docs.rs/crate/num-rational/0.4.2/source/Cargo.toml.orig):
+  exact selected versions, optional features, MIT/Apache alternatives and declared
+  MSRV1.60. Full resolved security/license/platform qualification is Executor work.
+- [Davis, multifrontal rank-revealing QR, accessible proceedings](https://drops.dagstuhl.de/entities/document/10.4230/DagSemProc.09061.13)
+  and [Davis–Rajamanickam–Sid-Lakhdar, full sparse-methods survey](https://people.engr.tamu.edu/davis/publications_files/survey_tech_report.pdf),
+  §§7,9–11: factor/order/front organization for V2, not permission for native
+  SuiteSparse/TBB/BLAS or a claim of demonstrated Rust performance.
+- [Kerber, Geometric Algorithms for Algebraic Curves and Surfaces, full thesis](https://www.geometrie.tugraz.at/kerber/kerber_papers/kerber_diss.pdf),
+  §2.3–2.4 and curve/curve-pair analysis: subresultants, root counting/isolation
+  and exceptional/singular cases for the narrow V3 exact path. Accessible full
+  method reference, not a CGAL dependency or automatically licensed code port.
+- [Rump, Verification methods: rigorous results using floating-point arithmetic, full author-hosted survey](https://www.tuhh.de/ti3/rump/intlab/ActaNumerica2010.pdf),
+  §13, Theorem13.3: selected regular-root inclusion test; its hypotheses are part
+  of V3's certificate, and failed inclusion is not evidence of no intersection.

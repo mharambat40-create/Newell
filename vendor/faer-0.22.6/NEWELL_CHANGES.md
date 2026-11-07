@@ -1,5 +1,33 @@
 # faer-0.22.6 experimental source ledger
 
+## FAER-COMPAT-004 — approved stable compiler compatibility (2026-11-06)
+
+Human approved the exact twelve-file patch. Martin Harambat remains maintenance
+owner. The patch makes 25 existing borrow lifetimes explicit, qualifies macro
+reexports, removes redundant imports and parentheses, selects the existing
+typed unit value in two GEMM expressions, and removes the unused nrow2 counter
+and private Ptr::null method. The approval explicitly covers these edits within
+existing unsafe scopes. No unsafe operation is added. The faer version, Rust
+1.88 baseline, enabled features, numerical thresholds, and MIT notices remain
+unchanged. Verification is recorded in the SolidCore migration dossier.
+
+## FAER-COMPAT-003 — approved feature-conditional warning correction (2026-11-05)
+
+Human approved the exact proposed patch, including compilation conditions around
+existing unsafe declarations whose bodies remain unchanged. Maintenance owner:
+Martin Harambat. Version0.22.6, Rust1.88, enabled Newell features, numerical
+algorithms, thresholds and MIT notices remain unchanged. No lint is disabled.
+
+Changed: src/lib.rs; src/{mat/matmut,col/colmut,row/rowmut,col/colref}.rs;
+src/linalg/{matmul/mod,lu/full_pivoting/factor,householder}.rs; src/io.rs;
+src/sparse/linalg/rank_front.rs. Rayon/npy-only imports and declarations receive
+matching cfg conditions; the Householder temporary is mutable only under Rayon;
+ColRef::cloned uses its existing equivalent read method; FrontProgress variants
+receive documentation. No existing unsafe body or numerical routine is rewritten,
+and no new unsafe, FFI, BLAS or dependency is introduced. Earlier ledger entries
+below describe historical approval and ownership at their dates; this entry
+supersedes unassigned faer maintenance ownership, not experimental adoption limits.
+
 Baseline: published Cargo archive; source and SHA-256 in ../manifest.toml.
 Original MIT notices, version, upstream source and Cargo.toml.orig retained.
 All shipped files remain present. No registry edits or production adoption.
@@ -36,3 +64,29 @@ actual-worker qualification and reference-hardware acceptance remain open.
 Maintenance owner: unassigned; must be assigned before production adoption.
 Requalification must cover default parity, permutations, original-matrix residuals,
 rank reliability, cancellation, workspace, MSRV, licenses and advisory changes.
+
+## M50-FAER-002 — bounded numerical column deferral (M5 revision 6)
+
+Changed: `src/sparse/linalg/{qr,rank}.rs`. Additive safe, non-default
+`newell-m50` interfaces accept a checked explicit symbolic permutation, extract
+compact full Q (including its complement), and apply left/right null operators
+and adjoints without a global dense basis. Right-null extraction additionally
+factorizes the retained R transpose in original-variable coordinates; callers
+must validate the original-matrix residual. This auxiliary work is not free.
+No upstream unsafe body changed; no new unsafe, dependency, FFI or BLAS.
+
+Refactorization uses the unchanged original matrix and threshold, moves stable
+SSI suspect-column proposals to a terminal partition, and admits at most two
+corrective passes after the initial QR. Each pass checks the entire rejected
+tail and SSI separation. Proposals alone never certify rank. Rectangular
+transpose analysis explicitly labels the permutation axis. Workspace/work
+admission is cumulative across passes and measured opaque QR/SVD times are
+reported separately from symbolic-call upper bounds.
+
+This is a bounded feasibility extension, not complete rank-job provenance,
+resumable fronts, rigorous singular mobility certification or whole-process
+memory/cancellation qualification. `rank_front.rs` is not added: the tested
+V2.1 chain/grid dependencies do not trigger its conditional escalation. Existing
+upstream kernels remain opaque. See the current revision-6 validation section
+for exact fixtures, timing results, unresolved requirements and reproduction.
+Maintenance ownership remains unassigned; production adoption is not authorized.

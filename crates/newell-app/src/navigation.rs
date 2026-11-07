@@ -14,7 +14,28 @@ use newell_render::{CameraSnapshot, SceneViewport, exposed_regions};
 use std::time::{Duration, Instant};
 use winit::event::{MouseButton, TouchPhase};
 
-const WORLD_REFERENCE_CLIP_SPHERE: (Vec3, f64) = ([0.0; 3], 1.01);
+// Reference planes reach 156 px on each local axis. Their farthest corner is
+// therefore sqrt(2) * 156 px from the origin. Grow the camera-depth envelope
+// with the same world-units-per-pixel scale as the renderer so zooming out
+// cannot place plane corners beyond the far clip plane.
+fn world_reference_clip_sphere(camera: Camera) -> (Vec3, f64) {
+    const PLANE_OUTER_EXTENT_PX: f64 = 156.0;
+    const DEPTH_MARGIN: f64 = 1.01;
+    let height = f64::from(camera.viewport.height.max(1));
+    let world_per_pixel = if camera.perspective {
+        let origin_depth = dot(scale(camera.eye, -1.0), camera.basis().2);
+        2.0 * origin_depth * (camera.vertical_fov * 0.5).tan() / height
+    } else {
+        camera.orthographic_height / height
+    };
+    let radius = std::f64::consts::SQRT_2 * PLANE_OUTER_EXTENT_PX * world_per_pixel;
+    let radius = if radius.is_finite() && radius > 0.0 {
+        radius * DEPTH_MARGIN
+    } else {
+        1.01
+    };
+    ([0.0; 3], radius)
+}
 
 fn clip_to_screen(clip: [f64; 4], viewport: SceneViewport) -> Option<(f64, f64)> {
     if clip[3] <= 1.0e-6
@@ -286,7 +307,17 @@ impl Navigation {
             return Some(reference);
         }
 
-        let ray = camera.ray(point)?;
+        let mut ray = camera.ray(point)?;
+        if !camera.perspective {
+            // Fixed-pixel references can extend behind the nominal orthographic
+            // eye plane. Start their picking ray at the rendered near plane;
+            // ordinary mesh picking keeps its existing camera ray.
+            let near = f64::from(projection[3][2]) / f64::from(projection[2][2]);
+            if !near.is_finite() {
+                return None;
+            }
+            ray.origin = crate::camera::add(ray.origin, scale(camera.basis().2, near.min(0.0)));
+        }
         let mut plane_hit_choice: Option<(f64, usize, R)> = None;
         for (index, (reference, normal_axis, a, b)) in
             [(R::XY, 2, 0, 1), (R::XZ, 1, 0, 2), (R::YZ, 0, 1, 2)]
@@ -1082,21 +1113,45 @@ impl Navigation {
                 revision = revision.wrapping_add(1);
             }
         }
-        camera.snapshot(
+        camera.snapshot_with_reference_extent(
             enclosing_sphere(
                 bounds.map_or(([0.5; 3], 1.), |bounds| bounds.sphere()),
-                WORLD_REFERENCE_CLIP_SPHERE,
+                world_reference_clip_sphere(camera),
             ),
             revision,
         )
     }
+    pub(crate) fn grid_snapshot(&self, dark: bool) -> Option<newell_render::GridSnapshot> {
+        let camera = self.camera;
+        // A well-conditioned auxiliary projection defines rays, never scene clip extent.
+        let mut grid = grid_snapshot(
+            crate::camera::multiply(
+                camera.projection(if camera.perspective { 1.0 } else { 0.0 }, 2.0),
+                camera.view(),
+            ),
+            dark,
+        )?;
+        grid.view_projection = self.snapshot()?.view_projection();
+        grid.ray_origin = [
+            camera.eye[0] as f32,
+            camera.eye[1] as f32,
+            camera.eye[2] as f32,
+            if camera.perspective { 1.0 } else { 0.0 },
+        ];
+        grid.world_per_pixel = (if camera.perspective {
+            2.0 * camera.focal_distance * (camera.vertical_fov * 0.5).tan()
+        } else {
+            camera.orthographic_height
+        } / f64::from(camera.viewport.height.max(1))) as f32;
+        Some(grid)
+    }
     /// Immutable payload for the View. Invalid float conversion never enters GPU uniforms.
     #[must_use]
     pub fn snapshot(&self) -> Option<CameraSnapshot> {
-        self.camera.snapshot(
+        self.camera.snapshot_with_reference_extent(
             enclosing_sphere(
                 self.scene.bounds().map_or(([0.5; 3], 1.0), |b| b.sphere()),
-                WORLD_REFERENCE_CLIP_SPHERE,
+                world_reference_clip_sphere(self.camera),
             ),
             self.revision,
         )
@@ -1110,22 +1165,111 @@ mod click_certificate_tests {
     #[test]
     fn camera_clip_encloses_world_references_without_reframing_model_bounds() {
         let model_sphere = ([40.0, 0.0, 0.0], 2.0);
-        let refs = WORLD_REFERENCE_CLIP_SPHERE;
-        let combined = enclosing_sphere(model_sphere, refs);
-        assert!(
-            crate::camera::length(sub(combined.0, model_sphere.0)) + model_sphere.1
-                <= combined.1 + 1e-9
-        );
-        assert!(crate::camera::length(combined.0) + refs.1 <= combined.1 + 1e-9);
+        for perspective in [false, true] {
+            for viewport in [
+                SceneViewport::new(0, 0, 640, 480),
+                SceneViewport::new(0, 0, 960, 240),
+                SceneViewport::new(0, 0, 400, 700),
+            ] {
+                for distance_or_height in [2.0, 20.0, 200.0] {
+                    let base_eye = [4.0, -20.0, 5.0];
+                    let eye = if perspective {
+                        scale(base_eye, distance_or_height / 20.0)
+                    } else {
+                        base_eye
+                    };
+                    let mut camera = Camera::look_at(eye, [0.0; 3], viewport);
+                    camera.set_perspective(perspective);
+                    if !perspective {
+                        camera.orthographic_height = distance_or_height;
+                    }
 
-        let camera = Camera::look_at(
-            [0.0, 0.0, 20.0],
-            [0.0, 0.0, 0.0],
-            SceneViewport::new(0, 0, 640, 480),
+                    let refs = world_reference_clip_sphere(camera);
+                    let combined = enclosing_sphere(model_sphere, refs);
+                    assert!(
+                        crate::camera::length(sub(combined.0, model_sphere.0)) + model_sphere.1
+                            <= combined.1 + 1e-9
+                    );
+                    assert!(crate::camera::length(combined.0) + refs.1 <= combined.1 + 1e-9);
+
+                    let snapshot = camera.snapshot_with_reference_extent(combined, 1).unwrap();
+                    let matrix = snapshot
+                        .view_projection()
+                        .map(|column| column.map(f64::from));
+                    let depth = |point: Vec3| {
+                        let clip = transform(matrix, [point[0], point[1], point[2], 1.0]);
+                        assert!(clip[3] > 0.0, "reference corner behind camera: {clip:?}");
+                        assert!(
+                            clip[2] >= -1e-5 && clip[2] <= clip[3] + 1e-5,
+                            "reference corner clipped ({perspective}, {viewport:?}, {distance_or_height}): {clip:?}"
+                        );
+                    };
+                    depth([0.0; 3]);
+                    let units_per_pixel = if perspective {
+                        let origin_depth = dot(scale(camera.eye, -1.0), camera.basis().2);
+                        2.0 * origin_depth * (camera.vertical_fov * 0.5).tan()
+                            / f64::from(viewport.height)
+                    } else {
+                        camera.orthographic_height / f64::from(viewport.height)
+                    };
+                    let world_scale = 192.0 * units_per_pixel;
+                    for normal_axis in 0..3 {
+                        let a = (normal_axis + 1) % 3;
+                        let b = (normal_axis + 2) % 3;
+                        for x in [0.20 * 156.0, 156.0] {
+                            for y in [0.20 * 156.0, 156.0] {
+                                let mut point = [0.0; 3];
+                                point[a] = x / 192.0 * world_scale;
+                                point[b] = y / 192.0 * world_scale;
+                                depth(point);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_fixed_clip_sphere_cut_off_plane_corners_on_zoom_out() {
+        let viewport = SceneViewport::new(0, 0, 640, 240);
+        let mut camera = Camera::look_at([0.0, -200.0, 0.0], [0.0; 3], viewport);
+        camera.set_perspective(true);
+
+        let model = ([0.5; 3], 1.0);
+        let legacy = camera
+            .snapshot(enclosing_sphere(model, ([0.0; 3], 1.01)), 1)
+            .unwrap();
+        let expanded = camera
+            .snapshot_with_reference_extent(
+                enclosing_sphere(model, world_reference_clip_sphere(camera)),
+                2,
+            )
+            .unwrap();
+
+        let wpp = 2.0 * 200.0 * (camera.vertical_fov * 0.5).tan() / f64::from(viewport.height);
+        let world_scale = 192.0 * wpp;
+        let corner = [
+            156.0 / 192.0 * world_scale,
+            156.0 / 192.0 * world_scale,
+            0.0,
+        ];
+        let project_depth = |snapshot: CameraSnapshot| {
+            let matrix = snapshot
+                .view_projection()
+                .map(|column| column.map(f64::from));
+            transform(matrix, [corner[0], corner[1], corner[2], 1.0])
+        };
+        let legacy_clip = project_depth(legacy);
+        assert!(
+            legacy_clip[2] > legacy_clip[3],
+            "the old fixed-radius clip must reproduce the cutoff: {legacy_clip:?}"
         );
-        let (near, far) = camera.clip(combined);
-        let origin_depth = crate::camera::dot(sub([0.0; 3], camera.eye), camera.basis().2);
-        assert!(origin_depth >= near && origin_depth <= far);
+        let expanded_clip = project_depth(expanded);
+        assert!(
+            expanded_clip[2] >= 0.0 && expanded_clip[2] <= expanded_clip[3],
+            "the zoom-scaled envelope must contain the reference corner: {expanded_clip:?}"
+        );
     }
 
     #[test]
@@ -1247,5 +1391,198 @@ mod click_certificate_tests {
         );
         nav.cancel();
         assert!(!nav.advance_view_transition(now + Duration::from_millis(700)));
+    }
+}
+
+#[cfg(any())]
+impl Navigation {
+    /// The actual camera's ray into the fixed XY feasibility support plane.
+    /// Occluded or parallel/behind-camera queries are not admitted.
+    pub fn m50_sketch_plane_point(&self, point: (f64, f64)) -> Option<[f64; 2]> {
+        if !self.visible(point) {
+            return None;
+        }
+        let hit = plane_hit(self.camera.ray(point)?, [0.; 3], [0., 0., 1.])?;
+        Some([hit[0], hit[1]])
+    }
+}
+
+/// Derives the inverse in f64 before publishing finite GPU inputs.
+pub(crate) fn grid_snapshot(
+    matrix: crate::camera::Matrix,
+    dark: bool,
+) -> Option<newell_render::GridSnapshot> {
+    if !matrix.iter().flatten().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut rows = [[0.0_f64; 8]; 4];
+    for (r, row) in rows.iter_mut().enumerate() {
+        for c in 0..4 {
+            row[c] = matrix[c][r];
+        }
+        row[r + 4] = 1.0;
+    }
+    for c in 0..4 {
+        let pivot = (c..4).max_by(|a, b| rows[*a][c].abs().total_cmp(&rows[*b][c].abs()))?;
+        rows.swap(c, pivot);
+        let scale = rows[c][c];
+        if scale.abs() < 1e-30 {
+            return None;
+        }
+        for v in &mut rows[c] {
+            *v /= scale;
+        }
+        let pivot_row = rows[c];
+        for (r, row) in rows.iter_mut().enumerate() {
+            if r != c {
+                let scale = row[c];
+                for j in 0..8 {
+                    row[j] -= scale * pivot_row[j];
+                }
+            }
+        }
+    }
+    let mut inverse = [[0.0_f32; 4]; 4];
+    for (c, column) in inverse.iter_mut().enumerate() {
+        for r in 0..4 {
+            column[r] = rows[r][c + 4] as f32;
+        }
+    }
+    inverse
+        .iter()
+        .flatten()
+        .all(|v| v.is_finite())
+        .then_some(newell_render::GridSnapshot {
+            inverse_view_projection: inverse,
+            view_projection: matrix.map(|c| c.map(|v| v as f32)),
+            dark,
+            ray_origin: [0.0; 4],
+            world_per_pixel: 1.0,
+        })
+}
+
+#[cfg(test)]
+mod grid_input_tests {
+    use super::*;
+    #[test]
+    fn grid_inverse_preserves_world_points_in_both_projections() {
+        for perspective in [false, true] {
+            for eye in [[3.4, 3.0, 3.2], [10.0, -20.0, 5.0], [0.0, 0.0, 10.0]] {
+                let mut camera =
+                    Camera::look_at(eye, [0.0; 3], SceneViewport::new(0, 0, 1200, 800));
+                camera.set_perspective(perspective);
+                let (near, far) = camera.clip(([0.0; 3], 1.0));
+                let grid = grid_snapshot(
+                    crate::camera::multiply(camera.projection(near, far), camera.view()),
+                    true,
+                )
+                .unwrap();
+                let vp = grid.view_projection.map(|c| c.map(f64::from));
+                let inverse = grid.inverse_view_projection.map(|c| c.map(f64::from));
+                for point in [[0.0, 0.0, 0.0, 1.0], [2.0, -1.0, 0.0, 1.0]] {
+                    let result = transform(inverse, transform(vp, point));
+                    for i in 0..4 {
+                        assert!((result[i] / result[3] - point[i]).abs() < 0.001);
+                    }
+                }
+            }
+        }
+        assert!(grid_snapshot([[0.0; 4]; 4], true).is_none());
+    }
+}
+
+#[cfg(test)]
+mod grid_ray_tests {
+    use super::*;
+    #[test]
+    fn grid_rays_and_levels_follow_current_physical_viewport() {
+        for perspective in [false, true] {
+            for viewport in [
+                SceneViewport::new(17, 31, 1600, 400),
+                SceneViewport::new(48, 72, 400, 1600),
+                SceneViewport::new(96, 144, 800, 3200),
+            ] {
+                let mut camera = Camera::look_at([3., -5., 2.], [0.; 3], viewport);
+                camera.set_perspective(perspective);
+                camera.lens_shift = [0.2, -0.15];
+                let navigation = Navigation::new(camera);
+                let grid = navigation.grid_snapshot(true).unwrap();
+                assert_eq!(
+                    grid.view_projection,
+                    navigation.snapshot().unwrap().view_projection()
+                );
+                for ndc in [[-0.8, -0.8], [0., 0.], [0.8, 0.8]] {
+                    let point = (
+                        viewport.x as f64 + (ndc[0] + 1.) * 0.5 * viewport.width as f64,
+                        viewport.y as f64 + (1. - ndc[1]) * 0.5 * viewport.height as f64,
+                    );
+                    let ray = camera.ray(point).unwrap();
+                    let inverse = grid.inverse_view_projection.map(|c| c.map(f64::from));
+                    let a = transform(inverse, [ndc[0], ndc[1], 0., 1.]);
+                    let b = transform(inverse, [ndc[0], ndc[1], 0.5, 1.]);
+                    let origin = if perspective {
+                        camera.eye
+                    } else {
+                        [a[0] / a[3], a[1] / a[3], a[2] / a[3]]
+                    };
+                    let direction = sub([b[0] / b[3], b[1] / b[3], b[2] / b[3]], origin);
+                    let hit = crate::camera::plane_hit(
+                        crate::camera::Ray { origin, direction },
+                        [0.; 3],
+                        [0., 0., 1.],
+                    );
+                    let expected = crate::camera::plane_hit(ray, [0.; 3], [0., 0., 1.]);
+                    assert_eq!(hit.is_some(), expected.is_some());
+                    if let (Some(hit), Some(expected)) = (hit, expected) {
+                        assert!(crate::camera::length(sub(hit, expected)) < 0.001);
+                    }
+                }
+                let zoomed = Navigation::new(camera.zoom(
+                    [0.; 3],
+                    (
+                        viewport.x as f64 + viewport.width as f64 / 2.,
+                        viewport.y as f64 + viewport.height as f64 / 2.,
+                    ),
+                    0.001,
+                    100.,
+                ));
+                let next = zoomed.grid_snapshot(true).unwrap();
+                assert!((next.world_per_pixel / grid.world_per_pixel - 1.).abs() < 0.001);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scaled_reference_pick_tests {
+    use super::*;
+    #[test]
+    fn visible_zoomed_out_plane_is_pickable_across_the_nominal_eye_plane() {
+        for viewport in [
+            SceneViewport::new(16, 24, 640, 480),
+            SceneViewport::new(32, 48, 960, 480),
+        ] {
+            for height in [20.0, 200.0] {
+                let mut camera = Camera::look_at([20.; 3], [0.; 3], viewport);
+                camera.set_perspective(false);
+                camera.orthographic_height = height;
+                let navigation = Navigation::new(camera);
+                let extent = 156.0 * height / f64::from(viewport.height);
+                let world = [extent * 0.9, extent * 0.9, 0.0];
+                let snapshot = navigation.snapshot().unwrap();
+                let clip = transform(
+                    snapshot.view_projection().map(|c| c.map(f64::from)),
+                    [world[0], world[1], world[2], 1.0],
+                );
+                assert!(clip[2] >= 0.0 && clip[2] <= clip[3]);
+                let point = clip_to_screen(clip, viewport).unwrap();
+                assert!(navigation.visible(point));
+                assert_eq!(
+                    navigation.pick_origin_reference(point),
+                    Some(newell_ui::OriginReference::XY),
+                    "height {height}, viewport {viewport:?}"
+                );
+            }
+        }
     }
 }

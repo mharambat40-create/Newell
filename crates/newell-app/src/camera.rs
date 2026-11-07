@@ -291,14 +291,44 @@ impl Camera {
     /// Clip planes encompass model depth and stay valid even when the object is behind the eye.
     #[must_use]
     pub fn clip(self, sphere: (Vec3, f64)) -> (f64, f64) {
+        self.clip_with_reference_extent(sphere, false)
+    }
+    fn clip_with_reference_extent(self, sphere: (Vec3, f64), references: bool) -> (f64, f64) {
         let depth = dot(sub(sphere.0, self.eye), self.basis().2);
-        let near = (depth - sphere.1 * 1.1).max(1e-7);
+        // A 1e-7 near plane collapses visible perspective depths to the far
+        // clear value in f32/Depth24 when the eye enters the bounding sphere.
+        // Keep the plane at one percent of the minimum navigation distance.
+        let near = depth - sphere.1 * 1.1;
+        // Perspective projection needs a positive eye distance. Only a snapshot
+        // that includes the fixed-pixel world references may extend the parallel
+        // orthographic depth slab behind the nominal eye plane.
+        let near = if self.perspective || !references {
+            near.max(MIN_DISTANCE * 0.01)
+        } else {
+            near
+        };
         (near, (depth + sphere.1 * 1.1).max(near + 0.001))
     }
     /// Produces the immutable finite-f32 payload consumed by the renderer.
     #[must_use]
     pub fn snapshot(self, sphere: (Vec3, f64), revision: u64) -> Option<CameraSnapshot> {
-        let (near, far) = self.clip(sphere);
+        self.snapshot_with_clip(sphere, revision, false)
+    }
+    /// Scene snapshot whose finite depth interval also contains fixed-pixel origin references.
+    pub(crate) fn snapshot_with_reference_extent(
+        self,
+        sphere: (Vec3, f64),
+        revision: u64,
+    ) -> Option<CameraSnapshot> {
+        self.snapshot_with_clip(sphere, revision, true)
+    }
+    fn snapshot_with_clip(
+        self,
+        sphere: (Vec3, f64),
+        revision: u64,
+        references: bool,
+    ) -> Option<CameraSnapshot> {
+        let (near, far) = self.clip_with_reference_extent(sphere, references);
         let v = self.view();
         let p = self.projection(near, far);
         let convert = |m: Matrix| m.map(|column| column.map(|v| v as f32));
@@ -697,4 +727,47 @@ pub fn multiply(a: Matrix, b: Matrix) -> Matrix {
 #[must_use]
 pub fn transform(m: Matrix, v: [f64; 4]) -> [f64; 4] {
     std::array::from_fn(|r| (0..4).map(|i| m[i][r] * v[i]).sum())
+}
+
+#[cfg(test)]
+mod close_depth_tests {
+    use super::*;
+    #[test]
+    fn close_perspective_retains_depth_before_far_plane() {
+        let mut camera =
+            Camera::look_at([0., 0., 1.1], [0.; 3], SceneViewport::new(0, 0, 1200, 800));
+        camera.set_perspective(true);
+        let (near, far) = camera.clip(([0.; 3], 2.0));
+        // Reproduce the old failure separately from the grid: a valid forward
+        // surface rounded to clear depth, and biased hidden-line depth lost it.
+        let point = [0., 0., -far * 0.9, 1.];
+        let old = camera.projection(1e-7, far).map(|c| c.map(|v| v as f32));
+        let old_clip = newell_render::CameraSnapshot::new(old, old, old, 0)
+            .unwrap()
+            .view_projection();
+        let project_f32 = |m: [[f32; 4]; 4]| {
+            let p = point.map(|v| v as f32);
+            let z: f32 = (0..4).map(|i| m[i][2] * p[i]).sum();
+            let w: f32 = (0..4).map(|i| m[i][3] * p[i]).sum();
+            z / w
+        };
+        assert!(project_f32(old_clip) >= 1.0 - 2.0 / f32::powi(2., 24));
+        let projection = camera.projection(near, far).map(|c| c.map(|v| v as f32));
+        assert!(project_f32(projection) < 1.0 - 2.0 / f32::powi(2., 24));
+        assert!(near < MIN_DISTANCE);
+        for perspective in [false, true] {
+            camera.set_perspective(perspective);
+            let snapshot = camera.snapshot(([0.; 3], 2.), 0).unwrap();
+            let clip = transform(
+                snapshot.view_projection().map(|c| c.map(f64::from)),
+                [0., 0., 1., 1.],
+            );
+            assert!(clip[2] >= 0. && clip[2] < clip[3]);
+            let behind = transform(
+                snapshot.view_projection().map(|c| c.map(f64::from)),
+                [0., 0., 1.2, 1.],
+            );
+            assert!(behind[2] < 0. || behind[3] <= 0.);
+        }
+    }
 }

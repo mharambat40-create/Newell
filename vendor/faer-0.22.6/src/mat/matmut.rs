@@ -1,7 +1,7 @@
 use super::{MatRef, *};
 use crate::internal_prelude::*;
 use crate::utils::bound::{Dim, Partition};
-use crate::{Conj, ContiguousFwd, Idx, IdxInc, unzip, zip};
+use crate::{Conj, ContiguousFwd, Idx, IdxInc};
 use equator::assert;
 use faer_traits::ComplexField;
 use generativity::Guard;
@@ -13,8 +13,10 @@ pub struct Mut<'a, T, Rows = usize, Cols = usize, RStride = isize, CStride = isi
 	pub(super) __marker: PhantomData<&'a mut T>,
 }
 
+#[cfg(feature = "rayon")]
 #[repr(transparent)]
 pub(crate) struct SyncCell<T>(T);
+#[cfg(feature = "rayon")]
 unsafe impl<T> Sync for SyncCell<T> {}
 
 impl<'short, T, Rows: Copy, Cols: Copy, RStride: Copy, CStride: Copy> Reborrow<'short> for Mut<'_, T, Rows, Cols, RStride, CStride> {
@@ -981,6 +983,7 @@ impl<'a, T, Rows: Shape, Cols: Shape, RStride: Stride, CStride: Stride> MatMut<'
 		self.into_const().row_iter().map(|x| unsafe { x.const_cast() })
 	}
 
+	#[cfg(feature = "rayon")]
 	#[inline]
 	pub(crate) unsafe fn as_type<U>(self) -> MatMut<'a, U, Rows, Cols, RStride, CStride> {
 		MatMut::from_raw_parts_mut(

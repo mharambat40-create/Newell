@@ -3009,8 +3009,12 @@ visible/on.
 The Features tree and Elements tree are different views of model information.
 
 Features represents modeling operations in history order, with the built-in
-Origin reference folder first. Startup seeded geometry is listed only in
-Elements; its stable producer identity remains available for dependencies.
+Origin reference folder first. A fresh application document has no modeling
+operations or geometric entities: Elements starts with `Bodies(0)`, and the
+built-in Origin reference folder remains available independently of the model.
+The built-in origin point, axes and planes are viewport references, not model
+entities. Saved documents and geometry created by modeling operations project
+their real entities into Elements.
 
 In a live document, each Elements square targets its row's stable entity ID. A
 Base operation row in Features also has a visibility square when it has real
@@ -3655,6 +3659,17 @@ checkboxes control their corresponding visibility. View Navigator replaces the
 former Navigation cube label; its conditional Gizmo/Cube child follows §41. Color selects semantic
 ink and contour glyphs independently; it changes none of those visibility flags.
 
+Grid Overlay starts unchecked. When checked it shows a subtle antialiased world
+XY grid at Z=0 anchored at the world origin, independent of Color. Dark uses white;
+Light uses dark neutral. Spacing follows 1, 2, 5 × 10ⁿ model units, adapting near
+60–120 physical pixels with blended levels. X=0 and Y=0 remain as thin neutral
+grid lines at every subdivision level; blended levels use maximum coverage so
+their crossing does not become brighter. These grid lines are separate from the
+colored positive origin axes. Orthographic and perspective views share world
+anchoring; dense/distant and near-horizon lines fade. Model surfaces and opaque
+UI obscure the grid. The grid adds no labels, selectable entities, tree rows, fit
+bounds or modeling history, and adds no internal lines to the reference planes.
+
 `[N]ormal to` contains an explicit keyboard mnemonic.
 
 `Reset Cam` resets the camera.
@@ -3710,7 +3725,7 @@ PLM
 
 Datum contains `[S]ketch`, `[Pl]ane`, `[A]xis` and `[P]oint`.
 Sketch and the other unimplemented commands remain UI-only mocks: they close
-the popup without creating geometry, features or Model/BrepKIT operations.
+the popup without creating geometry, features or Model/SolidCore operations.
 
 Current command groups (exact labels, separators and order are in the reference):
 
@@ -4284,8 +4299,11 @@ viewport_height)`, valid in both supported camera projections; multiply by 192
 for the uniform reference scale. Scale only local geometry around world origin,
 never the main camera or origin translation. Perspective depth and orthographic
 zoom therefore preserve camera-relative scale; pan follows projected world
-origin. Reject nonfinite/degenerate transforms and origins with nonpositive
-clip W or clip Z outside [0,W]; do not clamp onto screen edges or camera center.
+origin. Expand the finite camera near/far depth envelope by the same reference
+scale so it contains all scaled plane corners; the actual finite camera frustum,
+viewport bounds and exposed-region scissors still clip references normally.
+Reject nonfinite/degenerate transforms and origins with nonpositive clip W or
+clip Z outside [0,W]; do not clamp onto screen edges or camera center.
 Individual primitives retain main-camera clipping and exposed-UI scissors.
 Scene depth determines each fragment's opacity: unobstructed portions keep the
 existing opacity, while portions behind model surfaces use 20% of that opacity.
@@ -4296,7 +4314,8 @@ References sample a separate depth target generated from actual model surfaces,
 but never write or modify model depth and do not change model transparency.
 Reference uniforms are separate from mesh uniforms. These graphics
 never enter document entities/history, picking, Elements or model-fitting
-bounds; the existing camera clipping envelope may still encompass the origin.
+bounds; the camera clipping envelope encloses the full scaled reference assembly,
+without changing document fitting bounds.
 
 **Corner Gizmo.** Project its world directions orthographically with the
 current camera basis (screen right R, up U, forward F):

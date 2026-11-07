@@ -119,8 +119,8 @@ jobs:
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable action, explicit MSRV below
         with:
           toolchain: "1.88"
-      - name: Check on minimum toolchain
-        run: cargo check --workspace --locked
+      - name: Check all targets and features on minimum toolchain
+        run: cargo check --workspace --all-targets --all-features --locked
 
   pr-title:
     name: PR title

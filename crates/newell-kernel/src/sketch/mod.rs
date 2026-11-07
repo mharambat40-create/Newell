@@ -5,7 +5,5 @@
 // by the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 //! Non-production M5.0 recovery experiments.
-mod curve;
-
-#[cfg(feature = "m50-feasibility")]
-mod rank;
+#[cfg(feature = "rank-research")]
+pub(crate) mod rank;

@@ -1,3 +1,4 @@
+#[cfg(feature = "npy")]
 use crate::prelude::*;
 
 /// npy format conversions

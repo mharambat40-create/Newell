@@ -11,7 +11,7 @@
 //! by row, following `README_UI.md` §2.4–§2.6, §7–§8 and §33: the complete base box is the
 //! authority, a variant replaces only its own line or branch, and no documented sibling
 //! control is ever deleted. [`ExtrudeUi::activate`] applies a pointer or keyboard activation,
-//! identified by [`WidgetId`], to the same state. Nothing here touches geometry, BrepKIT, the
+//! identified by [`WidgetId`], to the same state. Nothing here touches geometry, SolidCore, the
 //! model, real selection or formula evaluation.
 //!
 //! # Rows

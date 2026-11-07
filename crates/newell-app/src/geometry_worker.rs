@@ -6,7 +6,8 @@
 // (at your option) any later version.
 //! One geometry thread, one newest waiting job and a bounded owned-result mailbox.
 use crate::{AppError, DocumentInstanceId};
-use newell_kernel::{NewellGeometry, NewellMesh, NewellShapeKey};
+use newell_kernel::NewellGeometry;
+use newell_kernel::{NewellMesh, NewellShapeKey};
 use newell_model::{
     Direction, Document, EntityId, ExtrudeGeometry, ExtrudeResult, ExtrudeTermination, Feature,
     FeatureId,
@@ -144,8 +145,87 @@ pub enum WorkerReply {
         error: GeometryFailure,
     },
 }
+/// Bounded feasibility service classes in the actual geometry worker.
+#[cfg(any())]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum M50Purpose {
+    Press,
+    Final,
+    Interactive,
+    Motion,
+}
+/// Frozen query/view certificate; motion cannot mutate a queued press.
+#[cfg(any())]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct M50ViewStamp {
+    pub camera: u64,
+    pub layout: u64,
+    pub pointer: u64,
+    pub tool: u64,
+}
+#[cfg(any())]
+type M50Key = (M50Purpose, u64, u64);
+#[cfg(any())]
+fn m50_key(id: GeometryJobId, purpose: M50Purpose) -> M50Key {
+    (purpose, id.document.tree().get(), id.session.0)
+}
+#[cfg(any())]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct M50WorkerMemory {
+    pub queued_recipes: usize,
+    pub continuations: usize,
+    pub terminal_reports: usize,
+    pub retained_native_generations: usize,
+    pub report_owned_bytes: usize,
+}
+#[cfg(any())]
+#[derive(Debug)]
+struct M50Pending {
+    purpose: M50Purpose,
+    view: M50ViewStamp,
+    id: GeometryJobId,
+    input: newell_kernel::M50Input,
+    cancelled: Arc<AtomicBool>,
+    queued: std::time::Instant,
+}
+/// Feature-only numerical/geometry qualification completion from the real worker.
+#[cfg(any())]
+#[derive(Debug)]
+pub struct M50Completion {
+    pub purpose: M50Purpose,
+    pub view: M50ViewStamp,
+    pub slices: usize,
+    pub max_advance_ns: u128,
+    pub cleanup_ns: u128,
+    pub terminated: std::time::Instant,
+    pub id: GeometryJobId,
+    pub report: Result<newell_kernel::M50Report, String>,
+    pub queue_wait_ns: u128,
+    pub worker_ns: u128,
+    pub end_to_end_ns: u128,
+    pub stale: bool,
+}
 #[derive(Debug, Default)]
 struct Inbox {
+    #[cfg(any())]
+    m50_waiting: BTreeMap<M50Key, M50Pending>,
+    #[cfg(any())]
+    m50_active: Option<(
+        M50Key,
+        GeometryJobId,
+        Arc<AtomicBool>,
+        newell_kernel::M50Phase,
+    )>,
+    #[cfg(any())]
+    m50_latest: BTreeMap<M50Key, GeometryJobId>,
+    #[cfg(any())]
+    m50_reply: BTreeMap<M50Key, M50Completion>,
+    #[cfg(any())]
+    m50_retired: Option<M50Completion>,
+    #[cfg(any())]
+    m50_progress: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(any())]
+    m50_memory: M50WorkerMemory,
     #[cfg(test)]
     shutdown: bool,
     waiting: Option<PrepareGeometry>,
@@ -169,6 +249,32 @@ struct StagedGeneration {
 fn transport(message: &str) -> AppError {
     AppError::GeometryTransport(message.into())
 }
+fn service_lifetime_controls(
+    inbox: &mut Inbox,
+    generations: &mut BTreeMap<u64, StagedGeneration>,
+    committed: &mut Option<NewellGeometryToken>,
+) {
+    if let Some(document) = inbox.replacement.take() {
+        generations.retain(|_, state| state.token.document == document);
+        *committed = committed.filter(|token: &NewellGeometryToken| token.document == document);
+    }
+    if let Some(token) = inbox.retain.take()
+        && generations
+            .get(&token.generation.0)
+            .is_some_and(|state| state.token == token)
+    {
+        *committed = Some(token);
+    }
+    for serial in std::mem::take(&mut inbox.release) {
+        if committed.is_none_or(|token| token.generation.0 != serial) {
+            generations.remove(&serial);
+        }
+    }
+    #[cfg(any())]
+    {
+        inbox.m50_memory.retained_native_generations = generations.len();
+    }
+}
 impl GeometryWorker {
     /// Starts one dedicated worker. The wake callback normally posts a winit user event.
     ///
@@ -186,6 +292,8 @@ impl GeometryWorker {
         let alive = Arc::new(AtomicBool::new(true));
         let worker_alive = Arc::clone(&alive);
         let (wake, receiver) = mpsc::sync_channel(1);
+        #[cfg(any())]
+        let candidate_wake = wake.clone();
         std::thread::Builder::new()
             .name("newell-geometry".into())
             .spawn(move || {
@@ -206,6 +314,23 @@ impl GeometryWorker {
                 let mut generations: BTreeMap<u64, StagedGeneration> = BTreeMap::new();
                 let mut committed = None;
                 let mut next_generation = 0u64;
+                #[cfg(any())]
+                struct Candidate {
+                    id: GeometryJobId,
+                    purpose: M50Purpose,
+                    view: M50ViewStamp,
+                    cancelled: Arc<AtomicBool>,
+                    job: newell_kernel::M50Job,
+                    queued: std::time::Instant,
+                    began: std::time::Instant,
+                    queue_ns: u128,
+                    slices: usize,
+                    max_advance_ns: u128,
+                }
+                #[cfg(any())]
+                let mut candidates: BTreeMap<M50Key, Candidate> = BTreeMap::new();
+                #[cfg(any())]
+                let mut last_session = [(0_u64, 0_u64); 4];
                 while receiver.recv().is_ok() {
                     let job = {
                         let Ok(mut inbox) = worker_inbox.lock() else {
@@ -215,25 +340,197 @@ impl GeometryWorker {
                         if inbox.shutdown {
                             break;
                         }
-                        if let Some(document) = inbox.replacement.take() {
-                            generations.retain(|_, state| state.token.document == document);
-                            committed = committed
-                                .filter(|token: &NewellGeometryToken| token.document == document);
-                        }
-                        if let Some(token) = inbox.retain.take()
-                            && generations
-                                .get(&token.generation.0)
-                                .is_some_and(|state| state.token == token)
-                        {
-                            committed = Some(token);
-                        }
-                        for serial in std::mem::take(&mut inbox.release) {
-                            if committed.is_none_or(|token| token.generation.0 != serial) {
-                                generations.remove(&serial);
-                            }
-                        }
+                        service_lifetime_controls(&mut inbox, &mut generations, &mut committed);
                         inbox.waiting.take()
                     };
+                    // Controls precede every candidate slice. Normal M4 controls
+                    // retain their existing authority and owned native lifetime.
+                    #[cfg(any())]
+                    {
+                        let mut inbox = match worker_inbox.lock() {
+                            Ok(inbox) => inbox,
+                            Err(_) => break,
+                        };
+                        #[cfg(test)]
+                        if inbox.shutdown {
+                            break;
+                        }
+                        if let Some(document) = inbox.replacement {
+                            candidates.retain(|_, c| c.id.document == document);
+                        }
+                        candidates.retain(|key, _| inbox.m50_latest.contains_key(key));
+                        let pending = std::mem::take(&mut inbox.m50_waiting);
+                        for (key, pending) in pending {
+                            if let Some(old) = candidates.remove(&key) {
+                                old.cancelled.store(true, Ordering::Release);
+                                let began = old.began;
+                                let id = old.id;
+                                let purpose = old.purpose;
+                                let view = old.view;
+                                let queued = old.queued;
+                                let queue_ns = old.queue_ns;
+                                let slices = old.slices;
+                                let max_advance_ns = old.max_advance_ns;
+                                let cleanup = std::time::Instant::now();
+                                drop(old);
+                                let cleanup_ns = cleanup.elapsed().as_nanos();
+                                inbox.m50_retired = Some(M50Completion {
+                                    id,
+                                    purpose,
+                                    view,
+                                    slices,
+                                    max_advance_ns,
+                                    cleanup_ns,
+                                    terminated: std::time::Instant::now(),
+                                    report: Err("superseded before next slice".into()),
+                                    queue_wait_ns: queue_ns,
+                                    worker_ns: began.elapsed().as_nanos(),
+                                    end_to_end_ns: queued.elapsed().as_nanos(),
+                                    stale: true,
+                                });
+                            }
+                            let began = std::time::Instant::now();
+                            let job = newell_kernel::M50Job::new_identified(
+                                pending.input,
+                                newell_kernel::RankJobIdentity {
+                                    source: pending.id.document.tree().get(),
+                                    source_revision: pending.id.base_revision,
+                                    parameter_revision: pending.id.parameter_epoch,
+                                    matrix_revision: pending.id.draft_revision,
+                                    scaling_revision: 0,
+                                },
+                                1 << 30,
+                            );
+                            candidates.insert(
+                                key,
+                                Candidate {
+                                    id: pending.id,
+                                    purpose: pending.purpose,
+                                    view: pending.view,
+                                    cancelled: pending.cancelled,
+                                    job,
+                                    queued: pending.queued,
+                                    began,
+                                    queue_ns: pending.queued.elapsed().as_nanos(),
+                                    slices: 0,
+                                    max_advance_ns: 0,
+                                },
+                            );
+                        }
+                        drop(inbox);
+                        // One real kernel advance per class per round, cyclic
+                        // session order within the class. No surrogate backend.
+                        for (class, purpose) in [
+                            M50Purpose::Press,
+                            M50Purpose::Final,
+                            M50Purpose::Interactive,
+                            M50Purpose::Motion,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let keys: Vec<_> = candidates
+                                .keys()
+                                .filter(|key| key.0 == purpose)
+                                .copied()
+                                .collect();
+                            let key = keys
+                                .iter()
+                                .find(|key| (key.1, key.2) > last_session[class])
+                                .or_else(|| keys.first())
+                                .copied();
+                            if let Ok(mut inbox) = worker_inbox.lock() {
+                                service_lifetime_controls(
+                                    &mut inbox,
+                                    &mut generations,
+                                    &mut committed,
+                                );
+                                candidates.retain(|key, _| inbox.m50_latest.contains_key(key));
+                            }
+                            let Some(key) = key else {
+                                continue;
+                            };
+                            last_session[class] = (key.1, key.2);
+                            let Some(mut candidate) = candidates.remove(&key) else {
+                                continue;
+                            };
+                            if let Ok(mut inbox) = worker_inbox.lock() {
+                                inbox.m50_progress = Some(candidate.job.progress_counter());
+                                inbox.m50_active = Some((
+                                    key,
+                                    candidate.id,
+                                    Arc::clone(&candidate.cancelled),
+                                    candidate.job.phase(),
+                                ));
+                            }
+                            wake_completion();
+                            let phase = std::time::Instant::now();
+                            let result = candidate.job.advance(&candidate.cancelled);
+                            candidate.slices += 1;
+                            candidate.max_advance_ns =
+                                candidate.max_advance_ns.max(phase.elapsed().as_nanos());
+                            let mut inbox = match worker_inbox.lock() {
+                                Ok(inbox) => inbox,
+                                Err(_) => break,
+                            };
+                            inbox.m50_active = None;
+                            inbox.m50_progress = None;
+                            match result {
+                                Ok(None) => {
+                                    candidates.insert(key, candidate);
+                                }
+                                terminal => {
+                                    let mut report = terminal
+                                        .map(|report| {
+                                            report.ok_or_else(|| "missing terminal".to_owned())
+                                        })
+                                        .map_err(|error| error.to_string())
+                                        .and_then(|r| r);
+                                    if candidate.cancelled.load(Ordering::Acquire)
+                                        && let Ok(report) = &mut report
+                                    {
+                                        report.status = newell_kernel::M50Status::Cancelled;
+                                        report.rank = None;
+                                        report.contacts = 0;
+                                    }
+                                    let cleanup = std::time::Instant::now();
+                                    drop(candidate.job);
+                                    let cleanup_ns = cleanup.elapsed().as_nanos();
+                                    let completion = M50Completion {
+                                        id: candidate.id,
+                                        purpose: candidate.purpose,
+                                        view: candidate.view,
+                                        slices: candidate.slices,
+                                        max_advance_ns: candidate.max_advance_ns,
+                                        cleanup_ns,
+                                        terminated: std::time::Instant::now(),
+                                        report,
+                                        queue_wait_ns: candidate.queue_ns,
+                                        worker_ns: candidate.began.elapsed().as_nanos(),
+                                        end_to_end_ns: candidate.queued.elapsed().as_nanos(),
+                                        stale: false,
+                                    };
+                                    if inbox.m50_latest.get(&key) == Some(&candidate.id) {
+                                        inbox.m50_reply.insert(key, completion);
+                                    } else {
+                                        inbox.m50_retired = Some(M50Completion {
+                                            stale: true,
+                                            ..completion
+                                        });
+                                    }
+                                }
+                            }
+                            drop(inbox);
+                            wake_completion();
+                        }
+                        if !candidates.is_empty() {
+                            let _ = candidate_wake.try_send(());
+                        }
+                        if let Ok(mut inbox) = worker_inbox.lock() {
+                            inbox.m50_memory.continuations = candidates.len();
+                        }
+                    }
+
                     let Some(job) = job else {
                         continue;
                     };
@@ -330,6 +627,168 @@ impl GeometryWorker {
             Err(TrySendError::Disconnected(())) => Err(transport("worker has stopped")),
         }
     }
+    /// Submit one bounded, latest-only candidate recipe to this actual worker.
+    #[cfg(any())]
+    pub fn submit_m50(
+        &self,
+        id: GeometryJobId,
+        input: newell_kernel::M50Input,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), AppError> {
+        self.submit_m50_class(
+            id,
+            M50Purpose::Interactive,
+            M50ViewStamp::default(),
+            input,
+            cancel,
+        )
+    }
+    /// Bounded per-session transport: frozen press/final requests cannot be
+    /// replaced by motion, and each replaceable class has one newest recipe.
+    #[cfg(any())]
+    pub fn submit_m50_class(
+        &self,
+        id: GeometryJobId,
+        purpose: M50Purpose,
+        view: M50ViewStamp,
+        input: newell_kernel::M50Input,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), AppError> {
+        if id.worker_epoch != self.epoch || !self.is_alive() {
+            return Err(transport("wrong or stopped M50 worker lifetime"));
+        }
+        let key = m50_key(id, purpose);
+        let mut inbox = self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?;
+        if matches!(purpose, M50Purpose::Press | M50Purpose::Final)
+            && inbox.m50_latest.contains_key(&key)
+        {
+            return Err(transport("frozen request already pending"));
+        }
+        if let Some((active, _, flag, _)) = &inbox.m50_active
+            && *active == key
+        {
+            flag.store(true, Ordering::Release);
+        }
+        if let Some(old) = inbox.m50_waiting.remove(&key) {
+            old.cancelled.store(true, Ordering::Release);
+        }
+        inbox.m50_latest.insert(key, id);
+        inbox.m50_reply.remove(&key);
+        inbox.m50_waiting.insert(
+            key,
+            M50Pending {
+                id,
+                purpose,
+                view,
+                input,
+                cancelled: cancel,
+                queued: std::time::Instant::now(),
+            },
+        );
+        drop(inbox);
+        self.signal()
+    }
+    /// Closing a live feasibility session releases all four bounded classes.
+    #[cfg(any())]
+    pub fn close_m50_session(
+        &self,
+        document: DocumentInstanceId,
+        session: newell_ui::CommandInputSessionId,
+    ) -> Result<(), AppError> {
+        let mut inbox = self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?;
+        let same = |key: &M50Key| key.1 == document.tree().get() && key.2 == session.0;
+        if let Some((key, _, flag, _)) = &inbox.m50_active
+            && same(key)
+        {
+            flag.store(true, Ordering::Release);
+        }
+        inbox.m50_waiting.retain(|key, pending| {
+            if same(key) {
+                pending.cancelled.store(true, Ordering::Release);
+                false
+            } else {
+                true
+            }
+        });
+        inbox.m50_latest.retain(|key, _| !same(key));
+        inbox.m50_reply.retain(|key, _| !same(key));
+        drop(inbox);
+        self.signal()
+    }
+    /// Real retained-owner counts, separate from allocation/admission estimates.
+    #[cfg(any())]
+    pub fn m50_memory(&self) -> Result<M50WorkerMemory, AppError> {
+        let inbox = self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?;
+        let mut memory = inbox.m50_memory;
+        memory.queued_recipes = inbox.m50_waiting.len();
+        memory.terminal_reports = inbox.m50_reply.len();
+        memory.report_owned_bytes = inbox
+            .m50_reply
+            .values()
+            .filter_map(|r| r.report.as_ref().ok())
+            .filter_map(|r| r.rank_provenance.as_ref())
+            .map(|p| p.owned_bytes())
+            .sum();
+        Ok(memory)
+    }
+    /// Observe phase entry for in-flight cancellation experiments, no backend types.
+    #[cfg(any())]
+    pub fn m50_activity(
+        &self,
+    ) -> Result<Option<(GeometryJobId, newell_kernel::M50Phase)>, AppError> {
+        Ok(self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .m50_active
+            .as_ref()
+            .map(|(_, id, _, phase)| (*id, *phase)))
+    }
+    /// Backend cancellation-poll count; positive values demonstrate real work
+    /// inside the numerical phase rather than only queue preparation.
+    #[cfg(any())]
+    pub fn m50_progress(&self) -> Result<usize, AppError> {
+        Ok(self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .m50_progress
+            .as_ref()
+            .map_or(0, |count| count.load(Ordering::Acquire)))
+    }
+    /// Drain a latest matching candidate report once. It has no document authority.
+    #[cfg(any())]
+    pub fn drain_m50(&self) -> Result<Option<M50Completion>, AppError> {
+        let mut inbox = self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?;
+        let Some(key) = inbox.m50_reply.keys().next().copied() else {
+            return Ok(None);
+        };
+        let report = inbox.m50_reply.remove(&key);
+        inbox.m50_latest.remove(&key);
+        Ok(report)
+    }
+    /// Retired-work diagnostics, never a consumable numerical/geometry result.
+    #[cfg(any())]
+    pub fn drain_m50_retired(&self) -> Result<Option<M50Completion>, AppError> {
+        Ok(self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .m50_retired
+            .take())
+    }
     /// Coalesces waiting work. Replaced inputs have never allocated native geometry.
     ///
     /// # Errors
@@ -402,6 +861,27 @@ impl GeometryWorker {
             .lock()
             .map_err(|_| transport("worker mailbox failed"))?;
         inbox.replacement = Some(document);
+        #[cfg(any())]
+        {
+            if let Some((_, id, flag, _)) = &inbox.m50_active
+                && id.document != document
+            {
+                flag.store(true, Ordering::Release);
+            }
+            inbox.m50_waiting.retain(|_, pending| {
+                if pending.id.document != document {
+                    pending.cancelled.store(true, Ordering::Release);
+                    false
+                } else {
+                    true
+                }
+            });
+            inbox.m50_latest.retain(|_, id| id.document == document);
+            inbox
+                .m50_reply
+                .retain(|_, report| report.id.document == document);
+        }
+
         if inbox
             .waiting
             .as_ref()
@@ -1450,6 +1930,46 @@ mod tests {
         is_send::<PrepareGeometry>();
         is_send::<WorkerReply>();
         is_send::<PreparedDocument>();
+    }
+    #[test]
+    fn empty_document_bootstrap_is_empty_and_first_base_operation_builds_scene_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::geometry::GeometryGeneration;
+        use newell_model::parameters::ParameterDraftOwner;
+
+        let mut session = DocumentSession::default();
+        let initial_parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        let initial_request = job(
+            &session,
+            1,
+            DocumentEdit::ParameterDefinitions,
+            initial_parameters,
+        );
+        let (_, empty_scene, _) = prepare(&initial_request, GeometryGeneration(1))?;
+        assert!(empty_scene.items.is_empty());
+
+        let feature = session.add_base_solid("First Solid")?;
+        let projection = crate::document::project_document(session.identity(), session.document())?;
+        assert_eq!(projection.features.len(), 1);
+        assert_eq!(projection.features[0].name, "First Solid");
+        assert_eq!(projection.elements.len(), 1);
+
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        let request = job(&session, 2, DocumentEdit::ParameterDefinitions, parameters);
+        let (_, scene, _) = prepare(&request, GeometryGeneration(2))?;
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].mesh.face_count(), 6);
+        let entity = session
+            .document()
+            .feature(feature)
+            .ok_or("first feature")?
+            .outputs()[0];
+        assert_eq!(projection.elements[0].id.get(), entity.get());
+        Ok(())
     }
     #[test]
     fn token_rejects_another_finalized_result_with_the_same_document_and_generation()
@@ -3087,6 +3607,703 @@ mod tests {
             })
         ));
         assert_eq!(session.revision(), 0);
+        Ok(())
+    }
+    #[cfg(any())]
+    #[test]
+    fn revision6_completion_worker_liveness_wake_is_hint_not_exit_certificate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::parameters::ParameterDraftOwner;
+        let (sender, wake) = mpsc::channel();
+        let (permit, resume) = mpsc::channel();
+        let first = AtomicBool::new(true);
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+            if first.swap(false, Ordering::AcqRel) {
+                let _ = resume.recv_timeout(Duration::from_secs(10));
+            }
+        })?;
+        let mut session = DocumentSession::default();
+        session.add_base_solid("Liveness regression")?;
+        session.bind_geometry_worker(1)?;
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &session,
+            1,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        wake.recv_timeout(Duration::from_secs(10))?;
+        worker.stop_for_test()?;
+        // Deterministically reproduce the old assertion's false assumption:
+        // the wake was sent before stop, while the real worker is still alive.
+        assert!(worker.is_alive());
+        permit.send(())?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.is_alive() {
+            wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
+        }
+        assert!(!worker.is_alive());
+        assert!(worker.drain().is_err());
+        assert_eq!(session.document().features().len(), 1);
+        println!(
+            "R6_LIVENESS,queued_wake_before_shutdown=true,alive_after_old_wake=true,actual_exit_observed=true,document_unchanged=true"
+        );
+        Ok(())
+    }
+    #[cfg(any())]
+    #[test]
+    fn revision6_candidates_use_real_worker_transport_cancel_and_normal_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_kernel::{M50Input, M50Phase, M50Status};
+        use newell_model::parameters::ParameterDraftOwner;
+        use std::time::Instant;
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        session.add_base_solid("M50 retained base")?;
+        session.bind_geometry_worker(1)?;
+        let source = session.document().clone();
+        let make_id = |session: &DocumentSession,
+                       serial|
+         -> Result<GeometryJobId, Box<dyn std::error::Error>> {
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::Document)?;
+            Ok(job(
+                session,
+                serial,
+                DocumentEdit::ParameterDefinitions,
+                parameters,
+            )
+            .id)
+        };
+        let take_probe =
+            |worker: &GeometryWorker| -> Result<M50Completion, Box<dyn std::error::Error>> {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                loop {
+                    if let Some(reply) = worker.drain_m50()? {
+                        return Ok(reply);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("M50 completion timeout".into());
+                    }
+                    let _ = wake.recv_timeout(Duration::from_millis(10));
+                }
+            };
+        let geometry = || M50Input::CurveLine {
+            degree: 2,
+            controls: vec![[-1., 1.], [0., -1.], [1., 1.]],
+            weights: vec![1.; 3],
+            domain: [2., 6.],
+            line: [[-2., 0.], [2., 0.]],
+            tolerance: 1e-7,
+        };
+        let id = make_id(&session, 1)?;
+        worker.submit_m50(
+            id,
+            M50Input::Rank {
+                unknowns: 64,
+                grid: true,
+                dependent: true,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        let complete = take_probe(&worker)?;
+        let report = complete.report.map_err(|e| format!("probe {e}"))?;
+        assert_eq!(report.status, M50Status::Complete);
+        assert_eq!(report.rank, Some(62));
+        assert!(report.native_qr_max_ns > 0);
+        println!(
+            "R6_WORKER_RANK,queue_ns={},worker_ns={},e2e_ns={},report={report:?}",
+            complete.queue_wait_ns, complete.worker_ns, complete.end_to_end_ns
+        );
+        worker.submit_m50(
+            make_id(&session, 2)?,
+            geometry(),
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        let complete = take_probe(&worker)?;
+        let report = complete.report.map_err(|e| format!("geometry {e}"))?;
+        assert_eq!(report.status, M50Status::Complete);
+        assert_eq!(report.contacts, 1);
+        assert!(report.exact_primitive_max_ns > 0);
+        assert_eq!(session.document(), &source);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let id = make_id(&session, 3)?;
+        worker.submit_m50(
+            id,
+            M50Input::Rank {
+                unknowns: 10_000,
+                grid: true,
+                dependent: true,
+            },
+            Arc::clone(&cancel),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if worker.m50_activity()? == Some((id, M50Phase::Rank)) && worker.m50_progress()? >= 256
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("no in-flight numerical progress".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        let cancel_at = Instant::now();
+        cancel.store(true, Ordering::Release);
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        worker.submit(job(
+            &session,
+            4,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        ))?;
+        let cancelled = take_probe(&worker)?;
+        let ack_ns = cancel_at.elapsed().as_nanos();
+        assert_eq!(cancelled.id, id);
+        assert_eq!(
+            cancelled.report.map_err(|e| format!("cancel {e}"))?.status,
+            M50Status::Cancelled
+        );
+        let normal = loop {
+            if let Some(reply) = worker.drain()? {
+                match reply {
+                    WorkerReply::Ready(ready) => break *ready,
+                    WorkerReply::Failed { error, .. } => return Err(error.into()),
+                }
+            }
+            if cancel_at.elapsed() > Duration::from_secs(20) {
+                return Err("normal preparation did not recover".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(5));
+        };
+        let recovery_ns = cancel_at.elapsed().as_nanos();
+        assert!(!normal.scene.items.is_empty());
+        let token = normal.token;
+        session.accept_prepared(session.version(), normal.prepared, token)?;
+        worker.retain_committed(token)?;
+        println!(
+            "R6_WORKER_CANCEL,inside_rank=true,polls_min=256,ack_observed_ns={ack_ns},normal_native_ready_ns={recovery_ns},normal_commit=true"
+        );
+        let old = make_id(&session, 5)?;
+        worker.submit_m50(
+            old,
+            M50Input::Rank {
+                unknowns: 10_000,
+                grid: true,
+                dependent: true,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if worker.m50_activity()? == Some((old, M50Phase::Rank))
+                && worker.m50_progress()? >= 256
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("no stale-job progress".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        let latest = make_id(&session, 6)?;
+        worker.submit_m50(latest, geometry(), Arc::new(AtomicBool::new(false)))?;
+        let result = take_probe(&worker)?;
+        assert_eq!(result.id, latest);
+        assert!(!result.stale);
+        assert_eq!(
+            result.report.map_err(|e| format!("latest {e}"))?.contacts,
+            1
+        );
+        let retired = worker
+            .drain_m50_retired()?
+            .ok_or("missing retired diagnostic")?;
+        assert_eq!(retired.id, old);
+        assert!(retired.stale);
+        assert_eq!(session.geometry_token(), Some(token));
+        println!(
+            "R6_WORKER_STALE,old={},latest={},retired_worker_ns={},committed_token_preserved=true",
+            old.serial, latest.serial, retired.worker_ns
+        );
+        Ok(())
+    }
+    #[cfg(any())]
+    #[test]
+    fn revision6_completion_worker_real_input_fairness_and_termination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{
+            camera::Camera,
+            controller::{M50SceneQuery, ShellController},
+            navigation::Navigation,
+        };
+        use newell_kernel::{M50Input, M50Status};
+        use newell_model::parameters::ParameterDraftOwner;
+        use newell_render::SceneViewport;
+        use newell_ui::{GridMetrics, UiPoint};
+        use std::time::Instant;
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        session.add_base_solid("Service base")?;
+        session.bind_geometry_worker(1)?;
+        let make_id = |serial, window| -> Result<GeometryJobId, Box<dyn std::error::Error>> {
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::Document)?;
+            let mut id = job(
+                &session,
+                serial,
+                DocumentEdit::ParameterDefinitions,
+                parameters,
+            )
+            .id;
+            id.session = CommandInputSessionId(window);
+            Ok(id)
+        };
+        let metrics = GridMetrics::new(4, 9)?;
+        let mut shell = ShellController::new(120, 60, metrics)?;
+        let rect = shell.scene_viewport();
+        let viewport = SceneViewport {
+            x: rect.col() * metrics.cell_width_px(),
+            y: rect.row() * metrics.cell_height_px(),
+            width: rect.width() * metrics.cell_width_px(),
+            height: rect.height() * metrics.cell_height_px(),
+        };
+        let navigation = Navigation::new(Camera::look_at([0., 0., 5.], [0.; 3], viewport));
+        let point = UiPoint {
+            x: viewport.x + viewport.width / 2,
+            y: viewport.y + viewport.height / 2,
+        };
+        let surface = (120 * metrics.cell_width_px(), 60 * metrics.cell_height_px());
+        let query = || M50Input::CurvePick {
+            degree: 2,
+            controls: vec![[-1., 1.], [0., -1.], [1., 1.]],
+            weights: vec![1.; 3],
+            domain: [0., 1.],
+            point: [99., 99.],
+            radius: 0.01,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let background = make_id(1, 1)?;
+        worker.submit_m50_class(
+            background,
+            M50Purpose::Interactive,
+            M50ViewStamp::default(),
+            M50Input::RankFront {
+                unknowns: 10_000,
+                grid: true,
+                dependent: false,
+            },
+            Arc::clone(&cancel),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while worker.m50_progress()? < 256 {
+            if Instant::now() > deadline {
+                return Err("no actual frontal work".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        let press = make_id(2, 1)?;
+        let frozen = M50ViewStamp {
+            camera: 1,
+            layout: 1,
+            pointer: 17,
+            tool: 1,
+        };
+        let press_at = Instant::now();
+        assert!(shell.route_m50_scene_query(
+            &navigation,
+            &worker,
+            M50SceneQuery {
+                id: press,
+                purpose: M50Purpose::Press,
+                view: frozen,
+                position: point,
+                surface,
+                input: query(),
+                cancelled: Arc::new(AtomicBool::new(false))
+            }
+        )?);
+        assert!(
+            worker
+                .submit_m50_class(
+                    make_id(3, 1)?,
+                    M50Purpose::Press,
+                    frozen,
+                    query(),
+                    Arc::new(AtomicBool::new(false))
+                )
+                .is_err()
+        );
+        let final_id = make_id(4, 1)?;
+        worker.submit_m50_class(
+            final_id,
+            M50Purpose::Final,
+            frozen,
+            M50Input::RankFront {
+                unknowns: 64,
+                grid: true,
+                dependent: false,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        let other = make_id(5, 2)?;
+        worker.submit_m50_class(
+            other,
+            M50Purpose::Interactive,
+            frozen,
+            M50Input::RankFront {
+                unknowns: 64,
+                grid: false,
+                dependent: false,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        let mut input_ns = Vec::new();
+        let mut latest = make_id(10, 1)?;
+        for sequence in 0..500 {
+            latest = make_id(10 + sequence, 1)?;
+            let began = Instant::now();
+            assert!(shell.route_m50_scene_query(
+                &navigation,
+                &worker,
+                M50SceneQuery {
+                    id: latest,
+                    purpose: M50Purpose::Motion,
+                    view: M50ViewStamp {
+                        pointer: 100 + sequence,
+                        ..frozen
+                    },
+                    position: UiPoint {
+                        x: point.x + (sequence % 2) as u32,
+                        y: point.y
+                    },
+                    surface,
+                    input: query(),
+                    cancelled: Arc::new(AtomicBool::new(false))
+                }
+            )?);
+            input_ns.push(began.elapsed().as_nanos());
+        }
+        shell.pointer_released();
+        let cancelled_at = Instant::now();
+        cancel.store(true, Ordering::Release);
+        let after_cancel = make_id(701, 2)?;
+        let mut other_shell = ShellController::new(120, 60, metrics)?;
+        assert!(other_shell.route_m50_scene_query(
+            &navigation,
+            &worker,
+            M50SceneQuery {
+                id: after_cancel,
+                purpose: M50Purpose::Press,
+                view: M50ViewStamp {
+                    pointer: 800,
+                    ..frozen
+                },
+                position: point,
+                surface,
+                input: query(),
+                cancelled: Arc::new(AtomicBool::new(false)),
+            }
+        )?);
+        let parameters = session
+            .document()
+            .begin_parameter_draft(ParameterDraftOwner::Document)?;
+        let mut normal_job = job(
+            &session,
+            700,
+            DocumentEdit::ParameterDefinitions,
+            parameters,
+        );
+        normal_job.id.session = CommandInputSessionId(2);
+        worker.submit(normal_job)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut reports = BTreeMap::new();
+        let mut normal = None;
+        let mut acknowledgement = None;
+        let mut normal_ready = None;
+        while reports.len() < 6 || normal.is_none() {
+            while let Some(report) = worker.drain_m50()? {
+                if report.id == background {
+                    acknowledgement = Some(cancelled_at.elapsed());
+                }
+                if [
+                    background.serial,
+                    press.serial,
+                    final_id.serial,
+                    other.serial,
+                    latest.serial,
+                    after_cancel.serial,
+                ]
+                .contains(&report.id.serial)
+                {
+                    reports.insert(report.id.serial, report);
+                }
+            }
+            if normal.is_none()
+                && let Some(reply) = worker.drain()?
+            {
+                match reply {
+                    WorkerReply::Ready(ready) => {
+                        normal = Some(*ready);
+                        normal_ready = Some(cancelled_at.elapsed());
+                    }
+                    WorkerReply::Failed { error, .. } => return Err(error.into()),
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(format!("service did not settle; reports={:?}", reports.keys()).into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        let background = reports.get(&background.serial).ok_or("background")?;
+        assert_eq!(
+            background.report.as_ref().map_err(|e| e.to_owned())?.status,
+            M50Status::Cancelled
+        );
+        let actual_release = background
+            .terminated
+            .saturating_duration_since(cancelled_at);
+        let observed_ack = acknowledgement.ok_or("cancel acknowledgement")?;
+        let pressed = reports.get(&press.serial).ok_or("press")?;
+        let press_report = pressed.report.as_ref().map_err(|e| e.to_owned())?;
+        assert_eq!(pressed.view, frozen);
+        assert_eq!(pressed.purpose, M50Purpose::Press);
+        assert_eq!(press_report.status, M50Status::Complete);
+        assert_eq!(press_report.contacts, 1);
+        assert!(!press_report.query_ambiguous);
+        let next_query = reports
+            .get(&after_cancel.serial)
+            .ok_or("post-cancel query")?;
+        assert_eq!(
+            next_query
+                .report
+                .as_ref()
+                .map_err(|e| e.to_owned())?
+                .contacts,
+            1
+        );
+        println!(
+            "R6_POST_CANCEL,next_query_e2e_ns={},next_edit_ready_ns={},logical_ack_ns={},actual_termination_ns={}",
+            next_query.end_to_end_ns,
+            normal_ready.ok_or("normal ready time")?.as_nanos(),
+            observed_ack.as_nanos(),
+            actual_release.as_nanos()
+        );
+        assert_eq!(
+            reports
+                .get(&final_id.serial)
+                .ok_or("final")?
+                .report
+                .as_ref()
+                .map_err(|e| e.to_owned())?
+                .rank,
+            Some(64)
+        );
+        assert_eq!(
+            reports
+                .get(&other.serial)
+                .ok_or("other")?
+                .report
+                .as_ref()
+                .map_err(|e| e.to_owned())?
+                .rank,
+            Some(64)
+        );
+        assert_eq!(
+            reports.get(&latest.serial).ok_or("motion")?.view.pointer,
+            599
+        );
+        let normal = normal.ok_or("normal M4")?;
+        assert!(!normal.scene.items.is_empty());
+        let token = normal.token;
+        session.accept_prepared(session.version(), normal.prepared, token)?;
+        worker.retain_committed(token)?;
+        input_ns.sort_unstable();
+        let input_p95 = input_ns[474];
+        let input_p99 = input_ns[494];
+        println!(
+            "R6_SERVICE,actual_controller_and_camera=true,motion_inputs=500,frozen_press_ns={},final_e2e_ns={},other_session_e2e_ns={},cancel_actual_release_ns={},cancel_observed_ack_ns={},cancel_cleanup_ns={},cancel_max_advance_ns={},input_p95_ns={input_p95},input_p99_ns={input_p99},elapsed_since_press_ns={},normal_m4_committed=true",
+            pressed.end_to_end_ns,
+            reports.get(&final_id.serial).ok_or("final")?.end_to_end_ns,
+            reports.get(&other.serial).ok_or("other")?.end_to_end_ns,
+            actual_release.as_nanos(),
+            observed_ack.as_nanos(),
+            background.cleanup_ns,
+            background.max_advance_ns,
+            press_at.elapsed().as_nanos()
+        );
+        drop(reports);
+        worker.close_m50_session(session.identity(), CommandInputSessionId(1))?;
+        worker.close_m50_session(session.identity(), CommandInputSessionId(2))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let memory = worker.m50_memory()?;
+            if memory.continuations == 0
+                && memory.queued_recipes == 0
+                && memory.terminal_reports == 0
+                && memory.retained_native_generations == 1
+            {
+                assert_eq!(memory.report_owned_bytes, 0);
+                println!("R6_SERVICE_SETTLED,{memory:?}");
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err("service owners did not settle".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+    #[cfg(any())]
+    #[test]
+    fn revision6_completion_worker_native_retention_1000_cycles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::parameters::{ParameterDraftOwner, ParameterEdit, ParameterOwner};
+        use std::time::Instant;
+        let (sender, wake) = mpsc::channel();
+        let worker = GeometryWorker::start(1, move || {
+            let _ = sender.send(());
+        })?;
+        let mut session = DocumentSession::default();
+        session.add_base_solid("Retention base")?;
+        session.bind_geometry_worker(1)?;
+        let mut parameter = None;
+        let mut serial = 1;
+        let mut current = None;
+        let take_native =
+            |worker: &GeometryWorker| -> Result<WorkerReply, Box<dyn std::error::Error>> {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if let Some(reply) = worker.drain()? {
+                        return Ok(reply);
+                    }
+                    if Instant::now() > deadline {
+                        return Err("retention completion timeout".into());
+                    }
+                    let _ = wake.recv_timeout(Duration::from_millis(1));
+                }
+            };
+        let profile = |stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+            if let Ok(directory) = std::env::var("NEWELL_M50_ALLOC_PROFILE") {
+                std::fs::create_dir_all(&directory)?;
+                let output = std::process::Command::new("/usr/bin/heap")
+                    .args(["-s", &std::process::id().to_string()])
+                    .output()?;
+                let mut bytes = output.stdout;
+                bytes.extend(output.stderr);
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("retention-{stage}.heap")),
+                    bytes,
+                )?;
+                println!("R6_HEAP,stage={stage},status={}", output.status);
+            }
+            Ok(())
+        };
+        let mut retained_old = None;
+        let began = Instant::now();
+        let mut peak_generations = 0;
+        for cycle in 0..1050 {
+            // Real inverse/reapplied parameter edits exercise native lifetimes.
+            // They are NOT a substitute for a not-yet-implemented Undo journal.
+            for value in [2, 1, 2] {
+                let mut parameters = session
+                    .document()
+                    .begin_parameter_draft(ParameterDraftOwner::Document)?;
+                parameter = Some(parameters.stage_edit(ParameterEdit {
+                    parameter,
+                    owner: ParameterOwner::Document,
+                    source: format!("#M50 := {value}mm"),
+                    destination: newell_model::QuantityKind::Length,
+                    source_edit: None,
+                    source_origins: None,
+                })?);
+                worker.submit(job(
+                    &session,
+                    serial,
+                    DocumentEdit::ParameterDefinitions,
+                    parameters,
+                ))?;
+                serial += 1;
+                let WorkerReply::Ready(ready) = take_native(&worker)? else {
+                    return Err("retention edit failed".into());
+                };
+                assert!(!ready.scene.items.is_empty());
+                let token = ready.token;
+                session.accept_prepared(session.version(), ready.prepared, token)?;
+                worker.retain_committed(token)?;
+                if let Some(old) = current.replace(token)
+                    && Some(old) != retained_old
+                {
+                    worker.release(old)?;
+                }
+            }
+            let version = session.version();
+            let token = session.geometry_token();
+            let parameters = session
+                .document()
+                .begin_parameter_draft(ParameterDraftOwner::Document)?;
+            let request = job(
+                &session,
+                serial,
+                DocumentEdit::ParameterDefinitions,
+                parameters,
+            );
+            serial += 1;
+            request.cancelled.store(true, Ordering::Release);
+            worker.submit(request)?;
+            assert!(matches!(
+                take_native(&worker)?,
+                WorkerReply::Failed {
+                    error: GeometryFailure::Cancelled,
+                    ..
+                }
+            ));
+            assert_eq!(session.version(), version);
+            assert_eq!(session.geometry_token(), token);
+            peak_generations =
+                peak_generations.max(worker.m50_memory()?.retained_native_generations);
+            if cycle == 49 {
+                retained_old = current;
+                profile("warm")?;
+            }
+        }
+        if let Some(old) = retained_old
+            && Some(old) != current
+        {
+            worker.release(old)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let memory = worker.m50_memory()?;
+            if memory.retained_native_generations == 1
+                && memory.continuations == 0
+                && memory.terminal_reports == 0
+            {
+                println!(
+                    "R6_RETENTION,measured_cycles=1000,warm_cycles=50,real_commits=3150,cancelled_candidates=1050,older_native_generation_retained=true,peak_observed_generations={peak_generations},settled={memory:?},elapsed_ms={},inverse_edits_are_not_undo_journal=true",
+                    began.elapsed().as_millis()
+                );
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err("retention owners failed to settle".into());
+            }
+            let _ = wake.recv_timeout(Duration::from_millis(1));
+        }
+        profile("settled")?;
+        worker.stop_for_test()?;
         Ok(())
     }
 }

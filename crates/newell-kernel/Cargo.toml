@@ -1,7 +1,7 @@
 [package]
 name = "newell-kernel"
 version = "0.1.0"
-description = "Anti-corruption layer over the BrepKIT kernel."
+description = "SolidCore geometry boundary."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,12 +12,12 @@ workspace = true
 
 [features]
 test-support = []
-m50-feasibility = ["brepkit-math/newell-m50", "brepkit-operations/newell-m50", "faer/newell-m50"]
+rank-research = ["dep:faer", "faer/newell-m50"]
 
 [dependencies]
-brepkit-math = "=4.2.2"
-brepkit-operations = "=4.2.2"
-brepkit-topology = "=4.2.2"
+nurbs-grid-mesh = { version = "=0.1.0", git = "https://github.com/tangency-labs/solidcore", rev = "85bf36811a32670e20c0e147c326129213d42cca" }
+solidcore = { version = "=1.0.1", git = "https://github.com/tangency-labs/solidcore", rev = "85bf36811a32670e20c0e147c326129213d42cca" }
+faer = { version = "=0.22.6", optional = true, default-features = false, features = ["std", "sparse-linalg"] }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -26,7 +26,3 @@ insta.workspace = true
 faer = { version = "=0.22.6", default-features = false, features = ["std", "sparse-linalg"] }
 rstar = "=0.12.2"
 ab_glyph = "=0.2.32"
-
-[[bench]]
-name = "sketch"
-harness = false
