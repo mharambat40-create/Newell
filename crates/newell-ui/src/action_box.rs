@@ -35,8 +35,6 @@ use crate::{
 
 /// External width of every Action Box row, frame included.
 pub(crate) const BOX_WIDTH: u32 = 31;
-/// Column of the right border.
-const LAST_COL: u32 = BOX_WIDTH - 1;
 /// Widget ids reserved per control key (the most any control uses is 3 segments).
 pub(crate) const KEY_SLOTS: u32 = 4;
 
@@ -98,6 +96,7 @@ enum Item {
 pub(crate) struct Row {
     base: u32,
     col: u32,
+    last_col: u32,
     items: Vec<Item>,
     keys: Vec<u32>,
 }
@@ -105,9 +104,14 @@ pub(crate) struct Row {
 impl Row {
     /// An empty row; control ids derive from `base`.
     pub(crate) fn new(base: u32) -> Self {
+        Self::with_width(base, BOX_WIDTH)
+    }
+
+    pub(crate) fn with_width(base: u32, width: u32) -> Self {
         Self {
             base,
             col: 0,
+            last_col: width - 1,
             items: Vec::new(),
             keys: Vec::new(),
         }
@@ -129,7 +133,7 @@ impl Row {
 
     /// Cells left from the cursor to the last interior cell (the right border is column 30).
     fn rest(&self) -> u32 {
-        LAST_COL.saturating_sub(self.col)
+        self.last_col.saturating_sub(self.col)
     }
 
     fn push(mut self, width: u32, item: Item) -> Self {
@@ -310,7 +314,7 @@ impl Row {
 
     /// Closes a content row: blanks up to column 30 and the right border `│`.
     pub(crate) fn end(self) -> Self {
-        let border = LAST_COL;
+        let border = self.last_col;
         let mut row = self;
         row.col = border;
         row.push(
@@ -421,17 +425,17 @@ impl ActionBox {
 fn hover_span(row: &Row, hovered: WidgetId) -> Option<Range<u32>> {
     row.items.iter().find_map(|item| match item {
         Item::Check { col, id, .. } | Item::TextField { col, id, .. } if *id == hovered => {
-            Some(*col..LAST_COL)
+            Some(*col..row.last_col)
         }
         Item::Numeric {
             col,
             field,
             formula,
             ..
-        } if hovered == *field || hovered == *formula => Some(*col..LAST_COL),
+        } if hovered == *field || hovered == *formula => Some(*col..row.last_col),
         Item::Cycle {
             col, prev, next, ..
-        } if hovered == *prev || hovered == *next => Some(*col..LAST_COL),
+        } if hovered == *prev || hovered == *next => Some(*col..row.last_col),
         Item::Button { col, width, id, .. } if *id == hovered => {
             Some(*col..col.saturating_add(*width))
         }

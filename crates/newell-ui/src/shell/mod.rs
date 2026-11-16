@@ -27,10 +27,10 @@ mod tree;
 pub use tree::*;
 
 use data::{
-    ACT_BOOLEAN, ACT_EXTRUDE, ACT_LOFT, ACT_REVOLVE, ACT_SWEEP, ACT_VIEW_CHECK, ACT_VIEW_COLOR,
-    ACT_VIEW_FULLSCREEN, ACT_VIEW_PROJECTION, ACT_VIEW_SCALE, ACT_VIEW_SHADING, ACT_VIEW_THEME,
-    ACT_WORKBENCH, COMMAND_MENUS, Line, PROJECTION, SHADING, ViewMock, has_children,
-    with_bar_menus,
+    ACT_BOOLEAN, ACT_EXTRUDE, ACT_LOFT, ACT_REVOLVE, ACT_SKETCH, ACT_SWEEP, ACT_VIEW_CHECK,
+    ACT_VIEW_COLOR, ACT_VIEW_FULLSCREEN, ACT_VIEW_PROJECTION, ACT_VIEW_SCALE, ACT_VIEW_SHADING,
+    ACT_VIEW_THEME, ACT_WORKBENCH, COMMAND_MENUS, Line, PROJECTION, SHADING, ViewMock,
+    has_children, with_bar_menus,
 };
 
 pub use data::ThemeChoice;
@@ -81,7 +81,7 @@ const WINDOW_ACTIONS: [WindowAction; 3] = [
 const BAR_IDS: MenuIds = MenuIds::new(MENU_BAR_BASE);
 const COMMAND_IDS: MenuIds = MenuIds::new(COMMAND_BAR_BASE);
 
-/// The operation whose Action Box is shown in the ActionPanel (`Create` and `Modify` menus).
+/// The operation associated with the current Action Box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum ActionOperation {
     #[default]
@@ -90,6 +90,7 @@ pub enum ActionOperation {
     Loft,
     Sweep,
     Boolean,
+    Sketch,
 }
 
 impl ActionOperation {
@@ -98,7 +99,7 @@ impl ActionOperation {
         self as usize
     }
 
-    /// The operation a CommandBar action opens, if it is one of the five.
+    /// The operation opened by a Command Bar action.
     const fn from_action(action: u32) -> Option<Self> {
         match action {
             ACT_EXTRUDE => Some(Self::Extrude),
@@ -106,6 +107,7 @@ impl ActionOperation {
             ACT_LOFT => Some(Self::Loft),
             ACT_SWEEP => Some(Self::Sweep),
             ACT_BOOLEAN => Some(Self::Boolean),
+            ACT_SKETCH => Some(Self::Sketch),
             _ => None,
         }
     }
@@ -220,7 +222,9 @@ pub struct ShellState {
     selection: SelectionPanel,
     formula: FormulaEditor,
     /// Edited numeric fields and formula drafts of each Action Box, by [`ActionOperation::slot`].
-    numeric: [NumericFields; 5],
+    numeric: [NumericFields; 6],
+    sketch: crate::sketch::SketchUi,
+    sketch_intent: Option<crate::SketchIntent>,
     /// The numeric field the open FormulaEditor belongs to.
     formula_target: Option<(WidgetId, Option<crate::NumericDestination>)>,
     numeric_retired_session: Option<(TreeDocumentId, crate::CommandInputSessionId)>,
@@ -302,6 +306,8 @@ impl ShellState {
             loft: LoftUi::new(ACTION_BASE),
             sweep: SweepUi::new(ACTION_BASE),
             boolean: BooleanUi::new(ACTION_BASE),
+            sketch: crate::sketch::SketchUi::new(ACTION_BASE),
+            sketch_intent: None,
             selection: SelectionPanel::reference(SELECTION_BASE),
             formula: FormulaEditor::new(FORMULA_BASE),
             numeric: Default::default(),
@@ -384,9 +390,8 @@ impl ShellState {
         self.layout().nav
     }
 
-    /// Action Box width in cells, frame included, as laid out on the current grid: always
-    /// 31 (`README_UI.md` §2.2), or the viewport interior if that is narrower (the box is then
-    /// cropped at its right edge, never squeezed).
+    /// Action Box width in cells, frame included. Sketch setup uses 27 cells and the
+    /// other Action Boxes use 31. A narrower viewport crops the box at the right edge.
     #[must_use]
     pub fn action_width(&self) -> u32 {
         self.layout().action
@@ -860,6 +865,10 @@ impl ShellState {
                     && self.boolean.values.operation == crate::BooleanOperation::Cut
                     && self.boolean.values.offset
             }
+            ActionOperation::Sketch => self
+                .sketch
+                .tool
+                .is_some_and(|tool| tool.has_numeric_key(field.key)),
         };
         debug_assert_eq!(
             active,
@@ -1205,6 +1214,7 @@ impl ShellState {
             ActionOperation::Loft => &self.loft,
             ActionOperation::Sweep => &self.sweep,
             ActionOperation::Boolean => &self.boolean,
+            ActionOperation::Sketch => &self.sketch,
         }
     }
 
@@ -1215,6 +1225,7 @@ impl ShellState {
             ActionOperation::Loft => &mut self.loft,
             ActionOperation::Sweep => &mut self.sweep,
             ActionOperation::Boolean => &mut self.boolean,
+            ActionOperation::Sketch => &mut self.sketch,
         }
     }
 
@@ -1480,12 +1491,20 @@ impl ShellState {
             self.menu_bar
                 .sync_overlay(&mut self.overlays, menus, BAR_IDS, bar, bounds);
         });
+        let command_menus = self.command_menus();
+        let popup_width = if matches!(self.sketch.mode, crate::SketchMode::Active(_))
+            && self.command_bar.open_menu().is_some_and(|menu| menu != 0)
+        {
+            22
+        } else {
+            data::COMMAND_POPUP_WIDTH
+        };
         self.command_bar.sync_centered_overlay(
             &mut self.overlays,
-            &COMMAND_MENUS,
+            command_menus,
             COMMAND_IDS,
             bounds,
-            data::COMMAND_POPUP_WIDTH,
+            popup_width,
         );
         self.menu_bar.sync_focus(&mut self.interaction, BAR_IDS);
         self.command_bar
@@ -1661,9 +1680,8 @@ impl ShellState {
         } else if on_command {
             self.menu_bar.close();
             self.typed.clear();
-            let result = self
-                .command_bar
-                .handle_click(&COMMAND_MENUS, COMMAND_IDS, hit);
+            let menus = self.command_menus();
+            let result = self.command_bar.handle_click(menus, COMMAND_IDS, hit);
             Some(self.apply_menu(result))
         } else if self.menu_bar.is_active() || self.command_bar.is_active() {
             self.menu_bar.close();
@@ -1682,7 +1700,10 @@ impl ShellState {
             self.activate_tree(tree, index, part);
             return true;
         }
-        if !in_action_panel(id) {
+        if !in_action_panel(id)
+            || (self.operation == ActionOperation::Sketch
+                && self.panel().live_control(id).is_none())
+        {
             return false;
         }
         // The focus is set first so a modal opened below remembers this control.
@@ -1742,6 +1763,35 @@ impl ShellState {
                 .live_control(id)
                 .filter(|&(key, slot)| key == K_ACTIONS && slot < 2)
                 .map(|(_, slot)| slot);
+            if self.operation == ActionOperation::Sketch {
+                if self.panel().decode(id) == Some((crate::sketch::GRID, 0)) {
+                    self.view.checks[4] = !self.view.checks[4];
+                    self.sketch.grid = self.view.checks[4];
+                    return true;
+                }
+                if self.panel().decode(id) == Some((crate::sketch::OFFSET_CHAIN, 0)) {
+                    self.sketch.offset_chain = !self.sketch.offset_chain;
+                    return true;
+                }
+                if self.panel().decode(id) == Some((crate::sketch::SPLINE_HANDLES, 0)) {
+                    self.sketch.spline_handles = !self.sketch.spline_handles;
+                    return true;
+                }
+                if self.panel().decode(id) == Some((crate::sketch::TRANSFORM_MOVE, 0)) {
+                    self.sketch.transform_move = !self.sketch.transform_move;
+                    return true;
+                }
+                if self.panel().decode(id) == Some((crate::sketch::ASSOCIATIVE, 0)) {
+                    self.sketch.associative = !self.sketch.associative;
+                    return true;
+                }
+                self.sketch_intent = match button {
+                    Some(0) => Some(crate::SketchIntent::Confirm),
+                    Some(1) => Some(crate::SketchIntent::Cancel),
+                    _ => None,
+                };
+                return self.sketch_intent.is_some();
+            }
             if button == Some(0) && self.numeric_identity.is_some() {
                 self.queue_numeric_edits();
                 if self.numeric_confirm.is_none() {
@@ -1837,6 +1887,9 @@ impl ShellState {
                     .and_then(|i| usize::try_from(i).ok());
                 if let Some(flag) = index.and_then(|i| self.view.checks.get_mut(i)) {
                     *flag = !*flag;
+                    if index == Some(4) {
+                        self.sketch.grid = *flag;
+                    }
                     if index == Some(1) && !*flag {
                         self.command_bar.close();
                         self.typed.clear();
@@ -1845,6 +1898,11 @@ impl ShellState {
                 true
             }
             MenuResult::Cycled(action, step) => {
+                if action.get() == ACT_VIEW_PROJECTION
+                    && matches!(self.sketch.mode, crate::SketchMode::Active(_))
+                {
+                    return true;
+                }
                 if action.get() == data::ACT_VIEW_NAVIGATOR_KIND {
                     if self.view.checks[3] {
                         self.view.navigator_kind = match self.view.navigator_kind {
@@ -1882,7 +1940,22 @@ impl ShellState {
     /// (reopening it if OK / Cancel closed it), View > Theme switches the theme and
     /// View > Fullscreen leaves a request for the application.
     fn run_action(&mut self, action: u32) {
-        if action == ACT_VIEW_THEME {
+        if matches!(self.sketch.mode, crate::SketchMode::Active(_))
+            && matches!(
+                action,
+                crate::sketch::LINE_ACTION | crate::sketch::RECTANGLE_ACTION
+            )
+        {
+            self.sketch_intent = Some(if action == crate::sketch::LINE_ACTION {
+                crate::SketchIntent::Line
+            } else {
+                crate::SketchIntent::Rectangle
+            });
+        } else if let Some(tool) = crate::DrawTool::from_action(action)
+            .filter(|_| matches!(self.sketch.mode, crate::SketchMode::Active(_)))
+        {
+            self.sketch_intent = Some(crate::SketchIntent::Draw(tool));
+        } else if action == ACT_VIEW_THEME {
             self.view.theme = self.view.theme.toggled();
             // MenuState closes activated items by default. Theme is the one View item
             // whose specification keeps the popup open, with selection on its own row.
@@ -1915,10 +1988,11 @@ impl ShellState {
             self.camera_reset_request = true;
         } else if let Some(operation) = ActionOperation::from_action(action) {
             self.show_operation(operation);
-        } else if let Some(i) = action
-            .checked_sub(ACT_WORKBENCH)
-            .and_then(|i| usize::try_from(i).ok())
-            .filter(|&i| i < data::WORKBENCHES.len())
+        } else if !matches!(self.sketch.mode, crate::SketchMode::Active(_))
+            && let Some(i) = action
+                .checked_sub(ACT_WORKBENCH)
+                .and_then(|i| usize::try_from(i).ok())
+                .filter(|&i| i < data::WORKBENCHES.len())
         {
             self.workbench = i;
         }
@@ -1929,6 +2003,10 @@ impl ShellState {
     /// held in the panel is dropped when the operation changes.
     fn show_operation(&mut self, operation: ActionOperation) {
         self.command_started = true;
+        self.sketch_intent = None;
+        if operation != ActionOperation::Sketch {
+            self.sketch.mode = crate::SketchMode::Closed;
+        }
         self.numeric[self.operation.slot()].commit();
         self.queue_numeric_edits();
         if let Some((document, session, _)) = self.numeric_identity.take() {
@@ -1955,11 +2033,98 @@ impl ShellState {
         }
     }
 
+    pub(super) fn command_menus(&self) -> &'static [crate::menu::MenuDef<'static>] {
+        if matches!(self.sketch.mode, crate::SketchMode::Active(_)) {
+            &data::SKETCH_MENUS
+        } else {
+            &COMMAND_MENUS
+        }
+    }
+
+    pub fn take_sketch_intent(&mut self) -> Option<crate::SketchIntent> {
+        self.sketch_intent.take()
+    }
+
+    #[must_use]
+    pub const fn sketch_ready(&self) -> bool {
+        self.sketch.ready
+    }
+
+    pub fn sketch_tool(&self) -> Option<crate::DrawTool> {
+        self.sketch.tool
+    }
+
+    pub fn sketch_offset_chain(&self) -> bool {
+        self.sketch.offset_chain
+    }
+
+    pub fn sketch_spline_handles(&self) -> bool {
+        self.sketch.spline_handles
+    }
+
+    pub fn sketch_transform_move(&self) -> bool {
+        self.sketch.transform_move
+    }
+
+    pub fn sketch_associative_mirror(&self) -> bool {
+        self.sketch.associative
+    }
+
+    pub fn sketch_text(&self) -> &str {
+        &self.sketch.text
+    }
+
+    pub fn set_sketch_ready(&mut self, ready: bool, tool: Option<crate::DrawTool>) {
+        self.sketch.ready = ready;
+        self.sketch.tool = tool;
+    }
+
+    pub fn set_sketch_mode(&mut self, mode: crate::SketchMode, focus_plane: bool) {
+        use crate::SketchMode;
+        let previous = self.sketch.mode;
+        if mode != SketchMode::Closed {
+            self.operation = ActionOperation::Sketch;
+        }
+        self.sketch.mode = mode;
+        self.sketch.tool = None;
+        self.sketch.text.clear();
+        self.sketch.associative = false;
+        self.sketch.transform_move = false;
+        self.sketch.spline_handles = false;
+        self.sketch.offset_chain = false;
+        self.sketch.ready = false;
+        self.sketch.grid = self.view_panel_visible(4);
+        if !matches!(
+            (previous, mode),
+            (SketchMode::Setup(_), SketchMode::Setup(_))
+        ) {
+            self.command_bar.close();
+            self.typed.clear();
+            self.interaction.set_focused(None);
+        }
+        if mode == SketchMode::Closed {
+            self.invalidate_numeric_session();
+            self.selection.dismiss();
+        }
+        if focus_plane {
+            self.tree_focus = None;
+            self.interaction
+                .set_focused(Some(WidgetId::new(ACTION_BASE)));
+        }
+        self.sync();
+        if matches!((previous, mode), (SketchMode::Setup(_), SketchMode::Closed))
+            && self.view_panel_visible(1)
+        {
+            self.interaction.set_focused(COMMAND_IDS.title(1));
+        }
+    }
+
     fn menu_send(&mut self, bar: bool, key: MenuKey) -> MenuResult {
         if bar {
             with_bar_menus(&self.view, |menus| self.menu_bar.handle_key(menus, key))
         } else {
-            self.command_bar.handle_key(&COMMAND_MENUS, key)
+            let menus = self.command_menus();
+            self.command_bar.handle_key(menus, key)
         }
     }
 
@@ -2029,7 +2194,8 @@ impl ShellState {
             if bar {
                 with_bar_menus(&self.view, |menus| self.menu_bar.begin(menus));
             } else {
-                self.command_bar.begin(&COMMAND_MENUS);
+                let menus = self.command_menus();
+                self.command_bar.begin(menus);
             }
         }
         true
@@ -2094,7 +2260,39 @@ impl ShellState {
     }
 
     fn base_key(&mut self, key: ShellKey) -> bool {
+        if self.sketch.tool == Some(crate::DrawTool::Text) {
+            match key {
+                ShellKey::Char(c)
+                    if !c.is_control() && self.sketch.text.len() + c.len_utf8() <= 64 =>
+                {
+                    self.sketch.text.push(c);
+                    return true;
+                }
+                ShellKey::Backspace => {
+                    self.sketch.text.pop();
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match key {
+            ShellKey::Char('d' | 'D')
+                if matches!(self.sketch.mode, crate::SketchMode::Active(_))
+                    && self.sketch.tool.is_none() =>
+            {
+                self.sketch_intent = Some(crate::SketchIntent::Detach);
+                true
+            }
+            ShellKey::Edit(crate::EditKey::Delete)
+                if matches!(self.sketch.mode, crate::SketchMode::Active(_)) =>
+            {
+                self.sketch_intent = Some(crate::SketchIntent::Delete);
+                true
+            }
+            ShellKey::Escape if self.sketch.mode != crate::SketchMode::Closed => {
+                self.sketch_intent = Some(crate::SketchIntent::Escape);
+                true
+            }
             ShellKey::Tab => self.step_ring(true),
             ShellKey::BackTab => self.step_ring(false),
             ShellKey::Enter | ShellKey::Char(' ') => {

@@ -26,6 +26,7 @@ struct ReferenceVertex {
     normal: [f32; 3],
     color: [f32; 4],
     dashed: f32,
+    selected: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,10 +70,12 @@ pub(crate) struct SceneBasis {
 /// GPU scene resources. Navigation and CPU geometric queries belong to the Controller.
 pub(crate) struct Scene {
     pipeline: wgpu::RenderPipeline,
+    face_selection_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     depth_pipeline: wgpu::RenderPipeline,
     reference_depth_pipeline: wgpu::RenderPipeline,
     visible_pipeline: wgpu::RenderPipeline,
+    face_selection_line_pipeline: wgpu::RenderPipeline,
     hidden_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     reference_surface_pipeline: wgpu::RenderPipeline,
@@ -87,6 +90,10 @@ pub(crate) struct Scene {
     vertex: Option<wgpu::Buffer>,
     index: Option<wgpu::Buffer>,
     edge: Option<wgpu::Buffer>,
+    selected_face_line_vertex: Option<wgpu::Buffer>,
+    selected_face_line_count: u32,
+    selected_face_points: Option<wgpu::Buffer>,
+    selected_face_point_count: u32,
     point_vertex: Option<wgpu::Buffer>,
     geometry_vertex: Option<wgpu::Buffer>,
     reference_uniform: wgpu::Buffer,
@@ -98,6 +105,7 @@ pub(crate) struct Scene {
     reference_plane_count: u32,
     reference_line_count: u32,
     mesh: Option<NewellMesh>,
+    selected_faces: Vec<u32>,
     index_count: u32,
     edge_count: u32,
     point_count: u32,
@@ -109,6 +117,7 @@ pub(crate) struct Scene {
     camera: CameraSnapshot,
     display_mode: SceneDisplayMode,
     selected: bool,
+    selected_origin_references: Vec<newell_ui::OriginReference>,
 }
 
 impl Scene {
@@ -189,6 +198,8 @@ impl Scene {
             wgpu::PrimitiveTopology::TriangleList,
             true,
         );
+        let face_selection_pipeline =
+            face_selection_pipeline(device, &pipeline_layout, &shader, format);
         let line_pipeline = scene_pipeline(
             device,
             &pipeline_layout,
@@ -237,6 +248,13 @@ impl Scene {
             format,
             "fs_visible",
         );
+        let face_selection_line_pipeline = geometry_line_pipeline(
+            device,
+            &line_pipeline_layout,
+            &line_shader,
+            format,
+            "fs_selection",
+        );
         let hidden_pipeline = geometry_line_pipeline(
             device,
             &line_pipeline_layout,
@@ -277,7 +295,7 @@ impl Scene {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let reference_geometry = world_reference_geometry();
+        let reference_geometry = world_reference_geometry(&[]);
         let reference_surface_vertex =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("world reference surfaces"),
@@ -304,10 +322,12 @@ impl Scene {
         let line_bind_group = geometry_line_bind_group(device, &line_layout, &uniform, &depth);
         Self {
             pipeline,
+            face_selection_pipeline,
             line_pipeline,
             depth_pipeline,
             reference_depth_pipeline,
             visible_pipeline,
+            face_selection_line_pipeline,
             hidden_pipeline,
             point_pipeline,
             reference_surface_pipeline,
@@ -322,6 +342,10 @@ impl Scene {
             vertex: None,
             index: None,
             edge: None,
+            selected_face_line_vertex: None,
+            selected_face_line_count: 0,
+            selected_face_points: None,
+            selected_face_point_count: 0,
             point_vertex: None,
             geometry_vertex: None,
             reference_uniform,
@@ -333,6 +357,7 @@ impl Scene {
             reference_plane_count,
             reference_line_count,
             mesh: None,
+            selected_faces: Vec::new(),
             index_count: 0,
             edge_count: 0,
             point_count: 0,
@@ -344,6 +369,7 @@ impl Scene {
             camera: CameraSnapshot::default(),
             display_mode: SceneDisplayMode::default(),
             selected: false,
+            selected_origin_references: Vec::new(),
         }
     }
 
@@ -366,10 +392,12 @@ impl Scene {
             geometry_line_bind_group(device, &self.line_layout, &uniform, &self.depth);
         Self {
             pipeline: self.pipeline.clone(),
+            face_selection_pipeline: self.face_selection_pipeline.clone(),
             line_pipeline: self.line_pipeline.clone(),
             depth_pipeline: self.depth_pipeline.clone(),
             reference_depth_pipeline: self.reference_depth_pipeline.clone(),
             visible_pipeline: self.visible_pipeline.clone(),
+            face_selection_line_pipeline: self.face_selection_line_pipeline.clone(),
             hidden_pipeline: self.hidden_pipeline.clone(),
             point_pipeline: self.point_pipeline.clone(),
             reference_surface_pipeline: self.reference_surface_pipeline.clone(),
@@ -384,6 +412,10 @@ impl Scene {
             vertex: None,
             index: None,
             edge: None,
+            selected_face_line_vertex: None,
+            selected_face_line_count: 0,
+            selected_face_points: None,
+            selected_face_point_count: 0,
             point_vertex: None,
             geometry_vertex: None,
             reference_uniform: self.reference_uniform.clone(),
@@ -395,6 +427,7 @@ impl Scene {
             reference_plane_count: self.reference_plane_count,
             reference_line_count: self.reference_line_count,
             mesh: None,
+            selected_faces: Vec::new(),
             index_count: 0,
             edge_count: 0,
             point_count: 0,
@@ -406,6 +439,7 @@ impl Scene {
             camera: self.camera,
             display_mode: self.display_mode,
             selected: false,
+            selected_origin_references: self.selected_origin_references.clone(),
         }
     }
     pub(crate) fn basis(&self) -> SceneBasis {
@@ -427,21 +461,24 @@ impl Scene {
     pub(crate) fn prepare_items_with_camera(
         &self,
         device: &wgpu::Device,
-        items: Vec<(NewellMesh, bool)>,
+        items: Vec<(NewellMesh, bool, Vec<u32>)>,
         camera: CameraSnapshot,
     ) -> Self {
         let mut candidate = self.empty_with_shared_pipelines(device);
         candidate.camera = camera;
         let mut source = items.into_iter();
-        if let Some((mesh, selected)) = source.next() {
+        if let Some((mesh, selected, selected_faces)) = source.next() {
             candidate.set_mesh(device, mesh);
             candidate.selected = selected;
+            candidate.set_item_selected_faces(device, 0, selected_faces);
         }
-        for (mesh, selected) in source {
+        for (mesh, selected, selected_faces) in source {
             let mut item = candidate.empty_with_shared_pipelines(device);
             item.set_mesh(device, mesh);
             item.selected = selected;
             candidate.items.push(item);
+            let index = candidate.items.len();
+            candidate.set_item_selected_faces(device, index, selected_faces);
         }
         candidate
     }
@@ -451,6 +488,54 @@ impl Scene {
         } else if let Some(item) = self.items.get_mut(index - 1) {
             item.selected = selected;
         }
+    }
+    pub(crate) fn set_item_selected_faces(
+        &mut self,
+        device: &wgpu::Device,
+        index: usize,
+        mut faces: Vec<u32>,
+    ) {
+        faces.sort_unstable();
+        faces.dedup();
+        let item = if index == 0 {
+            Some(self)
+        } else {
+            self.items.get_mut(index - 1)
+        };
+        if let Some(item) = item {
+            let count = item.mesh.as_ref().map_or(0, |mesh| mesh.face_count());
+            faces.retain(|face| usize::try_from(*face).is_ok_and(|face| face < count));
+            item.selected_faces = faces;
+            item.rebuild_selected_face_lines(device);
+            let points = item.mesh.as_ref().map_or_else(Vec::new, |mesh| {
+                selected_face_point_bytes(mesh, &item.selected_faces)
+            });
+            item.selected_face_point_count = u32::try_from(points.len() / 24).unwrap_or(u32::MAX);
+            item.selected_face_points = (!points.is_empty()).then(|| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("selected face point markers"),
+                    contents: &points,
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
+        }
+    }
+    fn rebuild_selected_face_lines(&mut self, device: &wgpu::Device) {
+        let vertices = self.mesh.as_ref().map_or_else(Vec::new, |mesh| {
+            selected_face_line_vertices(mesh, &self.selected_faces, self.camera, self.viewport)
+        });
+        self.selected_face_line_count = u32::try_from(vertices.len() / 4).unwrap_or(u32::MAX);
+        let mut bytes = Vec::with_capacity(vertices.len() * 4);
+        for value in vertices {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        self.selected_face_line_vertex = (!bytes.is_empty()).then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("selected face boundary lines"),
+                contents: &bytes,
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
     }
     fn all_items(&self) -> impl Iterator<Item = &Self> {
         std::iter::once(self).chain(self.items.iter())
@@ -508,6 +593,32 @@ impl Scene {
         self.selected = selected;
     }
 
+    pub(crate) fn set_origin_selection(
+        &mut self,
+        device: &wgpu::Device,
+        selected: Vec<newell_ui::OriginReference>,
+    ) {
+        if selected == self.selected_origin_references {
+            return;
+        }
+        self.selected_origin_references = selected;
+        let geometry = world_reference_geometry(&self.selected_origin_references);
+        self.reference_surface_vertex =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("selected world reference surfaces"),
+                contents: &reference_vertex_bytes(&geometry.surfaces),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        self.reference_line_vertex = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("selected world reference lines"),
+            contents: &reference_vertex_bytes(&geometry.lines),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.reference_surface_count = geometry.surfaces.len() as u32;
+        self.reference_plane_count = geometry.plane_vertices;
+        self.reference_line_count = geometry.lines.len() as u32;
+    }
+
     pub(crate) fn set_display_mode(&mut self, mode: SceneDisplayMode) {
         self.display_mode = mode;
         for item in &mut self.items {
@@ -517,6 +628,11 @@ impl Scene {
 
     pub(crate) fn set_mesh(&mut self, device: &wgpu::Device, mesh: NewellMesh) {
         self.items.clear();
+        self.selected_faces.clear();
+        self.selected_face_line_vertex = None;
+        self.selected_face_line_count = 0;
+        self.selected_face_points = None;
+        self.selected_face_point_count = 0;
         let mut vertices = Vec::with_capacity(mesh.positions().len() * 24);
         for (position, normal) in mesh.positions().iter().zip(mesh.normals()) {
             for component in position.iter().chain(normal) {
@@ -678,6 +794,7 @@ impl Scene {
                 usage: wgpu::BufferUsages::VERTEX,
             })
         });
+        self.rebuild_selected_face_lines(device);
     }
 
     pub(crate) fn draw(
@@ -690,8 +807,14 @@ impl Scene {
             return;
         }
         for item in self.all_items() {
-            let bytes =
-                scene_uniforms(self.camera, self.display_mode, self.viewport, item.selected);
+            let bytes = scene_uniforms(
+                self.camera,
+                self.display_mode,
+                self.viewport,
+                item.selected,
+                item.selected,
+                !item.selected_faces.is_empty(),
+            );
             queue.write_buffer(&item.uniform, 0, &bytes);
         }
         {
@@ -788,6 +911,15 @@ impl Scene {
                     pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
                     pass.draw(0..item.point_count, 0..1);
                 }
+                if item.selected_face_point_count > 0
+                    && let Some(points) = &item.selected_face_points
+                {
+                    pass.set_vertex_buffer(0, points.slice(..));
+                    for rect in exposed_regions(self.viewport, &self.occlusions) {
+                        pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                        pass.draw(0..item.selected_face_point_count, 0..1);
+                    }
+                }
                 continue;
             }
             pass.set_vertex_buffer(0, vertex.slice(..));
@@ -815,6 +947,28 @@ impl Scene {
             for rect in exposed_regions(self.viewport, &self.occlusions) {
                 pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
                 pass.draw_indexed(0..count, 0, 0..1);
+            }
+            if !depth_only
+                && !draw_edges
+                && !item.selected_faces.is_empty()
+                && let Some(mesh) = &item.mesh
+            {
+                pass.set_pipeline(&item.face_selection_pipeline);
+                pass.set_vertex_buffer(0, vertex.slice(..));
+                pass.set_index_buffer(index.slice(..), wgpu::IndexFormat::Uint32);
+                for &face in &item.selected_faces {
+                    let Some((&start, &end)) = usize::try_from(face)
+                        .ok()
+                        .and_then(|face| mesh.face_offsets().get(face..=face + 1))
+                        .and_then(|range| range.first().zip(range.last()))
+                    else {
+                        continue;
+                    };
+                    for rect in exposed_regions(self.viewport, &self.occlusions) {
+                        pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                        pass.draw_indexed(start..end, 0, 0..1);
+                    }
+                }
             }
         }
         drop(pass);
@@ -854,6 +1008,82 @@ impl Scene {
                 for rect in exposed_regions(self.viewport, &self.occlusions) {
                     pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
                     pass.draw(0..item.geometry_count, 0..1);
+                }
+            }
+        }
+        if self.all_items().any(|item| {
+            (item.selected
+                && matches!(
+                    self.display_mode,
+                    SceneDisplayMode::NoShading
+                        | SceneDisplayMode::Shaded
+                        | SceneDisplayMode::Default
+                ))
+                || (item.selected_face_line_count > 0
+                    && self.display_mode != SceneDisplayMode::Points)
+        }) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("selected geometry outline accent"),
+                color_attachments: &color,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_viewport(
+                self.viewport.x as f32,
+                self.viewport.y as f32,
+                self.viewport.width as f32,
+                self.viewport.height as f32,
+                0.0,
+                1.0,
+            );
+            for item in self.all_items().filter(|item| {
+                (item.selected
+                    && matches!(
+                        self.display_mode,
+                        SceneDisplayMode::NoShading
+                            | SceneDisplayMode::Shaded
+                            | SceneDisplayMode::Default
+                    ))
+                    || (item.selected_face_line_count > 0
+                        && self.display_mode != SceneDisplayMode::Points)
+            }) {
+                if item.selected
+                    && matches!(
+                        self.display_mode,
+                        SceneDisplayMode::NoShading
+                            | SceneDisplayMode::Shaded
+                            | SceneDisplayMode::Default
+                    )
+                    && item.geometry_count > 0
+                    && let Some(lines) = &item.geometry_vertex
+                {
+                    pass.set_bind_group(0, &item.line_bind_group, &[]);
+                    pass.set_vertex_buffer(0, lines.slice(..));
+                    if self.display_mode == SceneDisplayMode::HiddenLine {
+                        pass.set_pipeline(&self.hidden_pipeline);
+                        for rect in exposed_regions(self.viewport, &self.occlusions) {
+                            pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                            pass.draw(0..item.geometry_count, 0..1);
+                        }
+                    }
+                    pass.set_pipeline(&self.visible_pipeline);
+                    for rect in exposed_regions(self.viewport, &self.occlusions) {
+                        pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                        pass.draw(0..item.geometry_count, 0..1);
+                    }
+                }
+                if item.selected_face_line_count > 0
+                    && self.display_mode != SceneDisplayMode::Points
+                    && let Some(lines) = &item.selected_face_line_vertex
+                {
+                    pass.set_bind_group(0, &item.line_bind_group, &[]);
+                    pass.set_vertex_buffer(0, lines.slice(..));
+                    pass.set_pipeline(&self.face_selection_line_pipeline);
+                    for rect in exposed_regions(self.viewport, &self.occlusions) {
+                        pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
+                        pass.draw(0..item.selected_face_line_count, 0..1);
+                    }
                 }
             }
         }
@@ -1288,6 +1518,58 @@ fn scene_pipeline(
     })
 }
 
+fn face_selection_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("selected face tint pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: 24,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_selected_face"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: Some(wgpu::Face::Back),
+            front_face: wgpu::FrontFace::Ccw,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24Plus,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState {
+                constant: -1,
+                slope_scale: -1.0,
+                clamp: 0.0,
+            },
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
+}
+
 fn reference_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -1304,9 +1586,9 @@ fn reference_pipeline(
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[wgpu::VertexBufferLayout {
-                array_stride: 44,
+                array_stride: 48,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32],
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32, 4 => Float32],
             }],
         },
         fragment: Some(wgpu::FragmentState {
@@ -1373,6 +1655,7 @@ fn reference_vertex(
         normal,
         color: [linear(color[0]), linear(color[1]), linear(color[2]), alpha],
         dashed: 0.0,
+        selected: 0.0,
     }
 }
 
@@ -1398,11 +1681,17 @@ fn push_reference_line(
     vertices.push(reference_vertex(end, [0.0; 3], color, alpha[1]));
 }
 
-fn world_reference_geometry() -> WorldReferenceGeometry {
+fn world_reference_geometry(selected: &[newell_ui::OriginReference]) -> WorldReferenceGeometry {
     use newell_ui::navigation_widgets::NAV_AXIS_COLORS;
     let mut surfaces = Vec::new();
     let mut lines = Vec::new();
     for normal_axis in 0..3 {
+        let reference = match normal_axis {
+            0 => newell_ui::OriginReference::YZ,
+            1 => newell_ui::OriginReference::XZ,
+            _ => newell_ui::OriginReference::XY,
+        };
+        let is_selected = selected.contains(&reference);
         let a = (normal_axis + 1) % 3;
         let b = (normal_axis + 2) % 3;
         let mut normal = [0.; 3];
@@ -1417,6 +1706,7 @@ fn world_reference_geometry() -> WorldReferenceGeometry {
         let lo = hi * REFERENCE_PLANE_INSET_FRACTION;
         let corners = [point(lo, lo), point(hi, lo), point(hi, hi), point(lo, hi)];
         for triangle in [[0, 1, 2], [0, 2, 3]] {
+            let start = surfaces.len();
             push_reference_triangle(
                 &mut surfaces,
                 triangle.map(|i| corners[i]),
@@ -1424,6 +1714,11 @@ fn world_reference_geometry() -> WorldReferenceGeometry {
                 REFERENCE_NEUTRAL_COLOR,
                 [0.10; 3],
             );
+            if is_selected {
+                for vertex in &mut surfaces[start..] {
+                    vertex.selected = 1.0;
+                }
+            }
         }
         for edge in 0..4 {
             push_reference_line(
@@ -1436,16 +1731,29 @@ fn world_reference_geometry() -> WorldReferenceGeometry {
             let count = lines.len();
             lines[count - 2].normal = normal;
             lines[count - 1].normal = normal;
+            if is_selected {
+                lines[count - 2].selected = 1.0;
+                lines[count - 1].selected = 1.0;
+            }
         }
     }
     let plane_vertices = surfaces.len() as u32;
     for (axis, color) in NAV_AXIS_COLORS.into_iter().enumerate() {
+        let reference = match axis {
+            0 => newell_ui::OriginReference::X,
+            1 => newell_ui::OriginReference::Y,
+            _ => newell_ui::OriginReference::Z,
+        };
         let mut end = [0.; 3];
         end[axis] = 1.;
         push_reference_line(&mut lines, [0.; 3], end, color, [0.85; 2]);
         let count = lines.len();
         lines[count - 2].dashed = 1.;
         lines[count - 1].dashed = 1.;
+        if selected.contains(&reference) {
+            lines[count - 2].selected = 1.0;
+            lines[count - 1].selected = 1.0;
+        }
     }
     const ORIGIN_RADIUS: f32 = REFERENCE_MARKER_DIAMETER_PX / REFERENCE_AXIS_LENGTH_PX / 2.;
     let sphere_color = REFERENCE_NEUTRAL_COLOR;
@@ -1474,12 +1782,16 @@ fn world_reference_geometry() -> WorldReferenceGeometry {
             for triangle in triangles {
                 for index in triangle {
                     let normal = normals[index];
-                    surfaces.push(reference_vertex(
+                    let mut vertex = reference_vertex(
                         normal.map(|value| value * ORIGIN_RADIUS),
                         normal,
                         sphere_color,
                         1.0,
-                    ));
+                    );
+                    if selected.contains(&newell_ui::OriginReference::O) {
+                        vertex.selected = 1.0;
+                    }
+                    surfaces.push(vertex);
                 }
             }
         }
@@ -1539,14 +1851,14 @@ fn reference_uniforms(camera: CameraSnapshot, viewport: SceneViewport) -> Option
 }
 
 fn reference_vertex_bytes(vertices: &[ReferenceVertex]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(vertices.len() * 44);
+    let mut bytes = Vec::with_capacity(vertices.len() * 48);
     for vertex in vertices {
         for value in vertex
             .position
             .into_iter()
             .chain(vertex.normal)
             .chain(vertex.color)
-            .chain([vertex.dashed])
+            .chain([vertex.dashed, vertex.selected])
         {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
@@ -1558,7 +1870,9 @@ fn scene_uniforms(
     camera: CameraSnapshot,
     display_mode: SceneDisplayMode,
     viewport: SceneViewport,
-    selected: bool,
+    highlighted: bool,
+    selected_body: bool,
+    selected_face: bool,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(112);
     for column in camera.view_projection() {
@@ -1573,8 +1887,106 @@ fn scene_uniforms(
     for value in [viewport.width as f32, viewport.height as f32, 0.0, 0.0] {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
-    for value in [if selected { 1.10_f32 } else { 1.0 }, 0.0, 0.0, 0.0] {
+    for value in [
+        if highlighted { 1.10_f32 } else { 1.0 },
+        if selected_body { 1.0_f32 } else { 0.0 },
+        if selected_face { 1.0_f32 } else { 0.0 },
+        0.0,
+    ] {
         bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    bytes
+}
+
+fn face_boundary_indices(mesh: &NewellMesh, faces: &[u32]) -> Vec<u32> {
+    let mut edges = BTreeMap::<(u32, u32), (u32, [u32; 2])>::new();
+    for &face in faces {
+        let Some(face) = usize::try_from(face).ok() else {
+            continue;
+        };
+        let Some(offsets) = mesh.face_offsets().get(face..=face.saturating_add(1)) else {
+            continue;
+        };
+        let (Some(&start), Some(&end)) = (offsets.first(), offsets.last()) else {
+            continue;
+        };
+        let Some(indices) = mesh.indices().get(start as usize..end as usize) else {
+            continue;
+        };
+        for triangle in indices.as_chunks::<3>().0 {
+            for [a, b] in [
+                [triangle[0], triangle[1]],
+                [triangle[1], triangle[2]],
+                [triangle[2], triangle[0]],
+            ] {
+                let key = (a.min(b), a.max(b));
+                let entry = edges.entry(key).or_insert((0, [a, b]));
+                entry.0 = entry.0.saturating_add(1);
+            }
+        }
+    }
+    edges
+        .into_values()
+        .filter_map(|(uses, edge)| (uses == 1).then_some(edge))
+        .flatten()
+        .collect()
+}
+
+fn selected_face_line_vertices(
+    mesh: &NewellMesh,
+    faces: &[u32],
+    camera: CameraSnapshot,
+    viewport: SceneViewport,
+) -> Vec<f32> {
+    let mut vertices = Vec::new();
+    let boundary = face_boundary_indices(mesh, faces);
+    for edge in boundary.as_chunks::<2>().0 {
+        let [Some(&start), Some(&end)] = [
+            mesh.positions().get(edge[0] as usize),
+            mesh.positions().get(edge[1] as usize),
+        ] else {
+            continue;
+        };
+        append_polyline(&mut vertices, &[start, end], camera, viewport);
+    }
+    vertices
+}
+
+fn selected_face_point_bytes(mesh: &NewellMesh, faces: &[u32]) -> Vec<u8> {
+    const CORNERS: [[f32; 3]; 6] = [
+        [-1.0, -1.0, 0.0],
+        [1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, -1.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0],
+    ];
+    let mut selected_vertices = std::collections::BTreeSet::new();
+    for &face in faces {
+        let Ok(face) = usize::try_from(face) else {
+            continue;
+        };
+        let Some(offsets) = mesh.face_offsets().get(face..=face.saturating_add(1)) else {
+            continue;
+        };
+        let (Some(&start), Some(&end)) = (offsets.first(), offsets.last()) else {
+            continue;
+        };
+        let Some(indices) = mesh.indices().get(start as usize..end as usize) else {
+            continue;
+        };
+        selected_vertices.extend(indices.iter().copied());
+    }
+    let mut bytes = Vec::with_capacity(selected_vertices.len() * CORNERS.len() * 24);
+    for index in selected_vertices {
+        let Some(position) = mesh.positions().get(index as usize) else {
+            continue;
+        };
+        for corner in CORNERS {
+            for value in position.iter().chain(&corner) {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
     }
     bytes
 }
@@ -1601,8 +2013,8 @@ fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
 #[cfg(test)]
 mod tests {
     use super::{
-        Scene, SceneDisplayMode, clip_position, cross, dot, projected_segment, silhouette_chains,
-        sub,
+        Scene, SceneDisplayMode, clip_position, cross, dot, face_boundary_indices,
+        projected_segment, silhouette_chains, sub,
     };
     use crate::{CameraSnapshot, SceneViewport};
     use newell_kernel::NewellSolid;
@@ -1627,7 +2039,11 @@ mod tests {
     fn origin_reference_geometry_uses_doubled_dimensions_and_neutral_planes() {
         use super::*;
         use newell_ui::navigation_widgets::NAV_AXIS_COLORS;
-        let g = world_reference_geometry();
+        let g = world_reference_geometry(&[
+            newell_ui::OriginReference::O,
+            newell_ui::OriginReference::X,
+            newell_ui::OriginReference::XY,
+        ]);
         assert_eq!(g.plane_vertices, 18);
         assert_eq!(g.lines.len(), 30);
         let plane_fill = reference_vertex([0.; 3], [0.; 3], REFERENCE_NEUTRAL_COLOR, 0.10).color;
@@ -1645,6 +2061,18 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex.color == plane_fill)
         );
+        assert!(
+            g.surfaces[12..18]
+                .iter()
+                .all(|vertex| vertex.selected == 1.0)
+        );
+        assert!(
+            g.surfaces[g.plane_vertices as usize..]
+                .iter()
+                .all(|vertex| vertex.selected == 1.0)
+        );
+        assert!(g.lines[24..26].iter().all(|vertex| vertex.selected == 1.0));
+        assert!(g.lines[26..].iter().all(|vertex| vertex.selected == 0.0));
         assert!(
             g.lines[..24]
                 .iter()
@@ -1900,6 +2328,12 @@ mod tests {
             "references never acquire model selection brightness"
         );
         scene.set_selected(false);
+        let origin_unselected = render(&scene);
+        scene.set_origin_selection(&device, vec![newell_ui::OriginReference::O]);
+        let origin_selected = render(&scene);
+        assert_ne!(origin_selected, origin_unselected);
+        scene.set_origin_selection(&device, Vec::new());
+        assert_eq!(render(&scene), origin_unselected);
         scene.set_occlusions(vec![viewport]);
         assert!(
             render(&scene)
@@ -2150,23 +2584,46 @@ mod tests {
     fn selection_uniform_is_aligned_and_does_not_change_camera_light_or_viewport() {
         let camera = CameraSnapshot::default();
         let viewport = SceneViewport::new(4, 8, 256, 192);
-        let plain = super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, false);
-        let selected = super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, true);
+        let plain = super::scene_uniforms(
+            camera,
+            SceneDisplayMode::Shaded,
+            viewport,
+            false,
+            false,
+            false,
+        );
+        let selected = super::scene_uniforms(
+            camera,
+            SceneDisplayMode::Shaded,
+            viewport,
+            true,
+            true,
+            false,
+        );
         assert_eq!(plain.len(), 112);
         assert_eq!(selected.len(), 112);
         assert_eq!(&plain[..96], &selected[..96]);
         assert_eq!(&plain[96..100], &1.0_f32.to_ne_bytes());
         assert_eq!(&selected[96..100], &1.1_f32.to_ne_bytes());
-        assert_eq!(&selected[100..], &[0; 12]);
-        assert_eq!(
-            selected,
-            super::scene_uniforms(camera, SceneDisplayMode::Shaded, viewport, true)
+        assert_eq!(&selected[100..104], &1.0_f32.to_ne_bytes());
+        let face_selected = super::scene_uniforms(
+            camera,
+            SceneDisplayMode::Shaded,
+            viewport,
+            false,
+            false,
+            true,
         );
+        assert_eq!(&face_selected[96..100], &1.0_f32.to_ne_bytes());
+        assert_eq!(&face_selected[100..104], &0.0_f32.to_ne_bytes());
+        assert_eq!(&face_selected[104..108], &1.0_f32.to_ne_bytes());
+        assert_eq!(&face_selected[108..112], &[0; 4]);
+        assert_ne!(selected, face_selected);
     }
 
     #[test]
     #[ignore = "needs a GPU"]
-    fn selection_is_ten_percent_once_in_every_mode_and_restores_original_pixels() {
+    fn selection_accent_is_stable_and_restores_pixels_in_every_mode() {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter =
             block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
@@ -2276,8 +2733,7 @@ mod tests {
                 assert_eq!(selected, render(&scene), "no accumulation: {mode:?}");
                 scene.set_selected(false);
                 assert_eq!(plain, render(&scene), "exact restore: {mode:?}");
-                let background = &plain[..4];
-                let mut geometry = 0;
+                let mut changed_geometry = 0;
                 for (index, (a, b)) in plain
                     .as_chunks::<4>()
                     .0
@@ -2288,33 +2744,86 @@ mod tests {
                     assert_eq!(a[3], b[3]);
                     let x = index % 256;
                     let y = index / 256;
-                    if a == background || ((100..125).contains(&x) && (75..95).contains(&y)) {
-                        assert_eq!(a, b, "background/occlusion unchanged: {mode:?}");
+                    if (100..125).contains(&x) && (75..95).contains(&y) {
+                        assert_eq!(a, b, "UI occlusion unchanged: {mode:?}");
                         continue;
                     }
-                    geometry += 1;
-                    for channel in 0..3 {
-                        let decode = |value: u8| {
-                            let c = f64::from(value) / 255.0;
-                            if format.is_srgb() {
-                                if c <= 0.04045 {
-                                    c / 12.92
-                                } else {
-                                    ((c + 0.055) / 1.055).powf(2.4)
-                                }
-                            } else {
-                                c
-                            }
-                        };
-                        assert!(
-                            (decode(b[channel]) - (decode(a[channel]) * 1.10).min(1.0)).abs()
-                                < 0.012,
-                            "linear RGB multiplier: {format:?}/{mode:?} {a:?} -> {b:?}"
-                        );
-                    }
+                    changed_geometry += usize::from(a != b);
                 }
-                assert!(geometry > 0, "mode must draw geometry: {mode:?}");
+                assert!(changed_geometry > 0, "selection accent missing: {mode:?}");
             }
+            let changed_pixels = |a: &[u8], b: &[u8]| {
+                a.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(b.as_chunks::<4>().0)
+                    .filter(|(a, b)| a != b)
+                    .count()
+            };
+            scene.set_display_mode(SceneDisplayMode::Shaded);
+            scene.set_selected(false);
+            scene.set_item_selected_faces(&device, 0, Vec::new());
+            let unselected = render(&scene);
+            let visible_face = (0..mesh.face_count() as u32).find(|face| {
+                scene.set_item_selected_faces(&device, 0, vec![*face]);
+                changed_pixels(&unselected, &render(&scene)) > 0
+            });
+            scene.set_item_selected_faces(&device, 0, Vec::new());
+            let visible_face = visible_face.expect("fixture has a camera-visible face");
+            for mode in [
+                SceneDisplayMode::Points,
+                SceneDisplayMode::Wireframe,
+                SceneDisplayMode::Line,
+                SceneDisplayMode::HiddenLine,
+                SceneDisplayMode::NoShading,
+                SceneDisplayMode::Shaded,
+                SceneDisplayMode::Default,
+            ] {
+                scene.set_display_mode(mode);
+                scene.set_selected(false);
+                scene.set_item_selected_faces(&device, 0, Vec::new());
+                let plain = render(&scene);
+                scene.set_item_selected_faces(&device, 0, vec![visible_face]);
+                assert!(
+                    scene.selected_face_line_count > 0,
+                    "face boundary vertices built"
+                );
+                let face = render(&scene);
+                scene.set_item_selected_faces(&device, 0, Vec::new());
+                scene.set_selected(true);
+                let body = render(&scene);
+                assert!(
+                    changed_pixels(&plain, &face) > 0,
+                    "face selection is visible in {mode:?}"
+                );
+                assert!(
+                    changed_pixels(&plain, &face) < changed_pixels(&plain, &body),
+                    "face selection remains independent from whole-body selection in {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn face_selection_boundaries_follow_mesh_face_ranges_without_triangulation_diagonals() {
+        let mesh = NewellSolid::box_solid(1.0, 1.0, 1.0)
+            .unwrap()
+            .tessellate(0.05)
+            .unwrap();
+        assert!(mesh.face_count() > 1);
+        for face in 0..mesh.face_count() as u32 {
+            let boundary = face_boundary_indices(&mesh, &[face]);
+            assert!(!boundary.is_empty());
+            assert_eq!(boundary.len() % 2, 0);
+            assert!(boundary.iter().all(|index| {
+                usize::try_from(*index).is_ok_and(|index| index < mesh.positions().len())
+            }));
+            let face_start = mesh.face_offsets()[face as usize];
+            let face_end = mesh.face_offsets()[face as usize + 1];
+            assert!(boundary.iter().all(|index| {
+                mesh.indices()[face_start as usize..face_end as usize].contains(index)
+            }));
+            assert!(boundary.len() < (face_end - face_start) as usize * 2);
         }
     }
 

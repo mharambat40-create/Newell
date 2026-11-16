@@ -1,4 +1,7 @@
 "Command Bar"
+Normal context, including Sketch setup. Datum > [S]ketch opens Action_Box_Sketch.txt.
+Setup OK switches this strip to Sketch_Bar.txt. Editing OK or Cancel restores it.
+Utilities > Properties reopens a focused Sketch. See README_UI.md section 42.
 
  Workbench │ Datum │ Create │ Shape │ Modify │ Pattern │ Utilities
 

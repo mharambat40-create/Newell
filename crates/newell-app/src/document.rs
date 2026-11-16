@@ -235,6 +235,45 @@ impl DocumentSession {
         }
         Ok(changed)
     }
+    /// Commits a private sketch draft without replacing the B-Rep scene.
+    pub(crate) fn commit_sketch(
+        &mut self,
+        source: DocumentVersion,
+        before: Option<FeatureId>,
+        editing: Option<FeatureId>,
+        recipe: newell_model::sketch::SketchRecipe,
+    ) -> Result<(), AppError> {
+        if self.version() != source {
+            return Err(newell_model::ModelError::InvalidGeometryReference.into());
+        }
+        let revision = self.next_revision()?;
+        if let Some(feature) = editing {
+            self.document.replace_sketch(feature, recipe)?;
+        } else {
+            self.document.insert_sketch(before, recipe)?;
+        }
+        self.changed(revision);
+        Ok(())
+    }
+
+    pub(crate) fn commit_formula_sketch(
+        &mut self,
+        source: DocumentVersion,
+        before: Option<FeatureId>,
+        editing: Option<FeatureId>,
+        recipe: newell_model::sketch::SketchRecipe,
+        parameters: &newell_model::parameters::ParameterDraft,
+    ) -> Result<(), AppError> {
+        if self.version() != source {
+            return Err(newell_model::ModelError::InvalidGeometryReference.into());
+        }
+        let revision = self.next_revision()?;
+        self.document
+            .commit_sketch_with_formulas(before, editing, recipe, parameters)?;
+        self.changed(revision);
+        Ok(())
+    }
+
     fn edit_metadata(
         &mut self,
         edit: impl FnOnce(&mut Document) -> Result<bool, newell_model::ModelError>,
@@ -346,6 +385,16 @@ impl DocumentSession {
                 let Some(id) = self.feature_id(id) else {
                     return Ok(false);
                 };
+                if let Some(Feature::Sketch {
+                    visible: current, ..
+                }) = self.document.feature(id)
+                {
+                    return if current == expected_visible && current != visible {
+                        self.edit_metadata(|document| document.set_sketch_visibility(id, *visible))
+                    } else {
+                        Ok(false)
+                    };
+                }
                 let Some(Feature::Base { outputs, .. }) = self.document.feature(id) else {
                     return Ok(false);
                 };
@@ -455,6 +504,7 @@ pub fn project_document(
                 .ok_or(AppError::InvalidDocumentProjection)?,
             visibility: match row.node {
                 HistoryNodeId::Operation(id) => match document.feature(id) {
+                    Some(Feature::Sketch { visible, .. }) => Some(*visible),
                     Some(Feature::Base { outputs, .. }) if !outputs.is_empty() => {
                         Some(outputs.iter().all(|entity| {
                             document

@@ -25,3 +25,6 @@ pub use error::RenderError;
 pub use glyph_atlas::{CellLayout, GlyphAtlas, GlyphInfo, GlyphRect, canonical_glyphs, load_font};
 pub use renderer::{FrameOutcome, PreparedScene, Renderer, SceneMeshItem};
 pub use ui::{Theme, UiPalette};
+
+mod sketch;
+pub use sketch::SketchStroke;

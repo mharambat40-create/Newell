@@ -30,8 +30,20 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let brightness = 0.22 + 0.78 * max(dot(normalize(in.normal), normalize(scene.light.xyz)), 0.0);
     let base = vec3<f32>(0.12, 0.30, 0.46);
     let mode = u32(scene.light.w);
-    if (mode == 4u) { return vec4<f32>(min(base * scene.selection.x, vec3<f32>(1.0)), 1.0); }
+    if (mode == 4u) {
+        let flat = min(base * scene.selection.x, vec3<f32>(1.0));
+        return vec4<f32>(mix(flat, vec3<f32>(0.35, 0.75, 0.95), 0.18 * scene.selection.y), 1.0);
+    }
     // Points and line-based modes select their geometry in Rust; their colour remains stable.
     if (mode == 0u || mode == 1u || mode == 2u || mode == 3u) { return vec4<f32>(min(base * scene.selection.x, vec3<f32>(1.0)), 1.0); }
-    return vec4<f32>(min(base * brightness * scene.selection.x, vec3<f32>(1.0)), 1.0);
+    let lit = min(base * brightness * scene.selection.x, vec3<f32>(1.0));
+    let selected = scene.selection.y > 0.5;
+    return vec4<f32>(select(lit, mix(lit, vec3<f32>(0.35, 0.75, 0.95), 0.18), selected), 1.0);
+}
+
+@fragment
+fn fs_selected_face(in: VertexOut) -> @location(0) vec4<f32> {
+    let accent = vec3<f32>(0.35, 0.75, 0.95);
+    let alpha = 0.24;
+    return vec4<f32>(accent * alpha, alpha);
 }

@@ -612,7 +612,8 @@ impl SelectionPanel {
                     && self.offset(geometry.window)
                         < ScrollState::max_offset(geometry.len, geometry.window)
             }
-            Some(Slot::Ok | Slot::Cancel) => true,
+            Some(Slot::Ok) => self.ok_enabled(),
+            Some(Slot::Cancel) => true,
             _ => false,
         };
         if !enabled {
@@ -988,7 +989,11 @@ impl SelectionPanel {
             grid,
             ctx,
             geometry.layout.actions,
-            self.id(OK),
+            if self.ok_enabled() {
+                self.id(OK)
+            } else {
+                self.surface()
+            },
             self.id(CANCEL),
             WidgetState::default(),
         );
@@ -1023,7 +1028,9 @@ impl SelectionPanel {
                 ring.push(self.id(DOWN));
             }
         }
-        ring.push(self.id(OK));
+        if self.ok_enabled() {
+            ring.push(self.id(OK));
+        }
         ring.push(self.id(CANCEL));
         ring
     }
@@ -1033,7 +1040,11 @@ impl SelectionPanel {
         self.scroll.clamp(geometry.len, geometry.window);
         let ring = self.ring(geometry);
         if !self.focus.is_some_and(|f| ring.contains(&f)) {
-            self.focus = Some(self.id(OK));
+            self.focus = if self.ok_enabled() {
+                Some(self.id(OK))
+            } else {
+                ring.first().copied()
+            };
         }
     }
 
@@ -1042,6 +1053,17 @@ impl SelectionPanel {
         self.scroll
             .offset
             .min(ScrollState::max_offset(self.len(), window))
+    }
+
+    fn ok_enabled(&self) -> bool {
+        !self.draft_order.is_empty()
+            || !self.runtime.as_ref().is_some_and(|request| {
+                matches!(
+                    request.destination,
+                    crate::SelectionDestination::Field { field, .. }
+                        if field.operation == crate::ActionOperation::Sketch
+                )
+            })
     }
 
     fn confirm(&mut self) {

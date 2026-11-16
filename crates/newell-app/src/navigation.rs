@@ -186,6 +186,7 @@ pub struct Navigation {
     scroll_gate: NavigationGesture,
     pinch_gate: NavigationGesture,
     transition: Option<ViewTransition>,
+    sketch_aligned: bool,
     revision: u64,
 }
 impl Navigation {
@@ -491,7 +492,7 @@ impl Navigation {
     pub const fn has_pending_drag(&self) -> bool {
         self.pending_drag.is_some()
     }
-    fn secondary_pan_active(&self) -> bool {
+    pub(crate) fn has_secondary_pan(&self) -> bool {
         self.pending_drag
             .or(self.drag)
             .is_some_and(|drag| drag.kind == DragKind::SecondaryPan)
@@ -507,7 +508,7 @@ impl Navigation {
         {
             return false;
         }
-        let point = if self.secondary_pan_active() {
+        let point = if self.has_secondary_pan() {
             (
                 point.0 + self.secondary_scroll_offset.0,
                 point.1 + self.secondary_scroll_offset.1,
@@ -530,7 +531,7 @@ impl Navigation {
         phase: TouchPhase,
         pointer: (f64, f64),
     ) -> Option<bool> {
-        if !self.secondary_pan_active() {
+        if !self.has_secondary_pan() {
             if !self.secondary_scroll_stream || phase == TouchPhase::Started {
                 self.secondary_scroll_stream = false;
                 return None;
@@ -717,6 +718,19 @@ impl Navigation {
         self.release(DragKind::PrimaryOrbit);
         click
     }
+    /// Classify the final secondary position with the same accumulated motion as pan.
+    pub fn finish_secondary(&mut self, point: (f64, f64)) -> (bool, bool) {
+        let changed = self.secondary_pan_pending() && self.advance_pointer(point);
+        let click = self.pending_drag.is_some_and(|pending| {
+            pending.kind == DragKind::SecondaryPan
+                && pending.mesh_revision == self.scene.revision()
+                && pending.camera == self.camera
+                && self.visible(point)
+        });
+        self.release(DragKind::SecondaryPan);
+        (click, changed)
+    }
+
     pub fn release(&mut self, kind: DragKind) {
         if kind == DragKind::SecondaryPan {
             self.secondary_scroll_offset = (0.0, 0.0);
@@ -739,6 +753,7 @@ impl Navigation {
     /// Cancels captures without altering pose. Ongoing trackpad streams stay rejected.
     pub fn cancel(&mut self) {
         self.cancel_captures();
+        self.finish_sketch_alignment();
         self.transition = None;
     }
     /// Clears direct/pending gestures while allowing an automatic view transition to continue.
@@ -771,6 +786,9 @@ impl Navigation {
     ) -> bool {
         let visible =
             eligible && self.visible(point) && self.drag.is_none() && self.pending_drag.is_none();
+        if visible {
+            self.finish_sketch_alignment();
+        }
         let mut end = false;
         let capture = if let Some((source, phase)) = stream {
             let gate = match source {
@@ -850,6 +868,83 @@ impl Navigation {
     pub const fn revision(&self) -> u64 {
         self.revision
     }
+    pub(crate) fn enter_sketch(&mut self, plane: newell_ui::OriginPlane, now: Instant) {
+        let mut from = self.prepare_transition_start(now);
+        self.sketch_aligned = true;
+        let pivot = [0.; 3];
+        let depth = dot(sub(pivot, from.eye), from.basis().2);
+        let depth = if depth > MIN_DISTANCE {
+            depth
+        } else {
+            from.focal_distance
+        };
+        let screen = from.project(pivot).unwrap_or((
+            f64::from(from.viewport.x) + f64::from(from.viewport.width) * 0.5,
+            f64::from(from.viewport.y) + f64::from(from.viewport.height) * 0.5,
+        ));
+        if from.perspective {
+            from.orthographic_height = 2.0 * depth * (from.vertical_fov * 0.5).tan();
+            from.perspective = false;
+        }
+        let [u, v, n] = plane.basis().map(|axis| axis.map(f64::from));
+        let mut to = from;
+        to.orientation = crate::camera::Quaternion::from_basis(u, v, scale(n, -1.0));
+        to.eye = scale(n, depth);
+        let to = to
+            .interpolate_view_about(to, 1.0, pivot, screen, depth)
+            .unwrap_or(to);
+        let from = from
+            .interpolate_view_about(from, 1.0, pivot, screen, depth)
+            .unwrap_or(from);
+        self.camera = from;
+        if !self.install_transition(now, from, to, pivot, screen, depth) {
+            self.camera = to;
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub(crate) fn finish_sketch_alignment(&mut self) {
+        if self.sketch_aligned
+            && let Some(transition) = self.transition.take()
+        {
+            let before = self.camera;
+            self.camera = transition.to;
+            self.record(before);
+        }
+    }
+
+    pub(crate) fn leave_sketch(&mut self, mut camera: Camera) {
+        self.sketch_aligned = false;
+        self.cancel_view_transition();
+        self.cancel_captures();
+        camera.resize(self.camera.viewport);
+        let before = self.camera;
+        self.camera = camera;
+        self.record(before);
+    }
+
+    pub(crate) fn sketch_point(
+        &self,
+        plane: newell_ui::OriginPlane,
+        p: (f64, f64),
+    ) -> Option<[f64; 2]> {
+        if self.transition.is_some() || !self.visible(p) {
+            return None;
+        }
+        self.sketch_plane_hit(plane, p)
+    }
+
+    pub(crate) fn sketch_plane_hit(
+        &self,
+        plane: newell_ui::OriginPlane,
+        p: (f64, f64),
+    ) -> Option<[f64; 2]> {
+        let [u, v, n] = plane.basis().map(|axis| axis.map(f64::from));
+        let hit = plane_hit(self.camera.ray(p)?, [0.; 3], n)?;
+        let point = [dot(hit, u), dot(hit, v)];
+        point.iter().all(|v| v.is_finite()).then_some(point)
+    }
+
     /// Routes widget orientations through the existing sole camera authority.
     pub fn align_view(&mut self, direction: newell_ui::navigation_widgets::ViewDirection) -> bool {
         self.cancel();
@@ -1017,6 +1112,7 @@ impl Navigation {
     }
     /// Cancels only an automatic view animation when its window is no longer renderable.
     pub fn cancel_view_transition(&mut self) {
+        self.finish_sketch_alignment();
         self.transition = None;
     }
     /// Explicit principal-axis alignment, with a stable vertical-view heading.
@@ -1145,6 +1241,14 @@ impl Navigation {
         } / f64::from(camera.viewport.height.max(1))) as f32;
         Some(grid)
     }
+    pub(crate) fn sketch_grid_snapshot(
+        &self,
+        dark: bool,
+        plane: newell_ui::OriginPlane,
+    ) -> Option<newell_render::GridSnapshot> {
+        Some(self.grid_snapshot(dark)?.on_origin_plane(plane))
+    }
+
     /// Immutable payload for the View. Invalid float conversion never enters GPU uniforms.
     #[must_use]
     pub fn snapshot(&self) -> Option<CameraSnapshot> {

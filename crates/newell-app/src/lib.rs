@@ -69,3 +69,5 @@ pub fn run() -> Result<(), AppError> {
     event_loop.run_app(&mut app)?;
     app.into_result()
 }
+
+mod sketch;

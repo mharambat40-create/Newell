@@ -1383,6 +1383,7 @@ dependencies = [
  "insta",
  "proptest",
  "thiserror 2.0.21",
+ "ttf-parser",
 ]
 
 [[package]]

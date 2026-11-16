@@ -31,6 +31,8 @@ pub struct NewellProfileEdge {
     pub start: [f64; 3],
     pub end: [f64; 3],
     pub straight: bool,
+    /// Exact trimmed polynomial cubic when certified by the native edge.
+    pub cubic: Option<[[f64; 3]; 4]>,
 }
 /// A genuine connected boundary wire on a supporting face.
 #[derive(Debug, Clone, PartialEq)]

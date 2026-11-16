@@ -666,6 +666,39 @@ impl ShellController {
         self.published_shell.take_command_start();
         start
     }
+    pub fn take_sketch_intent(&mut self) -> Option<newell_ui::SketchIntent> {
+        let intent = self.shell.take_sketch_intent();
+        self.published_shell.take_sketch_intent();
+        intent
+    }
+
+    pub fn set_sketch_mode(
+        &mut self,
+        mode: newell_ui::SketchMode,
+        focus_plane: bool,
+    ) -> Result<Update, UiError> {
+        let mut candidate = self.shell.clone();
+        candidate.set_sketch_mode(mode, focus_plane);
+        let grid = candidate.compose()?;
+        self.publish(candidate, grid, FrameCause::External)?;
+        Ok(Update { grid: true })
+    }
+
+    pub(crate) fn set_sketch_ready(
+        &mut self,
+        ready: bool,
+        tool: Option<newell_ui::DrawTool>,
+    ) -> Result<Update, UiError> {
+        if self.shell.sketch_ready() == ready && self.shell.sketch_tool() == tool {
+            return Ok(Update::default());
+        }
+        let mut candidate = self.shell.clone();
+        candidate.set_sketch_ready(ready, tool);
+        let grid = candidate.compose()?;
+        self.publish(candidate, grid, FrameCause::External)?;
+        Ok(Update { grid: true })
+    }
+
     pub fn take_selection_request(&mut self) -> Option<newell_ui::SelectionUiRequest> {
         self.selection_request.take()
     }

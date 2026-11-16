@@ -47,6 +47,8 @@ pub enum FrameOutcome {
 pub struct SceneMeshItem {
     pub mesh: NewellMesh,
     pub selected: bool,
+    /// Face ordinals selected independently within this mesh.
+    pub selected_faces: Vec<u32>,
 }
 /// Fully uploaded resources held privately until the matching UI/scene publication succeeds.
 pub struct PreparedScene {
@@ -79,6 +81,9 @@ pub struct Renderer {
     navigation: crate::navigation_widgets::NavOverlay,
     scene_available: bool,
     grid: crate::grid::Grid,
+    sketch: crate::sketch::SketchPipeline,
+    sketch_strokes: Vec<crate::SketchStroke>,
+    sketch_scale: f32,
     grid_snapshot: Option<crate::GridSnapshot>,
     /// Fed by both the uncaptured-error handler and the device-lost callback.
     gpu_errors: Receiver<RenderError>,
@@ -160,6 +165,7 @@ impl Renderer {
         let navigation = crate::navigation_widgets::NavOverlay::new(&device, format);
         let scene = Scene::new(&device, format, (width, height));
         let grid = crate::grid::Grid::new(&device, format);
+        let sketch = crate::sketch::SketchPipeline::new(&device, format);
         Ok(Self {
             surface,
             device,
@@ -174,6 +180,9 @@ impl Renderer {
             navigation,
             scene_available: true,
             grid,
+            sketch,
+            sketch_strokes: Vec::new(),
+            sketch_scale: 1.0,
             grid_snapshot: None,
             gpu_errors,
         })
@@ -246,7 +255,7 @@ impl Renderer {
             &self.device,
             items
                 .into_iter()
-                .map(|item| (item.mesh, item.selected))
+                .map(|item| (item.mesh, item.selected, item.selected_faces))
                 .collect(),
             camera,
         );
@@ -288,6 +297,15 @@ impl Renderer {
     /// Updates one projected item flag without rebuilding geometry or accumulating brightness.
     pub fn set_scene_item_selected(&mut self, index: usize, selected: bool) {
         self.scene.set_item_selected(index, selected);
+    }
+    /// Updates generation-qualified face selection projected onto one scene item.
+    pub fn set_scene_item_selected_faces(&mut self, index: usize, faces: Vec<u32>) {
+        self.scene
+            .set_item_selected_faces(&self.device, index, faces);
+    }
+    /// Updates highlighted built-in world-origin references by semantic identity.
+    pub fn set_scene_origin_selection(&mut self, selected: Vec<newell_ui::OriginReference>) {
+        self.scene.set_origin_selection(&self.device, selected);
     }
     /// Uploads an owned Newell mesh to the 3D viewport. SolidCore types cannot cross this API.
     pub fn set_scene_mesh(&mut self, mesh: NewellMesh) {
@@ -391,6 +409,12 @@ impl Renderer {
         self.grid_snapshot = snapshot;
     }
 
+    /// Publishes the active draft's projected stroke packet.
+    pub fn set_sketch_strokes(&mut self, strokes: Vec<crate::SketchStroke>, scale: f32) {
+        self.sketch_strokes = strokes;
+        self.sketch_scale = scale;
+    }
+
     /// Acquires, draws the scene and overlays, then presents the frame.
     pub fn render(&mut self) -> Result<FrameOutcome, RenderError> {
         self.check_gpu_errors()?;
@@ -455,6 +479,21 @@ impl Renderer {
             self.grid
                 .draw(&self.device, &mut encoder, &view, &self.scene, snapshot);
         }
+        self.sketch.draw(
+            &self.device,
+            &mut encoder,
+            &view,
+            &self.scene,
+            crate::sketch::StrokeFrame {
+                strokes: &self.sketch_strokes,
+                surface: [self.config.width, self.config.height],
+                color: crate::ui::target_rgb(
+                    self.palette.foreground(newell_ui::InkRole::Text),
+                    self.config.format.is_srgb(),
+                ),
+                scale: self.sketch_scale,
+            },
+        );
         self.navigation.draw(&mut encoder, &view);
         // Separate overlay pass: the viewport pass above stays untouched.
         let mut overlay = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

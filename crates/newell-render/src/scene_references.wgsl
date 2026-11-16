@@ -13,6 +13,7 @@ struct VertexIn {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) dashed: f32,
+    @location(4) selected: f32,
 }
 
 struct VertexOut {
@@ -22,6 +23,7 @@ struct VertexOut {
     @location(2) @interpolate(linear) dash_distance: f32,
     @location(3) @interpolate(flat) dashed: u32,
     @location(4) @interpolate(flat) plane_visible: u32,
+    @location(5) @interpolate(flat) selected: u32,
 }
 
 fn depth_visibility(position: vec4<f32>) -> f32 {
@@ -39,6 +41,7 @@ fn vs_main(vertex: VertexIn) -> VertexOut {
     out.position = scene.view_projection * vec4<f32>(vertex.position, 1.0);
     out.normal = vertex.normal;
     out.color = vertex.color;
+    out.selected = u32(vertex.selected);
     let origin = scene.view_projection * vec4<f32>(0.0,0.0,0.0,1.0);
     // Screen-linear interpolation keeps dash/gap spacing constant in perspective too.
     let delta = (out.position.xy / max(out.position.w, 0.000001) - origin.xy / origin.w) * scene.viewport.xy * 0.5;
@@ -62,7 +65,8 @@ fn vs_main(vertex: VertexIn) -> VertexOut {
 fn fs_surface(in: VertexOut) -> @location(0) vec4<f32> {
     let light = 0.8 + 0.2 * max(dot(normalize(in.normal), normalize(vec3<f32>(0.4, 0.6, 0.7))), 0.0);
     let alpha = in.color.a * depth_visibility(in.position);
-    return vec4<f32>(in.color.rgb * light * alpha, alpha);
+    let selected = mix(in.color.rgb, vec3<f32>(0.35, 0.75, 0.95), 0.65 * f32(in.selected));
+    return vec4<f32>(selected * light * alpha, alpha);
 }
 
 @fragment
@@ -70,5 +74,6 @@ fn fs_line(in: VertexOut) -> @location(0) vec4<f32> {
     if in.plane_visible == 0u { discard; }
     if in.dashed != 0u && in.dash_distance % (scene.viewport.z + scene.viewport.w) >= scene.viewport.z { discard; }
     let alpha = in.color.a * depth_visibility(in.position);
-    return vec4<f32>(in.color.rgb * alpha, alpha);
+    let selected = mix(in.color.rgb, vec3<f32>(0.35, 0.75, 0.95), 0.65 * f32(in.selected));
+    return vec4<f32>(selected * alpha, alpha);
 }

@@ -392,12 +392,13 @@ impl super::ShellState {
         std::mem::take(&mut self.command_started).then_some(self.operation)
     }
     pub fn field_descriptors(&self) -> Vec<crate::SelectionFieldDescriptor> {
-        let panels: [&dyn crate::create_box::ActionBoxUi; 5] = [
+        let panels: [&dyn crate::create_box::ActionBoxUi; 6] = [
             &self.extrude,
             &self.revolve,
             &self.loft,
             &self.sweep,
             &self.boolean,
+            &self.sketch,
         ];
         panels
             .into_iter()
@@ -449,6 +450,7 @@ impl super::ShellState {
                 super::ActionOperation::Loft => self.loft.set_selection_counts(&counts),
                 super::ActionOperation::Sweep => self.sweep.set_selection_counts(&counts),
                 super::ActionOperation::Boolean => self.boolean.set_selection_counts(&counts),
+                super::ActionOperation::Sketch => (),
             }
         }
         Ok(changed)
@@ -461,7 +463,17 @@ impl super::ShellState {
         })
     }
     pub fn open_selection(&mut self, request: crate::SelectionOpen) -> Result<(), UiError> {
-        let qualified = matches!(request.destination,crate::SelectionDestination::Field{session,field} if field.geometry_qualified() && self.numeric_identity==Some((request.document,session,field.operation)) && self.selection_field_visible(field));
+        let qualified = match request.destination {
+            crate::SelectionDestination::Field { session, field }
+                if self.selection_field_visible(field) =>
+            {
+                field.operation == super::ActionOperation::Sketch
+                    || (field.geometry_qualified()
+                        && self.numeric_identity
+                            == Some((request.document, session, field.operation)))
+            }
+            _ => false,
+        };
         if request.document != self.projection.document
             || (!qualified
                 && request
@@ -859,6 +871,8 @@ impl super::ShellState {
             self.numeric[self.operation.slot()].reset();
         }
         self.selection.dismiss();
+        self.sketch.mode = crate::SketchMode::Closed;
+        self.sketch_intent = None;
         self.selection_request = None;
         self.tree_focus = None;
         self.properties_request = None;
@@ -886,7 +900,9 @@ impl super::ShellState {
             {
                 candidate.selection.dismiss();
                 candidate.sync();
-            } else {
+            } else if !matches!(request.destination, crate::SelectionDestination::Field { field, .. }
+                if field.operation == super::ActionOperation::Sketch)
+            {
                 let rows = candidate
                     .projection
                     .elements

@@ -100,6 +100,8 @@ pub struct ProfileEdge {
     pub start: [f64; 3],
     pub end: [f64; 3],
     pub straight: bool,
+    /// Exact trimmed polynomial cubic when certified by the native edge.
+    pub cubic: Option<[[f64; 3]; 4]>,
 }
 /// A real boundary wire on this supporting face.
 #[derive(Debug, Clone, PartialEq)]
@@ -431,7 +433,7 @@ impl PreparedDocument {
         Ok(self.candidate)
     }
 }
-fn bindings(spec: &ExtrudeSpec) -> BTreeSet<crate::formula::ParameterId> {
+pub(crate) fn bindings(spec: &ExtrudeSpec) -> BTreeSet<crate::formula::ParameterId> {
     let spec = spec.inputs();
     let mut result = BTreeSet::new();
     let mut values: Vec<_> = spec
@@ -583,6 +585,7 @@ impl Document {
         let mut candidate = self.clone();
         let active = edit.spec().map_or_else(BTreeSet::new, bindings);
         candidate.parameter_registry = parameters.prepared_registry(&active)?;
+        candidate.reevaluate_sketches()?;
         if let Some(spec) = edit.spec() {
             crate::validate_extrude(spec, candidate.parameters())?;
         }
@@ -963,7 +966,7 @@ impl DocumentCandidate {
                 consumed.push(entity);
             }
             let expected_kind = match feature {
-                Feature::Base { .. } => None,
+                Feature::Base { .. } | Feature::Sketch { .. } => None,
                 Feature::Extrude(extrude) => Some(match extrude.spec.geometry {
                     ExtrudeGeometry::Solid => EntityKind::Body,
                     ExtrudeGeometry::Surface => EntityKind::Surface,
@@ -1057,7 +1060,7 @@ impl DocumentCandidate {
             }
             let mut outputs = match feature {
                 Feature::Base { outputs, .. } => outputs.clone(),
-                Feature::Extrude(_) => Vec::new(),
+                Feature::Extrude(_) | Feature::Sketch { .. } => Vec::new(),
             };
             let base_outputs: Vec<_> = outputs
                 .iter()
@@ -1221,6 +1224,8 @@ impl DocumentCandidate {
             active.extend(outputs.iter().copied());
             output_map.insert(id, outputs);
         }
+        self.candidate
+            .remap_replayed_sketch_references(&self.source)?;
         self.candidate.geometry_generation = result.generation;
         let manifest = CommitManifest {
             edit: self.edit,

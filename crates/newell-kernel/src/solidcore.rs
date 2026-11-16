@@ -11,6 +11,20 @@ use solidcore::kernel::{Kernel, KernelOptions, Tolerances};
 // of display deflection and the M4 modeling tolerance. Exact oracles stay fixed.
 const PROPERTY_RELATIVE_ACCURACY: f64 = 1e-8;
 
+fn trim_cubic_controls(controls: [[f64; 3]; 4], lo: f64, hi: f64) -> Option<[[f64; 3]; 4]> {
+    if !(0.0..=1.0).contains(&lo) || !(0.0..=1.0).contains(&hi) || hi <= lo {
+        return None;
+    }
+    let split = |[a, b, c, d]: [[f64; 3]; 4], t: f64| {
+        let lerp = |p: [f64; 3], q: [f64; 3]| std::array::from_fn(|i| (1.0 - t) * p[i] + t * q[i]);
+        let (ab, bc, cd) = (lerp(a, b), lerp(b, c), lerp(c, d));
+        let (abc, bcd) = (lerp(ab, bc), lerp(bc, cd));
+        let center = lerp(abc, bcd);
+        ([a, ab, abc, center], [center, bcd, cd, d])
+    };
+    Some(split(split(controls, hi).0, lo / hi).1)
+}
+
 fn mapped_kernel(span: f64) -> Kernel {
     let eps = 1e-7_f64.max(1e-10 * span);
     let mut kernel = Kernel::new(&KernelOptions {
@@ -677,6 +691,18 @@ impl SolidCoreGeometry {
         start: f64,
     ) -> Result<crate::NewellShapeKey, crate::NewellKernelError> {
         self.0.mirror_sweep(shape, profile, direction, start)
+    }
+
+    /// Joins two coaxial sweeps with a shared start, preserving the original profile roles.
+    pub fn join_extrusion_sides(
+        &mut self,
+        first: crate::NewellShapeKey,
+        second: crate::NewellShapeKey,
+        profile: (crate::NewellShapeKey, u32),
+        direction: [f64; 3],
+    ) -> Result<crate::NewellShapeKey, crate::NewellKernelError> {
+        self.0
+            .join_extrusion_sides(first, second, profile, direction)
     }
 
     /// Executes an exact solid Boolean; an empty cut has no output.
@@ -2421,6 +2447,23 @@ impl MigrationGeometry {
                     end,
                 )
             }
+            (
+                Sides::Second {
+                    extent: Extent::UpTo(lower),
+                    reverse: false,
+                },
+                Extent::UpTo(upper),
+            ) if self.surface_end_is_tilted(request.profile, lower)?
+                || self.surface_end_is_tilted(request.profile, upper)? =>
+            {
+                self.sweep_surface_between(
+                    request.profile,
+                    request.boundary,
+                    request.direction,
+                    SheetStart::Face(lower),
+                    upper,
+                )
+            }
             (Sides::Second { extent, reverse }, main) => {
                 let main = self.fixed_surface_extent(
                     request.profile,
@@ -2710,11 +2753,59 @@ impl MigrationGeometry {
                         }
                         _ => false,
                     });
+                    let cubic = edge.curve.as_ref().and_then(|curve| {
+                        let solidcore::curve::curve::CurveKind::BSpline(spline) = curve.kind()
+                        else {
+                            return None;
+                        };
+                        let native = spline.gw_nurb()?;
+                        let &[lo, lo1, lo2, lo3, hi, hi1, hi2, hi3] = native.knots() else {
+                            return None;
+                        };
+                        if native.degree() != 3
+                            || lo >= hi
+                            || [lo1, lo2, lo3] != [lo; 3]
+                            || [hi1, hi2, hi3] != [hi; 3]
+                            || edge.interval.min() < lo
+                            || edge.interval.max() > hi
+                        {
+                            return None;
+                        }
+                        let (points, weights) = spline.control_polygon().ok()?;
+                        let [p0, p1, p2, p3] = points.as_slice() else {
+                            return None;
+                        };
+                        if !weights.is_empty() {
+                            let &[w0, w1, w2, w3] = weights.as_slice() else {
+                                return None;
+                            };
+                            if w0 <= 0.0 || !w0.is_finite() || [w1, w2, w3] != [w0; 3] {
+                                return None;
+                            }
+                        }
+                        let controls = [p0, p1, p2, p3].map(|p| [p.x, p.y, p.z]);
+                        let t0 = (edge.interval.min() - lo) / (hi - lo);
+                        let t1 = (edge.interval.max() - lo) / (hi - lo);
+                        let controls = trim_cubic_controls(controls, t0, t1)?;
+                        let distance = |p: [f64; 3], q: solidcore::math::Point3| {
+                            (p[0] - q.x).hypot(p[1] - q.y).hypot(p[2] - q.z)
+                        };
+                        let tol = body.tolerance();
+                        if distance(controls[0], a) <= tol && distance(controls[3], b) <= tol {
+                            Some(controls)
+                        } else if distance(controls[3], a) <= tol && distance(controls[0], b) <= tol
+                        {
+                            Some([controls[3], controls[2], controls[1], controls[0]])
+                        } else {
+                            None
+                        }
+                    });
                     edges.push(crate::NewellProfileEdge {
                         edge: *edge_key,
                         start: [a.x, a.y, a.z],
                         end: [b.x, b.y, b.z],
                         straight,
+                        cubic,
                     });
                 }
                 // Constructor occurrence order is stable when native loop heads move.
@@ -3500,7 +3591,6 @@ fn native_operation_copies(
     let target = independent_native_copy(kernel, target)?;
     let tool = independent_native_copy(kernel, tool)?;
     let result = operation(kernel, target, tool).map_err(crate::operation_error)?;
-    assert_native_tolerances(&result, eps / 2.)?;
     if !result.face_list().is_empty()
         && solidcore::query::api_queries::brep_material_census(&result)
             .map_err(crate::operation_error)?
@@ -3509,6 +3599,7 @@ fn native_operation_copies(
     {
         validate_native_sheet_links(&result)?;
     }
+    assert_native_tolerances(&result, eps / 2.)?;
     Ok(result)
 }
 
@@ -4289,6 +4380,55 @@ impl MigrationGeometry {
         )
         .map_err(crate::operation_error)
     }
+    fn join_extrusion_sides(
+        &mut self,
+        first: crate::NewellShapeKey,
+        second: crate::NewellShapeKey,
+        profile: (crate::NewellShapeKey, u32),
+        direction: [f64; 3],
+    ) -> Result<crate::NewellShapeKey, crate::NewellKernelError> {
+        use crate::{NewellFaceProvenance as Role, operation_error};
+        self.check_cancelled()?;
+        let (face, _) = self.resolve_source_face(profile.0, profile.1)?;
+        let source = native_planar_frame(&self.kernel, &self.objects[&profile.0], face)?;
+        let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+        let denominator = dot(source.normal, direction);
+        let stations = |key| {
+            let body = self.objects.get(&key)?;
+            let roles = self.roles.get(&key)?;
+            if self.extrusion_sources.get(&key) != Some(&profile) {
+                return None;
+            }
+            let station = |role| {
+                let cap = native_planar_frame(&self.kernel, body, *roles.get(&role)?).ok()?;
+                if (dot(source.normal, cap.normal).abs() - 1.).abs() > 1e-12 {
+                    return None;
+                }
+                Some(
+                    dot(
+                        std::array::from_fn(|i| cap.origin[i] - source.origin[i]),
+                        source.normal,
+                    ) / denominator,
+                )
+            };
+            Some([station(Role::StartCap)?, station(Role::EndCap)?])
+        };
+        if let (Some(a), Some(b)) = (stations(first), stations(second))
+            && denominator.abs() > 1e-12
+            && (a[0] - b[0]).abs() <= 64. * f64::EPSILON * a[0].abs().max(1.)
+        {
+            return self.extrude_face(
+                profile.0,
+                profile.1,
+                Some(direction),
+                a[0].min(a[1]).min(b[1]),
+                a[0].max(a[1]).max(b[1]),
+            );
+        }
+        self.boolean(first, second, crate::NewellBooleanMode::Add)?
+            .ok_or_else(|| operation_error("joined extrusion is empty"))
+    }
+
     fn boolean(
         &mut self,
         target: crate::NewellShapeKey,
@@ -4661,9 +4801,30 @@ impl MigrationGeometry {
             .ok_or_else(|| operation_error("geometry identity exhausted"))?;
         self.check_cancelled()?;
         changed.sort_unstable();
+        let source = |key| {
+            self.extrusion_sources
+                .get(&key)
+                .copied()
+                .zip(self.source_wires.get(&key).copied())
+        };
+        let wire = tools
+            .first()
+            .and_then(|&key| source(key))
+            .filter(|&lineage| {
+                tools
+                    .iter()
+                    .copied()
+                    .chain(changed.iter().map(|&index| targets[index]))
+                    .all(|key| source(key) == Some(lineage))
+            });
         let mut keys = Vec::new();
         for body in outputs {
-            keys.push(self.insert_anonymous(body, true)?);
+            let key = self.insert_anonymous(body, true)?;
+            if let Some((profile, wire)) = wire {
+                self.extrusion_sources.insert(key, profile);
+                self.source_wires.insert(key, wire);
+            }
+            keys.push(key);
         }
         Ok(crate::NewellSurfaceResult {
             outputs: keys,
@@ -5575,7 +5736,9 @@ fn native_planar_end_with_lineage(
             &|| check_native_cancelled(cancellation),
         )?;
         if !minimum.is_finite() || minimum <= eps {
-            return Err(operation_error("nonpositive planar-end reach"));
+            return Err(crate::NewellKernelError::InvalidParameter {
+                parameter: "target does not lie beyond the entire start section",
+            });
         }
     }
     let mut body =
@@ -6196,8 +6359,9 @@ fn native_finite_planar_end(
     direction: [f64; 3],
     clearance: f64,
 ) -> Result<solidcore::Brep, crate::NewellKernelError> {
-    let (direction, plane) =
-        native_finite_planar_end_parameters(kernel, source, target, direction, clearance, None)?;
+    let (direction, plane) = native_finite_planar_end_parameters(
+        kernel, source, target, direction, 0., clearance, None,
+    )?;
     native_planar_end_body(kernel, source.0, source.1, direction, plane)
 }
 
@@ -6290,6 +6454,7 @@ fn native_finite_planar_end_parameters(
     source: (&solidcore::Brep, solidcore::FaceId),
     target: (&solidcore::Brep, solidcore::FaceId),
     direction: [f64; 3],
+    start: f64,
     clearance: f64,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<([f64; 3], NativeStation), crate::NewellKernelError> {
@@ -6348,10 +6513,10 @@ fn native_finite_planar_end_parameters(
             (plane.0.map(|n| n / denominator), -plane.1 / denominator),
             &|| check_native_cancelled(cancellation),
         )?;
-        if !minimum.is_finite() || minimum - clearance <= operation_eps {
-            return Err(operation_error(
-                "target does not lie beyond the entire start section",
-            ));
+        if !minimum.is_finite() || minimum - start - clearance <= operation_eps {
+            return Err(crate::NewellKernelError::InvalidParameter {
+                parameter: "target does not lie beyond the entire start section",
+            });
         }
         projected.push(solidcore::curve::curve::Curve::from(
             lift_native_curve_to_plane(&curve, direction, plane)?,
@@ -6402,6 +6567,24 @@ impl MigrationGeometry {
         )
     }
 
+    fn surface_end_is_tilted(
+        &self,
+        profile: (crate::NewellShapeKey, u32),
+        target: crate::NewellFaceTarget,
+    ) -> Result<bool, crate::NewellKernelError> {
+        let frame = |key, slot| {
+            let (face, _) = self.resolve_source_face(key, slot)?;
+            native_planar_frame(&self.kernel, &self.objects[&key], face)
+        };
+        let a = frame(profile.0, profile.1)?.normal;
+        let b = frame(target.shape, target.face)?.normal;
+        Ok((0..3).any(|i| {
+            let j = (i + 1) % 3;
+            let k = (i + 2) % 3;
+            (a[j] * b[k] - a[k] * b[j]).abs() > 1e-10
+        }))
+    }
+
     fn sweep_surface_to_face(
         &mut self,
         profile: (crate::NewellShapeKey, u32),
@@ -6411,18 +6594,43 @@ impl MigrationGeometry {
         target: (crate::NewellShapeKey, u32),
         clearance: f64,
     ) -> Result<Vec<crate::NewellShapeKey>, crate::NewellKernelError> {
+        self.sweep_surface_between(
+            profile,
+            boundary,
+            direction,
+            SheetStart::Station(start),
+            crate::NewellFaceTarget {
+                shape: target.0,
+                face: target.1,
+                clearance,
+            },
+        )
+    }
+
+    fn sweep_surface_between(
+        &mut self,
+        profile: (crate::NewellShapeKey, u32),
+        boundary: crate::NewellBoundary,
+        direction: [f64; 3],
+        start: SheetStart<crate::NewellFaceTarget>,
+        target: crate::NewellFaceTarget,
+    ) -> Result<Vec<crate::NewellShapeKey>, crate::NewellKernelError> {
         use crate::{NewellBoundary as B, operation_error};
         self.check_cancelled()?;
         let (face, occurrences) = self.resolve_source_face(profile.0, profile.1)?;
-        let (target_face, _) = self.resolve_source_face(target.0, target.1)?;
+        let (target_face, _) = self.resolve_source_face(target.shape, target.face)?;
+        let target = (&self.objects[&target.shape], target_face, target.clearance);
+        let start = match start {
+            SheetStart::Station(station) => SheetStart::Station(station),
+            SheetStart::Face(lower) => {
+                let (face, _) = self.resolve_source_face(lower.shape, lower.face)?;
+                SheetStart::Face((&self.objects[&lower.shape], face, lower.clearance))
+            }
+        };
         let source = self
             .objects
             .get(&profile.0)
             .ok_or_else(|| operation_error("missing surface source"))?;
-        let target = self
-            .objects
-            .get(&target.0)
-            .ok_or_else(|| operation_error("missing surface target"))?;
         let mut groups = std::collections::BTreeMap::<u32, NativeBoundary>::new();
         for ((wire, edge), native) in occurrences {
             if match boundary {
@@ -6446,7 +6654,7 @@ impl MigrationGeometry {
                     &selected,
                     direction,
                     start,
-                    (target, target_face, clearance),
+                    target,
                     self.cancellation.as_deref(),
                 )?,
             ));
@@ -6620,6 +6828,7 @@ impl MigrationGeometry {
             (source, source_face),
             (target, target_face),
             direction,
+            start,
             clearance,
             self.cancellation.as_deref(),
         )?;
@@ -6668,23 +6877,63 @@ impl MigrationGeometry {
             .get(&profile.0)
             .ok_or_else(|| operation_error("missing ThroughAll source"))?;
         let keys: std::collections::BTreeSet<_> = targets.iter().copied().collect();
-        let targets = keys
-            .into_iter()
+        let bodies = keys
+            .iter()
             .map(|key| {
                 self.objects
-                    .get(&key)
+                    .get(key)
                     .ok_or_else(|| operation_error("missing ThroughAll target"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        native_generated_through_all_with_boundary(
+        let intersection = native_generated_through_all_with_boundary(
             &mut self.kernel,
             (source, face),
             direction,
             start,
-            &targets,
+            &bodies,
             Some(&selected),
             self.cancellation.as_deref(),
-        )
+        );
+        let mut end = match intersection {
+            Ok(end) => end,
+            Err(crate::NewellKernelError::Operation { message })
+                if message == "NoThroughAllHit" =>
+            {
+                f64::NEG_INFINITY
+            }
+            Err(error) => return Err(error),
+        };
+        // The intersection can omit contact where a sweep wall lies exactly on a
+        // material boundary. Independently certify the cap's complete trim coverage.
+        use crate::NewellFaceProvenance::{EndCap, StartCap};
+        for key in keys {
+            if self.is_surface(key) || self.extrusion_sources.get(&key) != Some(&profile) {
+                continue;
+            }
+            for role in [StartCap, EndCap] {
+                self.check_cancelled()?;
+                let Some(&cap) = self.roles.get(&key).and_then(|roles| roles.get(&role)) else {
+                    continue;
+                };
+                if let Ok(station) = native_starting_station(
+                    &mut self.kernel,
+                    (source, face),
+                    (&self.objects[&key], cap),
+                    direction,
+                    self.cancellation.as_deref(),
+                ) {
+                    let eps = self.kernel.tolerances.xsect_tol_3d;
+                    if station > start + eps {
+                        end = end.max(station + (10. * eps).max(1e-6));
+                    }
+                }
+            }
+        }
+        self.check_cancelled()?;
+        if !end.is_finite() {
+            return Err(operation_error("NoThroughAllHit"));
+        }
+        Ok(end)
     }
 
     fn through_all_station(
@@ -7205,12 +7454,18 @@ fn constructed_sheet_sweep(
     finish_constructed_sheet(kernel, body, roles, occurrence_map, eps, cancellation)
 }
 
+#[derive(Clone, Copy)]
+enum SheetStart<T> {
+    Station(f64),
+    Face(T),
+}
+
 fn constructed_sheet_to_face(
     kernel: &mut Kernel,
     source: (&solidcore::Brep, solidcore::FaceId),
     selected: &NativeBoundary,
     direction: [f64; 3],
-    start: f64,
+    start: SheetStart<(&solidcore::Brep, solidcore::FaceId, f64)>,
     target: (&solidcore::Brep, solidcore::FaceId, f64),
     cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<NativeNamedBody, crate::NewellKernelError> {
@@ -7220,7 +7475,11 @@ fn constructed_sheet_to_face(
     let target = (target_body, target_face);
     check_native_cancelled(cancellation)?;
     let length = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if selected.is_empty() || !start.is_finite() || !length.is_finite() || length <= 1e-12 {
+    if selected.is_empty()
+        || matches!(start, SheetStart::Station(station) if !station.is_finite())
+        || !length.is_finite()
+        || length <= 1e-12
+    {
         return Err(operation_error("invalid named UpTo sheet"));
     }
     let direction = direction.map(|v| v / length);
@@ -7263,13 +7522,27 @@ fn constructed_sheet_to_face(
             native,
             boundary.orientations[*position] == OrientType::Opposite,
         )?;
-        let start_curve = translate_native_curve(&curve, direction.map(|v| v * start))?;
+        let start_curve = match start {
+            SheetStart::Station(station) => {
+                translate_native_curve(&curve, direction.map(|v| v * station))?
+            }
+            SheetStart::Face((body, face, clearance)) => native_finite_curve_planar_end_curve(
+                kernel,
+                &curve,
+                (body, face),
+                direction.map(|v| -v),
+                clearance,
+                false,
+                cancellation,
+            )?,
+        };
         let end_curve = native_finite_curve_planar_end_curve(
             kernel,
             &start_curve,
             target,
             direction,
             clearance,
+            true,
             cancellation,
         )?;
         for curve in [&start_curve, &end_curve] {
@@ -7994,8 +8267,9 @@ fn native_finite_curve_planar_end(
     direction: [f64; 3],
     clearance: f64,
 ) -> Result<solidcore::Brep, crate::NewellKernelError> {
-    let end =
-        native_finite_curve_planar_end_curve(kernel, &start, target, direction, clearance, None)?;
+    let end = native_finite_curve_planar_end_curve(
+        kernel, &start, target, direction, clearance, true, None,
+    )?;
     native_ruled_sheet(kernel, start, end)
 }
 
@@ -8005,6 +8279,7 @@ fn native_finite_curve_planar_end_curve(
     target: (&solidcore::Brep, solidcore::FaceId),
     direction: [f64; 3],
     clearance: f64,
+    require_forward: bool,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<solidcore::nurbs::b_spline_curve::BSplineCurve, crate::NewellKernelError> {
     use crate::operation_error;
@@ -8058,15 +8333,17 @@ fn native_finite_curve_planar_end_curve(
         .fold(span, f64::max);
     let eps = configure_native_policy(kernel, span, scale)?;
     assert_native_tolerances(target.0, eps / 2.)?;
-    let minimum = -native_curve_station_max_cancellable(
-        start.clone(),
-        (plane.0.map(|v| v / denominator), -plane.1 / denominator),
-        &|| check_native_cancelled(cancellation),
-    )?;
-    if !minimum.is_finite() || minimum - clearance <= eps {
-        return Err(operation_error(
-            "target does not lie beyond the entire start section",
-        ));
+    if require_forward {
+        let minimum = -native_curve_station_max_cancellable(
+            start.clone(),
+            (plane.0.map(|v| v / denominator), -plane.1 / denominator),
+            &|| check_native_cancelled(cancellation),
+        )?;
+        if !minimum.is_finite() || minimum - clearance <= eps {
+            return Err(operation_error(
+                "target does not lie beyond the entire start section",
+            ));
+        }
     }
     if !native_curve_covered_by_planar_face(kernel, &curve, target)? {
         return Err(operation_error("target trim does not cover selected chain"));
@@ -9018,7 +9295,10 @@ fn station_bernstein_roots(values: &[f64; 4]) -> Vec<f64> {
     for pair in knots.windows(2) {
         let (mut low, mut high) = (pair[0], pair[1]);
         let left = evaluate(low);
-        if left.signum() == evaluate(high).signum() {
+        if left.abs() < 1e-12
+            || evaluate(high).abs() < 1e-12
+            || left.signum() == evaluate(high).signum()
+        {
             continue;
         }
         for _ in 0..60 {

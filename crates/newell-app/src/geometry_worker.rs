@@ -205,6 +205,26 @@ pub struct M50Completion {
     pub end_to_end_ns: u128,
     pub stale: bool,
 }
+#[derive(Debug)]
+pub(crate) struct SketchSolve {
+    pub draw: bool,
+    pub anchors: Vec<u64>,
+    pub recipe: newell_model::sketch::SketchRecipe,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SketchSolveReply {
+    pub result: Result<
+        (
+            newell_model::sketch::SketchRecipe,
+            newell_model::sketch::SegmentSolveReport,
+        ),
+        newell_model::ModelError,
+    >,
+    pub cancelled: Arc<AtomicBool>,
+}
+
 #[derive(Debug, Default)]
 struct Inbox {
     #[cfg(any())]
@@ -229,6 +249,8 @@ struct Inbox {
     #[cfg(test)]
     shutdown: bool,
     waiting: Option<PrepareGeometry>,
+    sketch_waiting: Option<SketchSolve>,
+    sketch_reply: Option<SketchSolveReply>,
     reply: Option<WorkerReply>,
     retain: Option<NewellGeometryToken>,
     release: BTreeSet<u64>,
@@ -332,7 +354,7 @@ impl GeometryWorker {
                 #[cfg(any())]
                 let mut last_session = [(0_u64, 0_u64); 4];
                 while receiver.recv().is_ok() {
-                    let job = {
+                    let (job, sketch) = {
                         let Ok(mut inbox) = worker_inbox.lock() else {
                             break;
                         };
@@ -341,8 +363,31 @@ impl GeometryWorker {
                             break;
                         }
                         service_lifetime_controls(&mut inbox, &mut generations, &mut committed);
-                        inbox.waiting.take()
+                        (inbox.waiting.take(), inbox.sketch_waiting.take())
                     };
+                    if let Some(SketchSolve {
+                        mut recipe,
+                        cancelled,
+                        draw,
+                        anchors,
+                    }) = sketch
+                    {
+                        let is_cancelled = || cancelled.load(Ordering::Acquire);
+                        let result = if draw {
+                            recipe.solve_placement(is_cancelled)
+                        } else {
+                            recipe.solve_constraints(&anchors, is_cancelled)
+                        }
+                        .map(|report| (recipe, report));
+                        let Ok(mut inbox) = worker_inbox.lock() else {
+                            break;
+                        };
+                        if !cancelled.load(Ordering::Acquire) {
+                            inbox.sketch_reply = Some(SketchSolveReply { result, cancelled });
+                            drop(inbox);
+                            wake_completion();
+                        }
+                    }
                     // Controls precede every candidate slice. Normal M4 controls
                     // retain their existing authority and owned native lifetime.
                     #[cfg(any())]
@@ -789,6 +834,23 @@ impl GeometryWorker {
             .m50_retired
             .take())
     }
+    pub(crate) fn submit_sketch(&self, job: SketchSolve) -> Result<(), AppError> {
+        self.inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .sketch_waiting = Some(job);
+        self.signal()
+    }
+
+    pub(crate) fn drain_sketch(&self) -> Result<Option<SketchSolveReply>, AppError> {
+        Ok(self
+            .inbox
+            .lock()
+            .map_err(|_| transport("worker mailbox failed"))?
+            .sketch_reply
+            .take())
+    }
+
     /// Coalesces waiting work. Replaced inputs have never allocated native geometry.
     ///
     /// # Errors
@@ -938,6 +1000,7 @@ fn description(face: newell_kernel::NewellProfileFace) -> geometry::ProfileFace 
                         start: edge.start,
                         end: edge.end,
                         straight: edge.straight,
+                        cubic: edge.cubic,
                     })
                     .collect(),
             })
@@ -999,6 +1062,7 @@ fn prepare(
         let mut shapes = Vec::new();
         let mut consumed = Vec::new();
         match feature {
+            Feature::Sketch { .. } => {}
             Feature::Base { outputs, .. } => {
                 for entity in outputs {
                     if let Some(geometry::BaseGeometryRecipe::Box { size }) =
@@ -1228,9 +1292,7 @@ fn prepare(
                         None
                     };
                     if let Some(second) = second {
-                        shape = geometry
-                            .boolean(shape, second, newell_kernel::NewellBooleanMode::Add)?
-                            .ok_or(newell_model::ModelError::InvalidGeometryManifest)?;
+                        shape = geometry.join_extrusion_sides(shape, second, profile, direction)?;
                     }
                     shapes.push(shape);
                 }
@@ -3015,8 +3077,10 @@ mod tests {
                         parameters,
                     ))?;
                     wake.recv_timeout(Duration::from_secs(10))?;
+                    let reply = worker.drain()?;
                     assert!(
-                        matches!(worker.drain()?,Some(WorkerReply::Failed {error:GeometryFailure::Kernel(newell_kernel::NewellKernelError::Operation {message}),..}) if message=="nonmanifold pinched sheet vertex")
+                        matches!(&reply, Some(WorkerReply::Failed {error:GeometryFailure::Kernel(newell_kernel::NewellKernelError::Operation {message}),..}) if message=="nonmanifold pinched sheet vertex"),
+                        "unexpected pinch result: {reply:?}"
                     );
                     assert_eq!(session.document(), &unchanged);
                     assert_eq!(session.version(), version);

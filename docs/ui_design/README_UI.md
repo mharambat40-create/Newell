@@ -500,7 +500,9 @@ Several selected elements:
 `Select…` means that the user can initiate entity selection.
 
 When a selection exists, the compact field displays the number of selected
-elements instead of trying to display all names.
+elements instead of trying to display all names. Sketch's single Plane field
+displays the canonical support name and opens the candidate chooser through its
+body in either state. It has no `☰` (§29.2).
 
 ---
 
@@ -2281,6 +2283,7 @@ The explicit current-purpose mapping is:
 | Loft start/end Match entities, Guide, Path and Connection Start/End | Candidate chooser | Candidate chooser | Existing single-reference filters and limits |
 | Sweep Profile and Path | Candidate chooser | Candidate chooser | Single section/trajectory under §§14.1–14.2; no inferred reorder semantics |
 | Merge targets in Extrude, Revolve, Loft and Sweep | Membership chooser | Membership chooser | Existing unordered membership and geometry-kind filters |
+| Sketch Plane | Candidate chooser | No `☰`; activate the named field body | Single built-in origin plane (§29.2) |
 | Boolean Target, Tools, Faces | Candidate/membership chooser | Candidate/membership chooser | Target single; Tools unordered multi; Faces currently unsupported and empty |
 | Standalone window-membership API | Membership chooser | Not a command-field control | Existing window membership; no invented user entry point |
 
@@ -2647,7 +2650,7 @@ common modal interaction above; Cancel keeps the old name.
 
 ---
 
-Utilities > Properties opens the Extrude operation named by the currently focused operation row in Features. This target is independent of selected output entities, so an operation with zero or consumed outputs remains editable. With no focused Features operation, or a focused non-Extrude operation, Properties opens no editor and reports an ordinary contextual status. Its stable feature and parameter identities are retained. OK replaces that feature and recomputes affected following history atomically; Cancel leaves it unchanged. Double-click remains Rename.
+Utilities > Properties opens the Extrude or Sketch operation named by the currently focused operation row in Features. This target is independent of selected output entities, so an operation with zero or consumed outputs remains editable. With no supported focused operation, Properties reports an ordinary contextual status. Extrude retains stable feature and parameter identities and atomically recomputes affected history on OK. Sketch uses the recipe editor in §42. Cancel leaves the feature unchanged. Double-click remains Rename.
 
 ---
 
@@ -2937,13 +2940,17 @@ axes or planes resolve by nearest camera depth and then the fixed order
 `X/Y/Z` or `XY/XZ/YZ`. Thin axes admit a 5-pixel screen-space tolerance. A
 reference click consumes input before model picking or camera navigation.
 The existing selection modifiers apply, and the existing tree row selection
-visual is used; reference geometry receives no new selection effect. Selecting
+visual is used. Selected origin points, axes and planes also receive the
+viewport selection accent treatment specified in `ARCHITECTURE.md` §3.5;
+selection remains distinct from hover. Selecting
 a reference expands Origin and scrolls only enough to reveal its selected row.
 Faint depth-occluded fragments remain selectable; clipped or otherwise
 undrawn references do not. References have no visibility, rename, delete,
 reorder, insertion boundary or playhead-host actions. They never enter
-`ModelTreeProjection.features` history, Elements/counts, modeling inputs or
-camera-fitting bounds. Existing operation order and selection remain unchanged.
+`ModelTreeProjection.features` history, Elements/counts or camera-fitting bounds.
+Only the built-in plane identities can supply Sketch support (§29.2 and
+ARCHITECTURE.md §3.7). Other modeling inputs exclude all origin references.
+Existing operation order and selection remain unchanged.
 Presentation maps history rows by semantic identity, never by an offset from the
 Features header. A playhead drag over any Origin row leaves the cursor unchanged.
 The first operation gap is displayed after the entire visible Origin subtree;
@@ -3659,16 +3666,24 @@ checkboxes control their corresponding visibility. View Navigator replaces the
 former Navigation cube label; its conditional Gizmo/Cube child follows §41. Color selects semantic
 ink and contour glyphs independently; it changes none of those visibility flags.
 
-Grid Overlay starts unchecked. When checked it shows a subtle antialiased world
-XY grid at Z=0 anchored at the world origin, independent of Color. Dark uses white;
-Light uses dark neutral. Spacing follows 1, 2, 5 × 10ⁿ model units, adapting near
-60–120 physical pixels with blended levels. X=0 and Y=0 remain as thin neutral
-grid lines at every subdivision level; blended levels use maximum coverage so
-their crossing does not become brighter. These grid lines are separate from the
-colored positive origin axes. Orthographic and perspective views share world
-anchoring; dense/distant and near-horizon lines fade. Model surfaces and opaque
-UI obscure the grid. The grid adds no labels, selectable entities, tree rows, fit
-bounds or modeling history, and adds no internal lines to the reference planes.
+Grid Overlay starts unchecked. When checked it shows a subtle antialiased grid independent of Color. Outside
+Sketch editing it uses world XY at Z=0. During Sketch editing it uses the active
+support frame (§42). Dark uses white;
+Light uses dark neutral. Spacing follows nested powers of five in model units.
+Four equally spaced fine lines fade in or out between shared lines as the
+fine pitch spans roughly 24–120 physical pixels. Every fifth line is
+reinforced at a stable level. Shared lines keep their position and use only
+one of the two nominal widths, 1 or 1.25 physical pixels. Distant
+lines soften as they fade, with matching fade limits above and below the
+projected origin when it is in front of the camera and within the viewport’s
+vertical span. The two local axes remain reinforced neutral grid lines at every level, with
+maximum coverage at their crossing to avoid additive brightening. These grid
+lines are separate from the colored positive origin axes. Both projections
+share world anchoring. Dense, distant and near-horizon lines fade. In
+orthographic views, lines also fade on the visible side of the
+forward-intersection boundary. Model surfaces and opaque UI obscure the grid.
+The grid adds no labels, selectable entities, tree rows, fit bounds or
+modeling history, and adds no internal lines to the reference planes.
 
 `[N]ormal to` contains an explicit keyboard mnemonic.
 
@@ -3724,8 +3739,8 @@ PLM
 ```
 
 Datum contains `[S]ketch`, `[Pl]ane`, `[A]xis` and `[P]oint`.
-Sketch and the other unimplemented commands remain UI-only mocks: they close
-the popup without creating geometry, features or Model/SolidCore operations.
+Sketch opens the setup Action Box (§29.2). The other unimplemented commands
+close the popup without creating geometry, features or Model/SolidCore operations.
 
 Current command groups (exact labels, separators and order are in the reference):
 
@@ -3763,8 +3778,8 @@ is scoped to the popup that is open (`[S]` appears in several popups).
 
 ## 29.1 Placement of CommandBar popups
 
-The CommandBar popups (Workbench, Datum, Create, Shape, Modify, Pattern,
-Utilities) are centred in the grid, not anchored under their header.
+Both the normal Command Bar and the Sketch Bar use popups centred in the
+grid, independent of the header position.
 For a popup of `popup_width × popup_height` cells (frame included) in a grid of
 `grid_cols × grid_rows` cells:
 
@@ -3788,6 +3803,65 @@ rule; Escape closes it; mnemonics and arrow navigation work as for other
 menus. Centring only changes the position, not the routing rules. The
 MenuBar popups (File, Edit, View, Help) are not centred; they keep their
 existing placement under their MenuBar entry.
+
+## 29.2 Sketch setup and Sketch Bar
+
+**Setup.** Datum > `[S]ketch` opens the 27-cell Sketch Action Box in
+`Action_Box_Sketch.txt`. The normal Command Bar stays in place during setup.
+Each activation starts a new window-local draft. The three entry paths share
+one optional support identity and one Plane field.
+
+1. **Plane first.** Seed the draft from the window's current origin selection
+   when it contains exactly one eligible plane. Ignore any point or axes in that
+   selection. If it contains zero or multiple eligible planes, start unassigned.
+2. **Sketch first.** With the unassigned Action Box open, a primary viewport
+   click resolved by the existing origin-reference route to XY, XZ or YZ
+   assigns that plane. Keep the usual selection and tree reveal behavior.
+   Setup remains open and the Plane field receives focus. A hit on the point,
+   axes, model geometry or empty space does not assign a support. Once assigned,
+   ordinary viewport selection leaves the draft unchanged.
+3. **Plane field first or replace support.** Activate the Plane field body by
+   click or Enter/Space. Open the existing modal Selection candidate chooser
+   (§§19–21) with XY, XZ and YZ in that order and the applied plane checked if
+   present. The chooser owns input while open. Use the existing checkbox and
+   keyboard controls with a one-item limit. Choosing another row replaces the
+   pending choice. Picker OK requires one eligible plane and applies it to
+   the originating draft. Cancel/Escape discards the pending choice and keeps
+   the previously applied support, including an empty field. Both outcomes
+   restore focus to the Plane field body if the same draft survives. Otherwise
+   clear stale focus (§19.2). Picker changes leave viewport/tree selection
+   untouched, including when a replacement is accepted.
+
+The Plane field uses the same fixed width when empty or populated. Show
+`Select…` when empty and the canonical name `XY`, `XZ` or `YZ` when assigned.
+Use the frame from ARCHITECTURE.md §3.7 for the semantic binding. The Action
+Box's other controls retain their fixed unchecked rows and are inactive in
+this setup slice. OK is disabled until a valid plane is assigned. Disabled
+controls retain the canonical glyphs and roles (§5.10).
+
+**Enter or cancel.** Setup OK confirms the support and switches the Command Bar
+to the Sketch Bar. The Action Box changes to the editing state and the camera
+aligns to the support (§42). Setup OK does not create a document feature. Setup Cancel/Escape closes the box and discards the draft. The
+normal Command Bar stays active. Return focus to the Datum header if visible,
+otherwise clear it. Starting another Action Box ends the setup draft. A
+picker OK only assigns the field.
+In confirmed Sketch mode, OK commits the recipe and Cancel discards the draft.
+Escape follows the gesture, tool and session precedence in §42. Leaving the
+session restores the normal Command Bar.
+Clear focus on any removed control. The Application Menu Bar remains
+separate, and `View > Task bar` controls the active command strip in either
+mode. Preserve the previously selected workbench.
+
+**Sketch Bar.** The order is Workbench, Draw, Curve, Modify, Pattern, Reference
+and Constraints. Workbench reuses the normal list. The other groups follow
+the popup definitions in `Sketch_Bar.txt`. The old header duplicated Construct
+and listed groups with no corresponding Sketch popup. The corrected header
+follows the actual popup groups and keeps Workbench first. The artwork also
+removes the repeated Tangent Arc, corrects Bezier and Perpendicular, and aligns
+the fixed 22-cell Sketch tool popup frames. §42.1 lists the active commands.
+The other rows and workbench choices have no command side effects. The strip
+uses the existing
+menu routing, mnemonics and centred popups (§29.1).
 
 ---
 
@@ -4479,3 +4553,206 @@ focus loss and resize. Re-evaluate against current geometry under a stationary
 pointer whenever the camera, layout, visibility, occlusion or capture changes.
 Request an event-driven redraw on a changed hover value; add no animation loop.
 Hover never changes hit regions, click destinations, camera pose or ASCII hover.
+
+
+---
+
+# 42. Principal-plane Sketch editing
+
+The editing state in `Action_Box_Sketch.txt` keeps the 27-cell panel at its
+existing anchor with an inert canonical Plane value. The Sketch Bar stays in
+the Command Bar region and the Application Menu Bar remains available.
+Choose a tool through its popup row or displayed mnemonic. The current
+pointer tools keep the Sketch panel in place. Sketch Grid mirrors and toggles the same window preference as View > Grid
+Overlay. Dimension and Constraints independently control their respective
+annotations when those workflows are available. The remaining checkboxes are inert.
+
+On entry, save the current camera. Align the orthographic view facing the
+positive support normal with local U right and local V up. Keep that orientation
+until exit. Use the existing smooth transition for orientation and withhold
+drawing until it finishes. An admitted pan or zoom during alignment finishes
+alignment before taking its anchor. Secondary or middle drag, phased scroll
+pan, wheel and pinch zoom keep their ordinary input rules. While editing,
+orbit, named views and projection changes do not change the camera.
+Normal to finishes alignment to the active support without resetting pan or
+zoom. Restore the entry camera with the current viewport on exit. View > Grid Overlay retains its current value on
+both transitions. Its only grid is anchored to the active local origin and
+axes during editing, using §28.3 adaptive subdivisions and fading.
+
+## 42.1 Draw and revise
+
+- **Line.** The first click sets a local start. Pointer movement previews a
+  segment to the current local point. A valid second click adds the segment
+  and makes its end the start for the next connected segment.
+- **Rectangle.** Click one corner and move the pointer to preview an
+  axis-aligned rectangle. A valid opposite corner commits one Rectangle
+  primitive with four derived sides and leaves the tool ready for a new first
+  corner. Rectangle remains editable as a single group.
+- Only finite, forward, well-conditioned ray/plane hits on exposed viewport
+  pixels participate. Coincident line endpoints or a rectangle with either
+  extent below modeling tolerance leave the gesture open for correction.
+- The stroke batch draws completed geometry and the current preview at
+  1.5 logical pixels. A selected primitive uses 2.5 logical pixels in the
+  same Text ink. A preview is never selectable or committed. Leaving the
+  exposed viewport clears the preview. Focus loss or layout changes discard
+  the unfinished gesture and keep the completed draft.
+- In Select mode, click a visible stroke to select its primitive. An empty
+  click clears selection. Delete removes the selected primitive from the
+  draft, including all four Rectangle sides together. Use nearest screen
+  distance within five logical pixels and stable recipe order for ties.
+- Escape first follows existing popup, modal and capture precedence. Within
+  a drawing tool, it clears a pending start while retaining completed
+  geometry. Escape with no pending start returns to Select. From Select,
+  Escape cancels the session. Changing tools clears the pending gesture.
+  Explicit Cancel discards the entire draft regardless of the current tool.
+
+### Magnetic placement
+
+Point, Line and circular Arc proposals use the active sketch's local frame.
+Acquire a point or bounded curve contact within eight logical pixels and retain
+it through twelve. Explicit points, endpoints and eligible centers take
+priority over interior contacts and directional alignment. Within one class
+use screen distance and stable geometry identity. A retained target stays
+active until release or a higher-priority hit. Line aligns exactly to a local
+axis on acquisition within 5° and releases past 8°. Inferred start tangency
+uses the same angular thresholds with analytic tangent directions. Tangent
+Arc takes the tangent from its explicit source endpoint. A chained Line
+proposes Coincident at the previous End.
+
+Use the ordinary preview width and Text ink. A 12-logical-pixel Fira Code
+label row shows H, V, C, P or T for Horizontal, Vertical, Coincident, Point
+on Curve or Tangent. Show compatible relations together, including C T.
+Start the row 12 logical pixels right and above the pointer and flip it at
+viewport edges. Draw a hollow diamond with a 4-logical-pixel radius around
+the exact contact. Tangent also shows a 3-on/3-off logical-pixel dashed
+trace offset 3 logical pixels from the source curve. Use the ordinary
+unselected stroke width. Keep the existing selection highlight distinct.
+Clip all cues to exposed viewport regions. Pending attachments from earlier
+clicks retain their markers while the pointer remains over exposed sketch
+pixels. Pending cues take no input ownership.
+
+Hold Ctrl to restore the raw preview and place without automatic constraints
+on the completion click. Tangent Arc still uses the explicit input needed
+to construct its arc. Leaving the exposed viewport clears the proposal.
+Escape cancels the pending placement. Revalidate the displayed proposal on
+click and accept the new geometry and all its records together. When a
+target changes or the solver rejects a placement, retain the completed draft
+and gesture and show a short diagnostic.
+
+Additional pointer workflows use local coordinates on the active support.
+Move the pointer before the final click to preview the result. An invalid
+click reports a diagnostic and keeps the prior draft available for correction.
+
+| Command | Click sequence and result |
+|---|---|
+| Point | Place a local point, displayed as a cross. |
+| Polygon | Center, then a vertex that sets circumradius and rotation. Set the integer Sides field from 3 to 256. |
+| Text | Type 1–64 printable ASCII characters. Set Height in mm, then pick the baseline origin and direction. Fira Code Regular outlines remain one item. |
+| Slot | Centerline start and end, then a side point. Its perpendicular distance sets the cap radius. |
+| Center Rectangle | Center, then corner. The opposite corner is its reflection about the center. |
+| 3-Points Rectangle | Two base endpoints, then a side point that sets the signed perpendicular width. |
+| Circle | Center, then circumference. |
+| 3-Pts Circle | Three noncollinear circumference points. |
+| Ellipse | Center, major-axis endpoint, then a side point that sets the perpendicular minor radius. |
+| 3 Points Arc | Start, through point, end. The sweep passes through the middle point. |
+| Tangent Arc | A unique endpoint with a nonzero tangent, then arc end. Lines, arcs, conics, Béziers and fit splines supply analytic endpoint tangents. |
+| Center Point Arc | Center, start, end direction. Sweep is counterclockwise. |
+| Elliptical Arc | Ellipse center, major-axis endpoint and minor radius as above, then start and end directions. Sweep is counterclockwise. |
+| Conic | Start, tangent-intersection control and end, with positive scalar Weight. |
+| Spline | Four fit points in order. The cubic interpolation uses centered internal tangents. Check Endpoint tangents to place start and end direction handles after the fit points. |
+| Bezier | Four cubic control points in order. |
+| Add Control Points | Select a cubic Bezier or an unrefined fit spline, then click to accept the provisional control polygon. The tool elevates a cubic Bezier or exactly divides the middle spline span at its midpoint. |
+| Fillet | Set Radius in mm, pick two lines with a shared endpoint, then click to accept their shortened segments and tangent arc. |
+| Chamfer | Set independent First and Second setbacks in mm, pick the two lines in that order, then click to accept the shortened segments and connecting line. |
+| Split | Select a line or open circular or elliptical arc, then choose an interior point or direction. The first result keeps the source key. |
+| Offset | Select a line, circle or circular arc, then choose the perpendicular distance or new radius. Check Connected lines to offset a nonbranching straight chain with miter joins. The source stays in the draft. |
+| Trim | Select a line or circular arc, then click the interval to remove. Other finite lines supply the cutting boundaries. |
+| Extend | Select a line or circular arc, then choose the end to extend to its nearest finite line boundary. |
+| Mirror | Select independent geometry, then choose two axis points. Mirror creates a copy by default. Check Associative to keep a master link. |
+| Linear Pattern | Set Count, including the master. Select independent geometry, then click the start and end of a spacing vector. |
+| Circular Pattern | Set Count, including the master. Select independent geometry, then pick center, start direction and next direction. Placements advance counterclockwise without duplicating the full-turn seam. |
+| Transform | Select independent geometry, then place the new anchor and its direction/scale handle. Transform copies by default. Check Move source to retain the selected primitive identity. Formula-driven geometry must be detached before moving. |
+| Projected | Focus an earlier Sketch or B-Rep producer in Features. Preview projected points, straight edges, certified polynomial cubic B-Rep edges, same-plane sketch curves, and the line spans of ellipses projected onto a perpendicular principal plane. Click to link them. |
+| Intersect | Focus an earlier Sketch or B-Rep producer in Features. Preview crossings of finite straight and certified cubic edges, and transverse sections of planar faces bounded by closed straight or certified cubic edges. Click to link them. |
+| Insert | Focus a different same-plane Sketch in Features, choose Insert, set the rotation Angle and click the placement of its local origin. One edit copies the geometry. Hidden Sketches can supply copies. |
+
+For Trim and Extend, a coincident cutting line is rejected when it affects
+the target. A tie between target strokes is rejected for line edits. Insert
+copies the source geometry as it was when the tool was opened. The copy
+has fresh local identities and no link to the source. Numeric fields use the
+shared editor and Formula control. Formula values drive the pending gesture. Supported numeric fields retain
+their definitions and regenerate on parameter updates. In Select mode, press
+D on a Formula-driven result to keep its current geometry and clear its binding.
+
+Patterns keep the master and use stable, ordered placements. Edit the master
+to regenerate its instances. In Select mode, pick an instance or linked
+reference and press D to detach it as ordinary geometry under a new identity.
+A master with live instances cannot be deleted or split. Linked references
+draw dashed strokes. Source visibility has no effect on a link. Sketch edits
+that would leave a link missing or incompatible are rejected as one document
+operation. B-Rep links use generation-qualified edges or section intervals on
+kernel-certified planar boundaries. If replay loses that occurrence, reject the
+candidate and keep the accepted geometry.
+
+### Constraint and dimension edits
+
+The initial segment workflow accepts Horizontal and Vertical on independent
+lines. Dimension uses the Length field in mm and applies it to the chosen line.
+Driven Length adds a live measurement in parentheses. Select the same line with
+Dimension to revise its accepted driving length. Click the line and then click to place its dimension label. The label has a
+leader to the measured segment. Horizontal and Vertical labels use automatic
+placement.
+
+Use the Constraints popup to choose a relation or Dimension. The command
+prompts for the typed operands in M5 §4.4. Preview the relation or measurement
+before accepting it. Dimension placement is separate from geometry selection.
+Its editor uses the shared numeric and Formula controls for driving values,
+and displays the measured value for driven dimensions. Escape discards the
+pending edit and leaves the accepted draft intact. Commands are available only
+when their complete edit workflow is implemented.
+
+| Command | Valid operands |
+|---|---|
+| Coincident | Two explicit points, including compatible endpoints, centers and control points. |
+| Point on Curve | One point and one bounded segment, arc, conic or spline interval. |
+| Horizontal, Vertical | One finite segment or two explicit points in the Sketch frame. |
+| Parallel, Perpendicular, Collinear | Two nondegenerate segments or compatible construction axes. Collinear also requires positional incidence. |
+| Concentric | Two circle, arc or ellipse centers. |
+| Midpoint | One point and one finite segment. |
+| Tangent | Two curves, including a line and a curve, with explicit endpoint or parameter contacts. Preserve the internal or external branch where applicable. |
+| Equal | Two segment lengths, two circle or circular-arc radii, or two corresponding ellipse axes. |
+| Symmetric | Two points and a symmetry line, axis or center. |
+| Fix | One entity with independent parameters. |
+| Rigid Group | Defining geometry of a group whose internal shape stays fixed while the group can translate and rotate. |
+| Normal | One segment and one curve with an explicit coincident attachment and a finite nonzero tangent. |
+| Curvature | Two joined curve endpoints with tangent continuity and finite nonzero tangent derivatives. |
+| Dimension | Length of a compatible entity, horizontal or vertical distance between two points, direct point-to-point or point-to-curve distance, segment angle or angle between two segments, circular radius or diameter, or arc length. Preserve explicit direction and branch where applicable. |
+
+Keep annotations anchored to their operands through pan and zoom, with
+screen-sized text clipped to exposed viewport pixels. Existing UI and captures
+take precedence. When a geometry edit affects records, identify them before
+acceptance and preserve their identity only where provenance is unambiguous.
+
+## 42.2 Validate and reopen
+
+OK is enabled when the draft has at least one complete primitive and no
+unfinished gesture. A chained Line endpoint alone is ready for OK because it
+only offers another segment. OK publishes the complete recipe, including accepted relations and dimensions, once and closes
+the panel, restoring the normal Command Bar and the entry camera. Failure
+keeps the draft and mode open. Cancel publishes nothing.
+
+An accepted insert adds a Features row with the first available name at or
+after the document's next default Sketch ordinal, starting at `Sketch1`.
+The counter advances beyond the allocated name in the same commit. Existing
+feature names are checked for collisions. Rename, deletion, layout order,
+visibility and edit operations do not rewind or consume the counter.
+
+Focus the committed Sketch row and use Utilities > Properties to reopen
+its support, geometry and accepted constraint annotations. Drawing and Delete revise the private draft.
+Successful OK replaces the recipe under the same feature ID, name and history
+position. The original stays committed if the user cancels or the edit is
+rejected. A new Sketch is checked in Features and its saved strokes remain
+visible after closing the editor. Toggling its square shows or hides its
+strokes. Reopening a hidden Sketch still displays its draft while editing.
+Closing the editor restores the saved visibility setting. This slice saves
+to the open document without introducing a file format or B-Rep outputs.

@@ -148,10 +148,24 @@ pub struct NumericFormulaOpenRequest {
 }
 
 pub(crate) const fn field(operation: ActionOperation, key: u32) -> NumericFieldDescriptor {
+    use crate::sketch::*;
     use ActionOperation::*;
     let unit = match operation {
         Revolve => NumericUnit::Degrees,
-        Loft => NumericUnit::Unitless,
+        Sketch if key == SKETCH_INSERT_ANGLE => NumericUnit::Degrees,
+        Sketch
+            if matches!(
+                key,
+                SKETCH_RADIUS
+                    | SKETCH_SETBACK
+                    | SKETCH_SETBACK_TWO
+                    | SKETCH_TEXT_HEIGHT
+                    | SKETCH_DIMENSION_LENGTH
+            ) =>
+        {
+            NumericUnit::Millimetres
+        }
+        Loft | Sketch => NumericUnit::Unitless,
         Sweep if key == 7 => NumericUnit::Degrees,
         Sweep => NumericUnit::Unitless,
         _ => NumericUnit::Millimetres,
@@ -161,13 +175,22 @@ pub(crate) const fn field(operation: ActionOperation, key: u32) -> NumericFieldD
         Revolve => matches!(key, 6 | 10 | 19),
         Sweep => key == 7,
         Boolean => true,
-        Loft => false,
+        Loft | Sketch => false,
     };
     NumericFieldDescriptor {
         field: NumericFieldKey { operation, key },
         unit,
         directional,
-        default_magnitude: "0.0",
+        default_magnitude: match (operation, key) {
+            (Sketch, SKETCH_DIMENSION_LENGTH) => "10.0",
+            (Sketch, SKETCH_COUNT | SKETCH_LINEAR_COUNT | SKETCH_CIRCULAR_COUNT) => "6.0",
+            (
+                Sketch,
+                SKETCH_WEIGHT | SKETCH_RADIUS | SKETCH_SETBACK | SKETCH_SETBACK_TWO
+                | SKETCH_TEXT_HEIGHT,
+            ) => "1.0",
+            _ => "0.0",
+        },
         integer_digits: if matches!(unit, NumericUnit::Degrees) {
             7
         } else {
@@ -176,6 +199,7 @@ pub(crate) const fn field(operation: ActionOperation, key: u32) -> NumericFieldD
     }
 }
 pub(crate) fn descriptors(operation: ActionOperation) -> Vec<NumericFieldDescriptor> {
+    use crate::sketch::*;
     use ActionOperation::*;
     let keys: &[u32] = match operation {
         Extrude => &[4, 11, 15, 20, 24, 29],
@@ -183,6 +207,18 @@ pub(crate) fn descriptors(operation: ActionOperation) -> Vec<NumericFieldDescrip
         Loft => &[5, 9],
         Sweep => &[7, 9],
         Boolean => &[6],
+        Sketch => &[
+            SKETCH_COUNT,
+            SKETCH_WEIGHT,
+            SKETCH_RADIUS,
+            SKETCH_SETBACK,
+            SKETCH_SETBACK_TWO,
+            SKETCH_TEXT_HEIGHT,
+            SKETCH_LINEAR_COUNT,
+            SKETCH_CIRCULAR_COUNT,
+            SKETCH_INSERT_ANGLE,
+            SKETCH_DIMENSION_LENGTH,
+        ],
     };
     keys.iter().map(|key| field(operation, *key)).collect()
 }

@@ -128,7 +128,7 @@ impl Quaternion {
             scale(cross(u, cross(u, v)), 2.0),
         )
     }
-    fn from_basis(r: Vec3, u: Vec3, f: Vec3) -> Self {
+    pub(crate) fn from_basis(r: Vec3, u: Vec3, f: Vec3) -> Self {
         let b = scale(f, -1.0);
         let m = [[r[0], u[0], b[0]], [r[1], u[1], b[1]], [r[2], u[2], b[2]]];
         let trace = m[0][0] + m[1][1] + m[2][2];

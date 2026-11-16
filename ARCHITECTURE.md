@@ -1004,9 +1004,10 @@ authorized UI animation. The focused M3 camera-view transition in §3.7 is a
 camera-pose transition, not a UI hover or decoration animation. M2.25 hover is
 instantaneous and does not constitute an animation.
 
-No other hover visual effects are authorized.
+Sketch draw proposals use the scoped annotation treatment in §3.8. Other
+hover visual effects remain prohibited.
 - **State visuals:** The Controller keeps logical focus, selection, pressed, disabled, checked and expanded state (they drive keyboard navigation, activation and drag), but a state is drawn only through an ASCII structure that `docs/ui_design/` already documents: checkbox glyphs `□`/`■`, tree markers `[-]`/`[+]`, the cyclic-selector value text between `◀ ▶`, the segmented-selector border topology, the `+|`/`-|` prefix and the other glyphs defined in `docs/ui_design/README_UI.md`. Where no documented ASCII structure exists for a state, that state has **no visual**. The approved additions include the tree selection glyph structures of §26 in `docs/ui_design/README_UI.md` and the text-editing caret `▏` (U+258F), an ASCII structure now documented in `docs/ui_design/README_UI.md` §5.11 and `Special_ASCII.txt` (M2.23, see below). The following are forbidden: generic foreground/background inversion of a widget or run of cells; invented focus or selection markers (for example `>` or `<`); underlines, brightness, or state-dependent colour, intensity or alpha levels. The fixed semantic palette of §3.6 is permitted when View > Color is checked; roles are assigned by structural/control semantics, never by focus, selection, press, disabled state, hover or glyph identity. Widget-level inversion remains forbidden; palette selection is global to the window. Adding a visual for a state requires first adding its exact ASCII structure to `docs/ui_design/` and `docs/ui_design/README_UI.md`.
-- **Selected viewport entity brightness (M4.3 exception):** Geometry belonging to a selected entity is rendered with its existing RGB multiplied by `1.10` after normal lighting, clamped to `1.0` before framebuffer encoding. Deselecting restores the unmodified output. Apply the multiplier once to that entity's existing surface, line, point and hidden-line fragments in every viewport display mode. The effect is independent of Theme and View > Color; alpha, background, depth, clipping and occlusion are unchanged. The Controller supplies only the derived selected boolean; the renderer performs no picking or selection mutation. This exception authorizes no selection outline, animation or extra rendering pass or draw call. It does not change UI ink, palette, hover, focus, or any other state visual. All other brightness and state-dependent UI color/intensity changes remain forbidden. This exception is limited to Newell's viewport geometry; it does not enable general brightness variation across the UI.
+- **Selected viewport geometry (M4.3, refined by the focused selection-visual change):** The Controller supplies stable semantic selection targets and the renderer draws their selection treatment without picking or mutating selection. Use the existing viewport selection accent. A selected point/vertex has a small accent ring; an edge/curve highlights only that selected geometry; a face/surface/plane has a subtle translucent accent tint and accent boundary; a selected solid body has an accent visible outline and subtle tint where its display mode supports fill. A selected face remains independently highlighted without selecting its containing body's whole rendered surface. Selected world-origin references use the same accent treatment. Selection persists when the pointer leaves and is distinct from transient hover; clearing or changing the authoritative selection updates the highlight, including multi-selection. Hidden geometry stays hidden. Preserve model depth, occlusion, clipping, picking, display modes, UI clipping and reference-depth isolation. Entity IDs and generation-qualified `FaceRef` values are the identities; edge/vertex targets use existing stable semantic references when the input route supports them. No geometry is highlighted by name or row position. Selection styling is limited to viewport geometry and does not enable state-dependent UI ink or palette changes.
 - **Text-editing caret (approved for M2.23).** The character `▏` is the caret of a text field that is **actively being edited**, and only then. It uses the `Text` ink role (§3.6) as an ordinary cell of the flat cell buffer, so it needs **no second draw call**, no caret-specific shader data and no hover or focus mechanism. It does not blink (no animation). It is composed from the edit state and never stored in, or copied to, the edited text value. It occupies its own cell between characters, shifting the following text one cell to the right; the text area keeps its fixed width, so when the field is full the visible window scrolls so that the caret stays visible and cells beyond the area boundary are clipped whole-cell, without any marker. The exact rule (caret index, window start `s = max(0, c + 1 − N)`, suffix clipping, delimiters) is `docs/ui_design/README_UI.md` §5.11. This is not a focus marker: focused-but-not-editing fields still have no visual.
 - **Temporary accepted deviation (until M2.21).** The segmented-selector active-segment `║` separators built in M2.7 are not a documented structure. They may remain, unmodified and not extended to any new widget, until M2.21 replaces them with the exact canonical border topology of `docs/ui_design/`. M2.16 does not need to remove them. After M2.21 their presence is a violation of this section.
 - **Animation (M2.24 exception):**
@@ -1079,7 +1080,7 @@ Approved by the human on 2026-10-26 through [ADR 0006](docs/adr/0006-view-color-
 
 The ASCII UI has two independent per-window choices: Light/Dark Theme and View > Color (initially unchecked). Every new window starts Dark with Color unchecked. An unchecked window is strictly monochrome: Dark uses background `#000000` and ink `#FFFFFF`; Light uses background `#FFFFFF` and ink `#000000`. Every composed glyph cell carries one of three semantic ink roles, which affect output only when Color is checked: `Text` for ordinary text, values, labels, caret, progress, menu popup/dialog/selection-panel title letters and treeview hierarchy strokes; `Contour` for box/panel/menu/dialog/selection-panel/field frames and shared structural joins; `Action` for explicit actionable affordances such as checkbox glyphs, tree `[-]`/`[+]` handles, selector arrows, selection-field controls, direction toggle and formula control. A logo/icon cell uses `Text` unless its component explicitly designates it as an `Action` affordance (§§3.2–3.3). Dark + Color uses background `#071521`, Text `#FFFFFF`, Contour `#41B4E5`, Action `#FFA24A`. Light + Color uses background `#FFFFFF`, Text `#111827`, Contour `#0969A0`, Action `#9A4D00`. Roles are assigned by the component's semantics, never inferred from a Unicode glyph or a WidgetId. For menu popup, dialog and selection-panel title rows, the title letters are Text while adjacent top-edge strokes, corners, frame junctions and structural separators are Contour. The View Theme row keeps exactly `Theme [ ◑ Dark  ]` or `Theme [ ◐ Light ]`: `Theme` and `Dark`/`Light` are Text, its `[`/`]` and `◑`/`◐` are Action, its spaces have no visible ink, and the popup's outer `│` borders are Contour. This role allocation does not change the Theme row's cell positions, ownership or activation. A shared cell takes the role of its visible structural stroke; frame intersections and segment dividers are Contour even when routing is split, while adjacent tree guides stay Text. Overlay composition overwrites glyph and role together.
 
-With Color checked, only Contour cells use the same-cell glyph map `═→─`, `║→│`, `╔→┌`, `╗→┐`, `╚→└`, `╝→┘`, `╠→├`, `╣→┤`, `╦→┬`, `╩→┴`, `╬→┼`. Single-stroke and rounded corners, dashed separators, tree strokes and geometry do not change. The approved hover substitutions `│→╞/╡` and `╰╴→╘ ` remain and preserve the replaced cell's semantic role; together with the tree-specific substitutions of §3.5, they are the only stroke-form exceptions while hovered. Tree selection uses the documented heavy hierarchy glyphs without changing semantic roles; the same-cell Contour map must preserve the tree hovered right border `╣` rather than converting it to `┤` (compose it as `╡` when Color is checked). Hover adds no colour or shader effect. Focus, selection, press, disabled, checked and expanded states cannot alter a role or palette entry. Theme and Color changes select a new palette for that window; a Color change also recomposes the glyph grid. A Theme change with View open changes the displayed Theme row and uploads its recomposed cells; palette-only updating is permitted only when the glyph grid is unchanged. The glyph and logo atlases remain coverage masks and are not regenerated by either choice; text glyph sampling remains nearest and logo sampling remains filtered under §§3.2–3.3. The viewport clear follows the selected background; model display styles are unchanged apart from the selected-entity brightness exception in §3.5. The renderer uses one role word per cell, one palette per window and exactly one batched GPU UI draw call. O(1) hit testing and MVC separation remain binding. No gradients, tints, glow or decorative UI colour are permitted. UI ink/brightness and state-dependent UI colour remain forbidden; selected-entity viewport brightness follows §3.5. Glyph-edge antialiasing remains coverage blending.
+With Color checked, only Contour cells use the same-cell glyph map `═→─`, `║→│`, `╔→┌`, `╗→┐`, `╚→└`, `╝→┘`, `╠→├`, `╣→┤`, `╦→┬`, `╩→┴`, `╬→┼`. Single-stroke and rounded corners, dashed separators, tree strokes and geometry do not change. The approved hover substitutions `│→╞/╡` and `╰╴→╘ ` remain and preserve the replaced cell's semantic role; together with the tree-specific substitutions of §3.5, they are the only stroke-form exceptions while hovered. Tree selection uses the documented heavy hierarchy glyphs without changing semantic roles; the same-cell Contour map must preserve the tree hovered right border `╣` rather than converting it to `┤` (compose it as `╡` when Color is checked). Hover adds no colour or shader effect. Focus, selection, press, disabled, checked and expanded states cannot alter a role or palette entry. Theme and Color changes select a new palette for that window; a Color change also recomposes the glyph grid. A Theme change with View open changes the displayed Theme row and uploads its recomposed cells; palette-only updating is permitted only when the glyph grid is unchanged. The glyph and logo atlases remain coverage masks and are not regenerated by either choice; text glyph sampling remains nearest and logo sampling remains filtered under §§3.2–3.3. The viewport clear follows the selected background; model display styles are unchanged apart from selected-geometry treatment in §3.5. The renderer uses one role word per cell, one palette per window and exactly one batched GPU UI draw call. O(1) hit testing and MVC separation remain binding. No gradients, tints, glow or decorative UI colour are permitted. UI ink/brightness and state-dependent UI colour remain forbidden; viewport selection styling follows §3.5. Glyph-edge antialiasing remains coverage blending.
 
 | Theme / Color | Background | Text, values, labels, tree guides | Contour | Action |
 |---|---|---|---|---|
@@ -1170,16 +1171,55 @@ preserved as historical records.
   from operation IDs and Elements. Each `OriginReference` is selectable from
   either its tree row or projected viewport geometry, with one stable semantic
   identity shared by both routes. Selection uses the existing modifiers and
-  tree-row selection visual; reference geometry gains no new selection
-  material. A reference hit consumes input before model picking and camera
+  tree-row selection visual, and selected references receive the viewport
+  accent treatment defined for selected points, axes and planes in §3.5. A
+  reference hit consumes input before model picking and camera
   navigation. Resolve overlap in order origin sphere, axes, then planes; within
   axes/planes choose nearest camera depth and stable order. Faint depth-occluded
   fragments remain selectable, but clipped or undrawn references do not.
   Selection expands Origin and minimally scrolls its row into view. References
-  have no insertion, modeling-input, visibility, rename or delete action.
+  have no insertion, visibility, rename or delete action. Their Sketch input
+  eligibility is defined below.
   Existing folder expansion infrastructure is used. The corner Gizmo remains screen-space and retains only its
   directional stems, caps, rings and labels; it does not duplicate the origin
   marker or reference planes.
+- **Built-in Sketch support (2026-11-08).** The window-local Controller may
+  bind exactly one built-in principal plane to a Sketch setup draft and carry
+  that binding into the window's confirmed Sketch mode. The stable semantic
+  identities are XY, XZ and YZ. The origin point and axes cannot serve as
+  Sketch supports. Each support resolves to a fixed right-handed frame at
+  world origin (0, 0, 0):
+
+  | Identity | Local u | Local v | Normal (u × v) |
+  |---|---|---|---|
+  | XY | +X | +Y | +Z |
+  | XZ | +X | +Z | −Y |
+  | YZ | +Y | +Z | +X |
+
+  The renderer's reference mesh, apparent size, and canonical display label
+  are presentation details. They never determine the support or its frame.
+  Reference graphics remain separate from document geometry, model entity
+  selection, topology and history. Setup and entry to this shell create no
+  document entity. Existing hit priority, window isolation, ASCII routing and
+  rendering rules still apply. README_UI.md §29.2 defines the entry workflow.
+- **Built-in Sketch tool inputs.** An active Sketch may resolve the same
+  immutable semantic identities when a tool accepts the corresponding type:
+
+  | Identity | Analytic input | Eligible use |
+  |---|---|---|
+  | O | World origin point | Projected point, point or center operand |
+  | X, Y, Z | Infinite world axis through O with a signed direction | Projected axis, compatible direction or mirror operand |
+  | XY, XZ, YZ | Infinite principal plane through O | Sketch support or Intersect input yielding a line |
+
+  Point and axis operands resolve in the active support frame. An axis
+  perpendicular to the support has no projected direction. Intersecting the
+  support with itself has no unique line. Report both cases as invalid for
+  tools requiring a line or direction. Use the semantic axis and plane
+  definitions independently of their drawn positive extents, scale and gaps.
+  Resolve these inputs through the Sketch tool's typed operand path. They
+  remain outside document entity picking and non-Sketch modeling inputs.
+  This rule supersedes the earlier support-only restriction in README_UI.md
+  §26.
 - `newell-app` retains sole mutable scene-camera and input authority.
   `newell-ui` may provide pure fixed geometry/projection/hit mathematics and
   layout values; `newell-render` consumes immutable derived data only.
@@ -1226,6 +1266,93 @@ preserved as historical records.
   exactly the selected widget. Each window starts checked with Gizmo selected;
   hiding retains that choice. Appearance remains independent of View > Color.
 
+### 3.8 Principal-plane Sketch tools and replay (2026-11-09)
+
+This section authorizes the **Draw, Curve, Modify, Pattern, Reference and Constraints**
+groups in `docs/ui_design/Sketch_Bar.txt`. The [M5 plan](docs/plans/M5-sketcher.md)
+defines their tool semantics within this scope. Earlier Line and Rectangle wording in README_UI.md
+§§29.2 and 42 describes the initial slice. Constraint and dimension coverage follows M5 §4.4. Typed numeric tool
+parameters such as radius, angle, offset and count are part of the tool
+recipes.
+
+- **Ownership and display.** The Controller owns the window-local draft,
+  gestures, camera and picking. Route UI, captures and navigation before
+  geometric input. Resolve sketch-space input through the authoritative
+  camera ray and the §3.7 frame. The Renderer receives immutable display
+  data. One batched stroke draw per exposed viewport rectangle is permitted
+  for visible saved Sketches and the active draft, independently of the
+  single batched ASCII overlay. The draft replaces its saved display while
+  editing, including when the saved Sketch is hidden. Preserve theme Text
+  ink, clipping, current stroke widths and active-draft depth behavior from
+  §42. This is the scoped viewport exception to §§3.1 and 3.4–3.6 and the
+  corresponding restrictions in ADRs 0002, 0003 and 0006.
+- **Typed recipes.** The Model owns the support identity, stable sketch
+  entity and operation keys, visibility, and document-local default-name
+  counter. A recipe records typed parameters, ordered operations, semantic
+  operands and result identities in the local support frame. Draw and Curve
+  store analytic primitives, curve definitions and defining groups. Modify
+  stores the operation, target identities, selected intervals or corners,
+  and result provenance. Pattern stores master identities, transforms and
+  instance policy. Reference stores a semantic source and projection or
+  intersection policy for linked results, or independent local geometry
+  for an explicit copy. Persist geometry and tool parameters independently
+  of pointer positions, display chords, UI labels and native arena handles.
+  Use analytic or rational geometry for replay and topology. Where the M5
+  tool contract permits a bounded approximation, certify its error in model
+  units before accepting it.
+- **Associative instances.** Linear and circular patterns are associative
+  by default. Mirror produces independent copies by default and supports
+  explicit association. An associative instance has a stable identity
+  derived from its pattern, master element and logical placement key. It
+  derives its geometry from that master and a typed transform. Replay
+  preserves surviving identities and cannot redirect a removed instance
+  reference to a different placement. Edit through the master or explicitly
+  detach to independent geometry with new identities. Retain provenance and
+  remap dependents only where the correspondence is unique and verified.
+- **Linked reference replay.** Projected is linked by default. Intersect
+  retains its upstream source. Insert creates a copy using its explicit
+  frame transform. A link targets a typed built-in origin identity or a
+  stable earlier feature, entity, or subshape identity with the generation
+  information needed to validate it. Resolve document sources against the
+  replayed history prefix and local operands against earlier recipe results.
+  Reject forward and cyclic dependencies. When the source is regenerated,
+  re-resolve and recompute from the current geometry through a verified
+  identity mapping. Visibility changes do not break a link. A missing,
+  ambiguous or incompatible source yields a reference-broken diagnostic.
+  Reject an invalid replay candidate atomically and keep the last accepted
+  document and geometry. Cached display data cannot supply a missing operand.
+  Linked results remain reference geometry until an explicit copy or
+  conversion produces ordinary sketch geometry.
+- **Relations and dimensions.** The Model owns stable record identities and
+  typed operands. Distinguish whole geometry, endpoints, centers, bounded curve
+  parameters and compatible §3.7 origin identities. Resolve associative operands
+  through the master and transform, and linked operands through current history
+  as read-only inputs. Report missing, incompatible or ambiguous operands.
+  Report affected record identities before destructive geometry edits. Remap only
+  with unique provenance. Driving dimensions contribute equations with typed,
+  unit-aware values and optional Formula bindings. Driven dimensions only measure.
+- **Solving and annotations.** Run solve and replay on the geometry worker.
+  Accept only a result for the current draft revision. Under-constrained and
+  redundant-consistent results may be accepted. Report rank and degrees of
+  freedom independently of convergence. Failed or cancelled edits retain the
+  accepted geometry. Controller-owned annotation placement and hit testing
+  follow viewport clipping and input precedence. The Renderer receives immutable
+  annotation data and reuses the existing font for screen-sized text.
+- **Automatic constraint proposals.** During admitted Point, Line and circular
+  Arc drawing, the active automatic constraint proposal may add screen-sized
+  Text-ink relation glyphs, a contact marker and a tangent source-curve trace
+  defined in README_UI.md §42.1. These transient Sketch annotations use the
+  existing Sketch stroke batch and take no input ownership. Preserve selection
+  semantics and treatment, clipping and depth, and the single ASCII overlay draw.
+- **Publication.** Preview changes are private. Validate a complete candidate
+  before publishing an atomic, version-checked insertion or replacement.
+  Preserve the existing feature's identity, name, history position and
+  visibility on replacement. Allocate a default name only on successful
+  insertion. Reject stale worker results before publication. Sketch tools
+  store recipes and derive viewport geometry without adding B-Rep outputs
+  to the Sketch itself. When an edit requires dependent B-Rep replay, use
+  the existing worker and document publication contract for that replay.
+
 ## 4. Multi-Window & State Management Architecture
 To support unlimited, synchronized windows, the application architecture must strictly enforce the MVC pattern and the separation of crates.
 
@@ -1246,6 +1373,14 @@ Viewport navigation is mutable per-window Controller state in `newell-app`.
 `newell-render` consumes immutable camera matrices and uploads them to WGPU;
 it owns no gesture, pivot selection, CPU ray queries or camera mutation.
 The approved implementation contract is [M3 camera mechanics](docs/plans/M3-camera-mechanics.md).
+
+In the active principal-plane Sketch slice, use the same Controller camera in
+orthographic projection with local U right, V up and the eye on the positive
+normal side. Save the entry pose and projection and restore them against the
+current viewport on exit. Reuse the named-view orientation transition where
+compatible. During active editing, primary input draws or selects, and
+orientation-changing navigation is suppressed. Pan and zoom remain available.
+The following world-Z-up orbit rule applies outside active Sketch editing.
 
 Primary-button drag over exposed viewport pixels performs camera-relative
 yaw/pitch with strict zero roll against
@@ -1375,15 +1510,28 @@ Do not apply Newell's copyright header to dependency files.
 
 ### 4.5 Adaptive world grid (2026-10-30)
 
-The focused Executor request authorizes a procedural world XY grid at Z=0.
+The procedural grid uses world XY at Z=0 in normal mode. While editing a
+principal-plane Sketch, the same pipeline intersects the selected support and
+evaluates spacing, footprint, fading and axis reinforcement in its local
+frame. Only one grid is drawn. The window's View > Grid Overlay preference
+controls it in either mode and is retained across transitions.
 Controller owns visibility (existing View > Grid Overlay, initially unchecked),
 camera and derived immutable inverse camera inputs. View draws bounded fullscreen
 triangles clipped to exposed viewport regions, with no CPU line collection.
-Engineering spacings 1, 2, 5 × 10ⁿ blend continuously near 60–120 physical pixels;
-analytic coverage gives approximately one-pixel antialiased lines. Theme selects
+Nested spacings 5ⁿ model units subdivide each coarse interval into five. The
+fine pitch spans roughly 24–120 physical pixels during a transition. Analytic
+coverage uses two nominal widths of 1 and 1.25 physical pixels. Every fifth
+line is reinforced at a stable level. The four inserted lines fade together,
+and a shared line contributes once at its selected width. Distant lines soften and fade. When
+the projected grid origin is in front of the camera and within the viewport’s
+vertical span, the fade is mirrored above and below that origin. Theme selects
 subtle white/dark neutral independently of Color. This is a narrow exception to
 viewport opacity/ink restrictions: density and horizon fading prevent aliasing.
-Model-surface depth obscures the grid in all display styles. Origin-axis lines
-are suppressed; existing references remain separate. Grid has no picking, model,
-tree, history, fit bounds or persistence participation. One additional procedural
+In orthographic projection the grid also fades on the visible side of the
+forward-intersection boundary over 48 physical pixels in oblique views.
+Model-surface depth obscures the grid in all display styles. Reinforced neutral
+U=0 and V=0 grid lines remain at every level without additive brightening at their
+crossing. In world XY these are the X=0 and Y=0 lines. Colored origin
+references remain separate. Grid has no picking, model, tree, history, fit
+bounds or persistence participation. One additional procedural
 draw per exposed rectangle is permitted; ASCII remains one batched draw.

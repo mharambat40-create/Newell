@@ -86,6 +86,8 @@ impl SelectionFieldKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Candidate policy interpreted by the application, without model types in the UI.
 pub enum SelectionFieldRole {
+    /// A built-in principal plane used only for Sketch support.
+    SketchPlane,
     /// Closed solid bodies participating in a merge.
     MergeScope,
     /// One closed solid target.

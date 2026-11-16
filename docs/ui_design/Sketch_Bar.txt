@@ -1,6 +1,12 @@
 "Sketch Bar"
+Active after Sketch setup OK. Workbench uses the popup in Command_Bar.txt.
+Tool popups are centered. See README_UI.md section 42.1 for active tools and gestures.
+Point, Line and circular Arc tools use magnetic placement (README_UI.md section 42.1).
+Hold Ctrl during drawing for free placement.
+Escape cancels a gesture, closes a tool or exits Sketch.
+See README_UI.md sections 29.2 and 42.
 
- Workbench │ Construct │ Create │ Shape │ Modify │ Pattern │ Construct │ Utils 
+ Workbench │ Draw │ Curve │ Modify │ Pattern │ Reference │ Constraints
 
 ╭─Draw───────────────╮
 │ [L]ine             │
@@ -14,7 +20,7 @@
 │ 3-Points Rectangle │
 │────────────────────│
 │ [C]ircle           │
-│ 3-Pts Circle       │ 
+│ 3-Pts Circle       │
 │ Ellipse            │
 ╰────────────────────╯
 ╭─Curve──────────────╮
@@ -22,11 +28,10 @@
 │ Tangent Arc        │
 │ Center Point Arc   │
 │ Elliptical Arc     │
-│ Tangent Arc        │
 │ Conic              │
 │────────────────────│
 │ Spline             │
-│ Beziez             │
+│ Bezier             │
 │ Add Control Points │
 ╰────────────────────╯
 ╭─Modify─────────────╮
@@ -52,14 +57,17 @@
 ╰────────────────────╯
 ╭─Constraints────────╮
 │ [D]imension        │
+│ Driven Length      │
 │────────────────────│
 │ [H]orizontal       │
 │ [V]ertical         │
 │ Parallel           │
-│ Perpendicu         │
+│ Perpendicular      │
+│ Collinear          │
 │ Normal             │
 │────────────────────│
 │ Coincident         │
+│ Point on Curve     │
 │ Concentric         │
 │ [M]idpoint         │
 │ [T]angent          │
@@ -68,4 +76,5 @@
 │ [E]qual            │
 │ [S]ymmetric        │
 │ [F]ix              │
+│ Rigid Group        │
 ╰────────────────────╯

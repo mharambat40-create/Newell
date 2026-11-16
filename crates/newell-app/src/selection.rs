@@ -46,6 +46,21 @@ pub(crate) struct CommandSelectionInputs {
     pub(crate) geometry_picker: Option<GeometryPicker>,
 }
 
+pub(crate) fn sketch_plane_rows() -> impl Iterator<Item = (newell_ui::OriginPlane, SelectionRow)> {
+    newell_ui::OriginPlane::ALL
+        .into_iter()
+        .zip(1_u64..)
+        .map(|(plane, key)| {
+            (
+                plane,
+                SelectionRow {
+                    entity: OpaqueTreeId::new(key),
+                    label: plane.label().into(),
+                },
+            )
+        })
+}
+
 pub(crate) fn candidate_rows(
     session: &DocumentSession,
     descriptor: Option<SelectionFieldDescriptor>,
@@ -83,7 +98,7 @@ pub(crate) fn candidate_rows(
                 Axis | Direction => entity.kind() == E::Construction(C::Axis),
                 Path => entity.kind() == E::Construction(C::Curve),
                 EntityReference => true,
-                UnsupportedTopology => false,
+                UnsupportedTopology | SketchPlane => false,
             });
             if eligible {
                 rows.push(SelectionRow {

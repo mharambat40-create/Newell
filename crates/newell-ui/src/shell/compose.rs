@@ -6,9 +6,7 @@
 // (at your option) any later version.
 //! Shell layout and composition: pure functions from [`ShellState`] to a flat [`CellGrid`].
 
-use super::data::{
-    self, COMMAND_MENUS, Line, NodeKind, full_label, has_children, status_text, with_bar_menus,
-};
+use super::data::{self, Line, NodeKind, full_label, has_children, status_text, with_bar_menus};
 use super::{BAR_IDS, COMMAND_IDS, PLAYHEAD_ID, ShellState, Tree, TreePart, WINDOW_BASE};
 use crate::widgets::Canvas;
 use crate::{
@@ -239,7 +237,7 @@ impl Layout {
 
 impl ShellState {
     pub(super) fn layout(&self) -> Layout {
-        Layout::new(
+        let mut layout = Layout::new(
             self.cols,
             self.rows,
             self.widths,
@@ -247,7 +245,11 @@ impl ShellState {
             self.view_panel_visible(0),
             self.view_panel_visible(1),
             self.view_panel_visible(2),
-        )
+        );
+        if self.sketch.mode != crate::SketchMode::Closed {
+            layout.action = layout.action.min(crate::sketch::WIDTH);
+        }
+        layout
     }
 
     /// Composes the whole shell: frames, bars, trees, viewport, NavCube, the Extrude
@@ -386,7 +388,7 @@ impl ShellState {
                 ctx,
                 layout.command_bar(),
                 COMMAND_IDS,
-                &COMMAND_MENUS,
+                self.command_menus(),
                 &self.command_bar,
             );
         }
@@ -544,7 +546,7 @@ impl ShellState {
                         ctx,
                         inner,
                         COMMAND_IDS,
-                        &COMMAND_MENUS,
+                        self.command_menus(),
                         &self.command_bar,
                     );
                 }

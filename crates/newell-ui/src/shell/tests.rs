@@ -2170,3 +2170,70 @@ fn untouched_empty_editor_does_not_add_a_confirmation_barrier() {
     assert!(s.finish_numeric_confirm(confirm, false).unwrap());
     assert_eq!(s.extrude.status, ExtrudeStatus::Editing);
 }
+
+#[test]
+fn sketch_setup_and_tool_popups_match_their_fixed_cell_references() {
+    let mut s = ShellState::new(82, 40);
+    let setup = include_str!("../../../../docs/ui_design/Action_Box_Sketch.txt");
+    let mut reference = setup
+        .lines()
+        .filter(|line| line.starts_with(['╭', '│', '╰']));
+    assert!(click_text(&mut s, "Datum"));
+    assert!(click_text(&mut s, "[S]ketch"));
+    for support in [None, Some(crate::OriginPlane::XY)] {
+        s.set_sketch_mode(crate::SketchMode::Setup(support), false);
+        let panel = s.action_panel_rect().unwrap();
+        let grid = s.compose().unwrap();
+        assert_eq!(panel.width(), 27);
+        for row in panel.row()..panel.row() + panel.height() {
+            let line: String = text(&grid, row)
+                .chars()
+                .skip(panel.col() as usize)
+                .take(27)
+                .collect();
+            assert_eq!(line, reference.next().unwrap());
+        }
+        let (col, row) = find(&grid, "OK").unwrap();
+        assert_eq!(
+            hit_at(&grid, col, row).unwrap().widget_id.is_some(),
+            support.is_some()
+        );
+    }
+    s.view.checks[4] = true;
+    s.set_sketch_mode(crate::SketchMode::Active(crate::OriginPlane::XY), false);
+    s.set_sketch_ready(true, None);
+    let panel = s.action_panel_rect().unwrap();
+    let grid = s.compose().unwrap();
+    assert_eq!(panel.width(), 27);
+    for row in panel.row()..panel.row() + panel.height() {
+        let line: String = text(&grid, row)
+            .chars()
+            .skip(panel.col() as usize)
+            .take(27)
+            .collect();
+        assert_eq!(line, reference.next().unwrap());
+    }
+    assert!(reference.next().is_none());
+    let bar = include_str!("../../../../docs/ui_design/Sketch_Bar.txt");
+    for popup in bar.split('╭').skip(1) {
+        let (title, _) = popup.trim_start_matches('─').split_once('─').unwrap();
+        assert!(click_text(&mut s, title));
+        let grid = s.compose().unwrap();
+        let rows: Vec<_> = popup.lines().filter(|line| !line.is_empty()).collect();
+        let col = (grid.cols() - 22) / 2;
+        let top = (grid.rows() - rows.len() as u32) / 2;
+        for (i, expected) in rows.iter().enumerate() {
+            let line: String = text(&grid, top + i as u32)
+                .chars()
+                .skip(col as usize)
+                .take(22)
+                .collect();
+            if i == 0 {
+                assert_eq!(line, format!("╭{expected}"));
+            } else {
+                assert_eq!(line, *expected);
+            }
+        }
+        assert!(s.key(ShellKey::Escape));
+    }
+}

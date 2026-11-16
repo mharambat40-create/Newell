@@ -25,6 +25,8 @@ mod numeric;
 mod overlays;
 mod revolve;
 mod selection;
+mod sketch;
+pub use sketch::{DrawTool, OriginPlane, SKETCH_COUNT, SKETCH_WEIGHT, SketchIntent, SketchMode};
 mod shell;
 mod style;
 mod sweep;

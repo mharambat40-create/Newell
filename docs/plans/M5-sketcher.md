@@ -1,5 +1,17 @@
 # M5 — Complete, responsive parametric Sketcher
 
+> Focused editing slice (2026-11-09). [Principal-plane Sketch editing, revision 1](M5-sketch-plane-editing.md)
+> applies the authorized D1–D3 amendments only for principal-plane camera/grid,
+> Line and Rectangle, and editable recipe commits. It supersedes the entry-only
+> behavior after setup OK. Other tools, full M5 prerequisites and feasibility
+> gates retain their existing scope.
+
+> Focused entry shell (2026-11-08). [Origin-plane Sketch setup, revision 1](M5-sketch-origin-plane.md)
+> defines the separately scoped UI-only entry slice and records its authorized
+> architecture and ASCII amendments. Those amendments govern this slice where
+> historical D2 differs, including setup OK, available support and inactive
+> controls. They leave the remaining D1–D3 prerequisites and M5 gates in place.
+
 > Historical pre-cutover evidence. Geometry-specific source and package references
 > below are archived context; ADR 0010 and the current migration record govern
 > the present checkout. Independent rank and `faer` work remains retained.

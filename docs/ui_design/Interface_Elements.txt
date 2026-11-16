@@ -57,6 +57,19 @@ For Merge with add □ before :
 │      OK      │    Cancel    │
 ╰─────────────────────────────╯
 
+"Sketch Plane Selection box"
+Single candidate chooser (example with XY pending). Apply with OK.
+Cancel keeps the applied plane. Both return focus to the Plane field.
+╭─Selection───────────────────╮
+│┌───────────────────────────┐│
+││ ■ XY                      ││
+││ □ XZ                      ││
+││ □ YZ                      ││
+│└───────────────────────────┘│
+│─────────────────────────────│
+│      OK      │    Cancel    │
+╰─────────────────────────────╯
+
 "Profile Selection box"
 Use the ordered-item artwork in "Selection box" above.
 Canonical geometry, purpose mapping and scrolling: README_UI.md sections 19-21.

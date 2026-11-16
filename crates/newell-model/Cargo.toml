@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+ttf-parser = "=0.25.1"
 
 [features]
 # Metadata-only fixtures for controller regression tests; never a default feature.

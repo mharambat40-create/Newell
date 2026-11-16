@@ -114,6 +114,8 @@ impl ParameterValue {
     }
 }
 
+pub mod sketch;
+
 /// One real document feature.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Feature {
@@ -122,12 +124,17 @@ pub enum Feature {
         outputs: Vec<EntityId>,
     },
     Extrude(Box<ExtrudeFeature>),
+    Sketch {
+        name: String,
+        recipe: sketch::SketchRecipe,
+        visible: bool,
+    },
 }
 impl Feature {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Base { name, .. } => name,
+            Self::Base { name, .. } | Self::Sketch { name, .. } => name,
             Self::Extrude(feature) => &feature.name,
         }
     }
@@ -136,6 +143,7 @@ impl Feature {
         match self {
             Self::Base { outputs, .. } => outputs,
             Self::Extrude(feature) => &feature.outputs,
+            Self::Sketch { .. } => &[],
         }
     }
 }
@@ -533,6 +541,7 @@ pub struct Document {
     entity_geometry: BTreeMap<EntityId, geometry::EntityGeometry>,
     geometry_generation: geometry::GeometryGeneration,
     next_feature: u64,
+    next_sketch: Option<u64>,
     next_entity: u64,
     next_folder: u64,
     entities: BTreeMap<EntityId, Entity>,
@@ -667,7 +676,10 @@ impl Document {
             },
             &order,
         )?;
-        self.parameter_registry = candidate.into_registry();
+        let mut updated = self.clone();
+        updated.parameter_registry = candidate.into_registry();
+        updated.reevaluate_sketches()?;
+        *self = updated;
         Ok(())
     }
     #[must_use]
@@ -820,7 +832,7 @@ impl Document {
             .find_map(|(current, value)| (*current == id).then_some(value))
             .ok_or(ModelError::UnknownFeature(id))?;
         let old = match feature {
-            Feature::Base { name, .. } => name,
+            Feature::Base { name, .. } | Feature::Sketch { name, .. } => name,
             Feature::Extrude(value) => &mut value.name,
         };
         rename(old, name)
@@ -1133,6 +1145,10 @@ impl CommandController {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelError {
+    #[error("invalid sketch {0}")]
+    InvalidSketch(&'static str),
+    #[error("edit affects Sketch constraints or dimensions {0:?}")]
+    AffectedSketchDimensions(Vec<u64>),
     /// Geometry finalization did not prove the frozen request and complete output inventory.
     #[error("invalid prepared geometry manifest")]
     InvalidGeometryManifest,

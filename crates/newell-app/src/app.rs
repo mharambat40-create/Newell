@@ -30,9 +30,10 @@ use newell_ui::{
     WindowAction, composed_grid_size, effective_scale, fit_window, k_fit, min_window_size,
 };
 use newell_ui::{
-    CommandInputSessionId, EntitySelectionView, LocalSelectionView, SelectionDestination,
-    SelectionEdit, SelectionFieldCount, SelectionFieldDescriptor, SelectionOpen, SelectionOutcome,
-    SelectionRow, SelectionSessionId, SelectionUiRequest,
+    CommandInputSessionId, EntitySelectionView, LocalSelectionView, OriginPlane,
+    SelectionDestination, SelectionEdit, SelectionFieldCount, SelectionFieldDescriptor,
+    SelectionOpen, SelectionOutcome, SelectionRow, SelectionSessionId, SelectionUiRequest,
+    SketchIntent, SketchMode,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -106,6 +107,13 @@ struct PendingOriginClick {
     display_scale: f64,
     edit: SelectionEdit,
 }
+#[derive(Clone, Copy)]
+struct SketchSession {
+    document: crate::DocumentInstanceId,
+    command: CommandInputSessionId,
+    mode: SketchMode,
+}
+
 /// A monitor change seen while the window is still being moved is applied once the window has
 /// been still this long. The OS drag loop streams `Moved` events and resizing the window under
 /// the user's hand fights it; the change is applied once, for the monitor where it comes to rest.
@@ -293,6 +301,7 @@ pub(crate) struct App {
     last_ui_publication: Option<newell_ui::CellGrid>,
     selection: WindowSelection,
     origin_selection: Vec<newell_ui::OriginReference>,
+    face_selection: Vec<newell_model::geometry::FaceRef>,
     command_inputs: Option<CommandSelectionInputs>,
     numeric_inputs: Option<crate::parameters::CommandNumericInputs>,
     numeric_cache:
@@ -329,6 +338,8 @@ pub(crate) struct App {
     scene_initialized: bool,
     pending_scene_click: Option<PendingSceneClick>,
     pending_origin_click: Option<PendingOriginClick>,
+    sketch: Option<SketchSession>,
+    sketch_edit: Option<crate::sketch::Edit>,
     scene_selected: bool,
     modifiers: ModifiersState,
     navigation: Navigation,
@@ -536,7 +547,25 @@ impl App {
             })
             .collect();
         let gpu = if let Some(renderer) = &self.renderer {
-            let items=visible.iter().map(|item|newell_render::SceneMeshItem{mesh:item.mesh.clone(),selected:matches!(item.binding,SceneItemBinding::Committed{entity,..} if self.selection.entities().contains(&entity))}).collect();
+            let items = visible
+                .iter()
+                .map(|item| {
+                    let selected_faces: Vec<u32> = match item.binding {
+                        SceneItemBinding::Committed { entity, generation } => self
+                            .face_selection
+                            .iter()
+                            .filter(|face| face.entity == entity && face.generation == generation)
+                            .map(|face| face.face)
+                            .collect(),
+                        SceneItemBinding::Preview { .. } => Vec::new(),
+                    };
+                    newell_render::SceneMeshItem {
+                        mesh: item.mesh.clone(),
+                        selected: matches!(item.binding, SceneItemBinding::Committed{entity,..} if self.selection.entities().contains(&entity)) && selected_faces.is_empty(),
+                        selected_faces,
+                    }
+                })
+                .collect();
             Some(
                 renderer.prepare_scene_items_for_camera(
                     items,
@@ -1216,6 +1245,7 @@ impl App {
             self.committed_cursor = Some((request.document, OpaqueTreeId::new(feature.get())));
         }
         self.selection.reconcile(&self.document);
+        self.reconcile_face_selection();
         if !receipt.outputs.is_empty() {
             self.selection.apply(
                 SelectionRequest {
@@ -1252,6 +1282,65 @@ impl App {
         });
         self.poll_document_projection(Instant::now(), ProjectionTrigger::Notification)
     }
+    fn drain_sketch_solve(&mut self) -> Update {
+        let Some(runtime) = &self.geometry else {
+            return Update::default();
+        };
+        let reply = match runtime.worker.drain_sketch() {
+            Ok(Some(reply)) => reply,
+            Ok(None) => return Update::default(),
+            Err(error) => {
+                if let Some(edit) = &mut self.sketch_edit {
+                    edit.cancel_solve();
+                }
+                return self
+                    .publish_sketch_ready()
+                    .merge(self.geometry_status(Some(error.to_string())));
+            }
+        };
+        let Some(edit) = &mut self.sketch_edit else {
+            return Update::default();
+        };
+        if !edit
+            .solve
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &reply.cancelled))
+        {
+            return Update::default();
+        }
+        edit.solve = None;
+        let pending_draw = edit.pending_draw.take();
+        let message = if edit.source != self.document.version() {
+            Some("Sketch source changed during solve".into())
+        } else {
+            match reply.result {
+                Ok((recipe, report)) => {
+                    if let Some(key) = pending_draw {
+                        edit.install_draw(recipe, key);
+                        return self
+                            .publish_sketch_ready()
+                            .merge(self.geometry_status(None));
+                    }
+                    edit.recipe = recipe;
+                    edit.set_tool(crate::sketch::Tool::Select);
+                    if report.joined {
+                        Some("Joined Sketch solved (rank unavailable)".into())
+                    } else {
+                        (report.rank > 0).then(|| {
+                            format!(
+                                "Segment equations: rank {}, {} DOF, {} redundant",
+                                report.rank, report.degrees_of_freedom, report.redundant_equations,
+                            )
+                        })
+                    }
+                }
+                Err(error) => Some(error.to_string()),
+            }
+        };
+        self.publish_sketch_ready()
+            .merge(self.geometry_status(message))
+    }
+
     fn drain_worker_reply(&mut self) -> Update {
         use crate::extrude_session::PreparationEvent;
         use crate::geometry_worker::{SceneItemBinding, WorkerReply};
@@ -1319,6 +1408,13 @@ impl App {
                     if let Err(error) = self.document.accept_prepared(expected, prepared, token) {
                         self.release_geometry(token);
                         return self.geometry_status(Some(error.to_string()));
+                    }
+                    // Bootstrap republishes derived B-Rep data for this same
+                    // revision. A Sketch opened while it ran keeps its history anchor.
+                    if let Some(edit) = &mut self.sketch_edit
+                        && edit.source == expected
+                    {
+                        edit.source = self.document.version();
                     }
                     for item in &mut scene.items {
                         item.binding = SceneItemBinding::Committed {
@@ -1495,6 +1591,8 @@ impl App {
         }
     }
     fn handle_selection_request(&mut self, request: SelectionRequest) -> Update {
+        let clear_faces = matches!(request.op, SelectionOp::Replace | SelectionOp::Clear);
+        let affected_entities = request.entities.clone();
         let clears_references = matches!(request.op, SelectionOp::Replace | SelectionOp::Clear)
             && request.document == self.document.identity()
             && self
@@ -1503,9 +1601,92 @@ impl App {
                 .active_entities_at(None)
                 .is_ok_and(|active| request.entities.iter().all(|id| active.contains(id)));
         let mut changed = self.selection.apply(request, &self.document);
+        if clear_faces && !self.face_selection.is_empty() {
+            self.face_selection.clear();
+            changed = true;
+        } else if !affected_entities.is_empty() {
+            let old = self.face_selection.len();
+            self.face_selection
+                .retain(|face| !affected_entities.contains(&face.entity));
+            changed |= old != self.face_selection.len();
+        }
         if clears_references && !self.origin_selection.is_empty() {
             self.origin_selection.clear();
             changed = true;
+        }
+        if changed {
+            self.publish_selection()
+        } else {
+            Update::default()
+        }
+    }
+    fn handle_face_selection_request(
+        &mut self,
+        entity: EntityId,
+        face: newell_model::geometry::FaceRef,
+        op: SelectionOp,
+    ) -> Update {
+        let Some(geometry) = self.document.document().entity_geometry(entity) else {
+            return Update::default();
+        };
+        if face.entity != entity
+            || face.generation != geometry.generation
+            || !geometry
+                .faces
+                .iter()
+                .any(|candidate| candidate.face == face.face)
+        {
+            return Update::default();
+        }
+        let face_was_selected = self.face_selection.contains(&face);
+        let entity_op = match op {
+            SelectionOp::Toggle if face_was_selected => SelectionOp::Remove,
+            SelectionOp::Toggle => SelectionOp::Add,
+            _ => op,
+        };
+        let mut changed = self.selection.apply(
+            SelectionRequest {
+                document: self.document.identity(),
+                op: entity_op,
+                entities: vec![entity],
+            },
+            &self.document,
+        );
+        match op {
+            SelectionOp::Replace => {
+                if self.face_selection != [face] {
+                    self.face_selection.clear();
+                    self.face_selection.push(face);
+                    changed = true;
+                }
+            }
+            SelectionOp::Add => {
+                if !self.face_selection.contains(&face) {
+                    self.face_selection.push(face);
+                    changed = true;
+                }
+            }
+            SelectionOp::Toggle => {
+                if let Some(index) = self
+                    .face_selection
+                    .iter()
+                    .position(|selected| *selected == face)
+                {
+                    self.face_selection.remove(index);
+                } else {
+                    self.face_selection.push(face);
+                }
+                changed = true;
+            }
+            SelectionOp::Remove => {
+                let old = self.face_selection.len();
+                self.face_selection.retain(|selected| *selected != face);
+                changed |= old != self.face_selection.len();
+            }
+            SelectionOp::Clear => {
+                changed |= !self.face_selection.is_empty();
+                self.face_selection.clear();
+            }
         }
         if changed {
             self.publish_selection()
@@ -1529,6 +1710,10 @@ impl App {
                     },
                     &self.document,
                 );
+                if !self.face_selection.is_empty() {
+                    self.face_selection.clear();
+                    changed = true;
+                }
                 if self.origin_selection != [reference] {
                     self.origin_selection.clear();
                     self.origin_selection.push(reference);
@@ -1561,6 +1746,10 @@ impl App {
             SelectionEdit::Clear => {
                 changed |= !self.origin_selection.is_empty();
                 self.origin_selection.clear();
+                if !self.face_selection.is_empty() {
+                    self.face_selection.clear();
+                    changed = true;
+                }
                 changed |= self.selection.apply(
                     SelectionRequest {
                         document: self.document.identity(),
@@ -1578,31 +1767,59 @@ impl App {
         }
     }
     fn update_scene_selection(&mut self) {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene_origin_selection(self.origin_selection.clone());
+        }
         if self.geometry.is_some() {
             if !self.scene_available {
                 return;
             }
             for (index, binding) in self.scene_bindings.iter().enumerate() {
-                let selected = match binding.binding {
-                    crate::geometry_worker::SceneItemBinding::Committed { entity, .. } => {
-                        self.selection.entities().contains(&entity)
+                let (selected, faces) = match binding.binding {
+                    crate::geometry_worker::SceneItemBinding::Committed { entity, generation } => {
+                        let faces: Vec<u32> = self
+                            .face_selection
+                            .iter()
+                            .filter(|face| face.entity == entity && face.generation == generation)
+                            .map(|face| face.face)
+                            .collect();
+                        (
+                            self.selection.entities().contains(&entity) && faces.is_empty(),
+                            faces,
+                        )
                     }
-                    _ => false,
+                    _ => (false, Vec::new()),
                 };
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_scene_item_selected(index, selected);
+                    renderer.set_scene_item_selected_faces(index, faces);
                 }
             }
             return;
         }
-        let selected = self.scene_entity.is_some_and(|binding| {
-            binding.document == self.document.identity()
-                && binding.mesh_revision == self.navigation.scene().revision()
-                && self.document.document().entity(binding.entity).is_some()
-                && self.selection.entities().contains(&binding.entity)
-        });
+        let mut faces = Vec::new();
+        if let Some(binding) = self.scene_entity
+            && let Some(geometry) = self.document.document().entity_geometry(binding.entity)
+        {
+            faces.extend(
+                self.face_selection
+                    .iter()
+                    .filter(|face| {
+                        face.entity == binding.entity && face.generation == geometry.generation
+                    })
+                    .map(|face| face.face),
+            );
+        }
+        let selected = faces.is_empty()
+            && self.scene_entity.is_some_and(|binding| {
+                binding.document == self.document.identity()
+                    && binding.mesh_revision == self.navigation.scene().revision()
+                    && self.document.document().entity(binding.entity).is_some()
+                    && self.selection.entities().contains(&binding.entity)
+            });
         if let Some(renderer) = &mut self.renderer {
             renderer.set_scene_selected(selected);
+            renderer.set_scene_item_selected_faces(0, faces);
         }
         if self.scene_selected != selected {
             self.scene_selected = selected;
@@ -1610,6 +1827,17 @@ impl App {
                 window.request_redraw();
             }
         }
+    }
+    fn reconcile_face_selection(&mut self) {
+        self.face_selection.retain(|face| {
+            self.document
+                .document()
+                .entity_geometry(face.entity)
+                .is_some_and(|geometry| {
+                    geometry.generation == face.generation
+                        && geometry.faces.iter().any(|item| item.face == face.face)
+                })
+        });
     }
     #[cfg(test)]
     fn install_scene_mesh(&mut self, mesh: NewellMesh, entity: Option<EntityId>) {
@@ -1678,10 +1906,17 @@ impl App {
                 {
                     return Update::default();
                 }
-                return self.handle_selection_request(SelectionRequest {
-                    document: self.document.identity(),
-                    op: pending.edit.into(),
-                    entities: vec![entity],
+                let face = u32::try_from(hit.face_index - item.range.face_start as usize).ok();
+                return face.map_or_else(Update::default, |face| {
+                    self.handle_face_selection_request(
+                        entity,
+                        newell_model::geometry::FaceRef {
+                            entity,
+                            generation,
+                            face,
+                        },
+                        pending.edit.into(),
+                    )
                 });
             }
             let Some(binding) = self.scene_entity.filter(|b| {
@@ -1691,6 +1926,23 @@ impl App {
             }) else {
                 return Update::default();
             };
+            if let Some(geometry) = self.document.document().entity_geometry(binding.entity)
+                && let Ok(face) = u32::try_from(hit.face_index)
+                && geometry
+                    .faces
+                    .iter()
+                    .any(|candidate| candidate.face == face)
+            {
+                return self.handle_face_selection_request(
+                    binding.entity,
+                    newell_model::geometry::FaceRef {
+                        entity: binding.entity,
+                        generation: geometry.generation,
+                        face,
+                    },
+                    pending.edit.into(),
+                );
+            }
             vec![binding.entity]
         } else {
             if pending.edit != SelectionEdit::Replace {
@@ -1721,13 +1973,29 @@ impl App {
         {
             return Some(Update::default());
         }
-        Some(self.select_origin_reference(pending.reference, pending.edit))
+        let selection = self.select_origin_reference(pending.reference, pending.edit);
+        let binding = if self
+            .live_sketch()
+            .is_some_and(|draft| draft.mode == SketchMode::Setup(None))
+            && let Some(plane) = OriginPlane::from_reference(pending.reference)
+        {
+            self.set_sketch_mode(SketchMode::Setup(Some(plane)), true)
+        } else {
+            Update::default()
+        };
+        Some(selection.merge(binding))
     }
     fn start_command_inputs(&mut self, operation: ActionOperation) -> Update {
-        if self.geometry.is_some()
-            && self.projection_sync.acknowledged_version() != Some(self.document.version())
-        {
-            return Update::default();
+        if operation != ActionOperation::Sketch {
+            self.sketch = None;
+            if let Some(edit) = self.sketch_edit.take() {
+                self.navigation.leave_sketch(edit.entry_camera);
+            }
+            if self.geometry.is_some()
+                && self.projection_sync.acknowledged_version() != Some(self.document.version())
+            {
+                return Update::default();
+            }
         }
         if self.shell.as_ref().is_none_or(|s| {
             s.shell().tree_projection().document != self.document.identity().tree()
@@ -1740,6 +2008,9 @@ impl App {
             return Update::default();
         };
         self.next_command_id = next;
+        if operation == ActionOperation::Sketch {
+            return self.start_sketch(CommandInputSessionId(next));
+        }
         self.extrude_edit_target = None;
         let Some(shell) = &self.shell else {
             return Update::default();
@@ -1846,12 +2117,682 @@ impl App {
         let selection_update = self.publish_selection();
         selection_update.merge(self.publish_numeric_view())
     }
+    fn live_sketch(&self) -> Option<SketchSession> {
+        self.sketch
+            .filter(|draft| draft.document == self.document.identity())
+    }
+
+    fn start_sketch(&mut self, command: CommandInputSessionId) -> Update {
+        let mut selected = self
+            .origin_selection
+            .iter()
+            .copied()
+            .filter_map(OriginPlane::from_reference);
+        let support = selected.next().filter(|_| selected.next().is_none());
+        let mode = SketchMode::Setup(support);
+        let Some(shell) = &mut self.shell else {
+            return Update::default();
+        };
+        let Ok(update) = shell.set_sketch_mode(mode, false) else {
+            return Update::default();
+        };
+
+        if self.command_inputs.is_some() {
+            self.invalidate_geometry_preview();
+            if let Some(runtime) = &mut self.geometry {
+                if let Some(mut outgoing) = runtime.coordinator.take()
+                    && let Some(token) = outgoing.cancel()
+                {
+                    let _ = runtime.worker.release(token);
+                }
+                runtime.latest_edit = None;
+            }
+        }
+        self.commands.cancel();
+        self.command_inputs = None;
+        if let Some(outgoing) = self.numeric_inputs.take() {
+            self.numeric_cache.insert(outgoing.operation, outgoing);
+        }
+        self.numeric_delivery = None;
+        self.numeric_committed = false;
+        self.extrude_edit_target = None;
+        self.active_selection = None;
+        self.pending_scene_click = None;
+        self.pending_origin_click = None;
+        self.sketch = Some(SketchSession {
+            document: self.document.identity(),
+            command,
+            mode,
+        });
+        update.merge(self.publish_selection())
+    }
+
+    fn set_sketch_mode(&mut self, mode: SketchMode, focus_plane: bool) -> Update {
+        let Some(mut draft) = self.live_sketch() else {
+            return Update::default();
+        };
+        let Some(shell) = &mut self.shell else {
+            return Update::default();
+        };
+        let Ok(update) = shell.set_sketch_mode(mode, focus_plane) else {
+            return Update::default();
+        };
+        draft.mode = mode;
+        self.sketch = (mode != SketchMode::Closed).then_some(draft);
+        self.pending_origin_click = None;
+        if !matches!(mode, SketchMode::Setup(_)) {
+            self.active_selection = None;
+        }
+        update
+    }
+
+    fn enter_sketch_edit(
+        &mut self,
+        plane: OriginPlane,
+        target: Option<newell_model::FeatureId>,
+        recipe: newell_model::sketch::SketchRecipe,
+    ) -> Update {
+        let before = match self
+            .shell
+            .as_ref()
+            .map(|shell| shell.shell().playhead().insertion)
+        {
+            Some(HistoryGap::Before(id)) => match self.document.feature_id(id) {
+                Some(id) => Some(id),
+                None => {
+                    return self.geometry_status(Some("Missing Sketch insertion anchor".into()));
+                }
+            },
+            _ => None,
+        };
+        let update = self.set_sketch_mode(SketchMode::Active(plane), false);
+        if !update.any() {
+            return update;
+        }
+        self.sketch_edit = Some(crate::sketch::Edit::new(
+            self.document.version(),
+            before,
+            target,
+            self.navigation.camera(),
+            recipe,
+        ));
+        self.navigation.enter_sketch(plane, Instant::now());
+        let mut numeric_update = Update::default();
+        if let Some((draft, shell)) = self.live_sketch().zip(self.shell.as_ref()) {
+            let operation = ActionOperation::Sketch;
+            let descriptors = shell.shell().numeric_descriptors();
+            if let (Ok(mut inputs), Ok(parameters)) = (
+                crate::parameters::CommandNumericInputs::new(
+                    self.document.identity(),
+                    draft.command,
+                    operation,
+                    &descriptors,
+                ),
+                self.document
+                    .document()
+                    .begin_parameter_draft(newell_model::parameters::ParameterDraftOwner::Document),
+            ) {
+                inputs.parameter_draft = parameters;
+                self.numeric_inputs = Some(inputs);
+                numeric_update = self.publish_numeric_view();
+            }
+        }
+        self.publish_sketch_ready()
+            .merge(update)
+            .merge(numeric_update)
+    }
+
+    fn close_sketch_edit(&mut self) -> Update {
+        let update = self.set_sketch_mode(SketchMode::Closed, false);
+        self.numeric_inputs = None;
+        self.numeric_delivery = None;
+        if let Some(mut edit) = self.sketch_edit.take() {
+            edit.cancel_solve();
+            self.navigation.leave_sketch(edit.entry_camera);
+        }
+        update
+    }
+
+    fn publish_sketch_ready(&mut self) -> Update {
+        let ready = self
+            .sketch_edit
+            .as_ref()
+            .is_some_and(crate::sketch::Edit::ready);
+        let tool = self
+            .sketch_edit
+            .as_ref()
+            .and_then(crate::sketch::Edit::draw_tool);
+        self.shell
+            .as_mut()
+            .and_then(|shell| shell.set_sketch_ready(ready, tool).ok())
+            .unwrap_or_default()
+    }
+
+    fn start_sketch_link(&mut self, tool: newell_ui::DrawTool) -> Update {
+        use newell_model::sketch::{ReferenceMode, SketchPrimitive};
+        let Some(edit) = self.sketch_edit.as_mut() else {
+            return Update::default();
+        };
+        let document = self.document.document();
+        let source = self
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.shell().focused_features_operation())
+            .and_then(|target| match target.kind {
+                newell_ui::TreeTargetKind::Operation(id) => self.document.feature_id(id),
+                _ => None,
+            });
+        let limit = edit.target.or(edit.before);
+        let Some((feature, source)) = document
+            .features()
+            .iter()
+            .take_while(|(id, _)| Some(*id) != limit)
+            .find(|(id, _)| Some(*id) == source)
+        else {
+            return self.geometry_status(Some(
+                "Focus an earlier Sketch or B-Rep producer in Features".into(),
+            ));
+        };
+        let mode = if tool == newell_ui::DrawTool::Projected {
+            ReferenceMode::Projected
+        } else {
+            ReferenceMode::Intersect
+        };
+        let mut preview = Vec::new();
+        let mut admit = |item| {
+            if let Ok(geometry) = document.resolve_sketch_reference(edit.recipe.support, item)
+                && !preview
+                    .iter()
+                    .any(|(_, existing): &(SketchPrimitive, SketchPrimitive)| {
+                        *existing == geometry
+                            || match (existing.line(), geometry.line()) {
+                                (Some((a, b)), Some((c, d))) => a == d && b == c,
+                                _ => false,
+                            }
+                    })
+            {
+                preview.push((item, geometry));
+            }
+        };
+        if let newell_model::Feature::Sketch { recipe, .. } = source {
+            for &(element, _) in &recipe.primitives {
+                admit(SketchPrimitive::Reference {
+                    feature: *feature,
+                    element,
+                    mode,
+                });
+            }
+        } else {
+            use newell_model::geometry::{DirectionRef, FaceRef};
+            for &entity in source.outputs() {
+                let Some(geometry) = document.entity_geometry(entity) else {
+                    continue;
+                };
+                for face in &geometry.faces {
+                    let support = FaceRef {
+                        entity,
+                        generation: geometry.generation,
+                        face: face.face,
+                    };
+                    if mode == ReferenceMode::Intersect
+                        && let Ok(sections) =
+                            document.sketch_face_sections(edit.recipe.support, *feature, support)
+                        && !sections.is_empty()
+                    {
+                        for (index, _) in sections.iter().enumerate() {
+                            if let Ok(interval) = u32::try_from(index) {
+                                admit(SketchPrimitive::BrepFaceSection {
+                                    feature: *feature,
+                                    face: support,
+                                    interval,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    for wire in &face.wires {
+                        for edge in wire
+                            .edges
+                            .iter()
+                            .filter(|edge| edge.straight || edge.cubic.is_some())
+                        {
+                            let count = if mode == ReferenceMode::Intersect && !edge.straight {
+                                3
+                            } else {
+                                1
+                            };
+                            for crossing in 0..count {
+                                admit(SketchPrimitive::BrepReference {
+                                    feature: *feature,
+                                    edge: DirectionRef {
+                                        support,
+                                        wire: wire.wire,
+                                        edge: edge.edge,
+                                    },
+                                    mode,
+                                    crossing,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if preview.is_empty() {
+            return self.geometry_status(Some("No compatible reference geometry".into()));
+        }
+        edit.link_from(tool, preview);
+        self.publish_sketch_ready()
+    }
+
+    fn handle_sketch_intent(&mut self, intent: SketchIntent) -> Update {
+        use crate::sketch::Tool;
+        match (intent, self.live_sketch().map(|draft| draft.mode)) {
+            (SketchIntent::Confirm, Some(SketchMode::Setup(Some(plane)))) => {
+                self.enter_sketch_edit(plane, None, crate::sketch::empty_recipe(plane))
+            }
+            (SketchIntent::Confirm, Some(SketchMode::Active(_))) => {
+                let Some(edit) = self.sketch_edit.as_ref().filter(|edit| edit.ready()) else {
+                    return Update::default();
+                };
+                let result = if let Some(inputs) = self.numeric_inputs.as_ref().filter(|inputs| {
+                    inputs.operation == ActionOperation::Sketch
+                        && edit.recipe.formula_ids().next().is_some()
+                }) {
+                    self.document.commit_formula_sketch(
+                        edit.source,
+                        edit.before,
+                        edit.target,
+                        edit.recipe.clone(),
+                        &inputs.parameter_draft,
+                    )
+                } else {
+                    self.document.commit_sketch(
+                        edit.source,
+                        edit.before,
+                        edit.target,
+                        edit.recipe.clone(),
+                    )
+                };
+                match result {
+                    Ok(()) => self
+                        .close_sketch_edit()
+                        .merge(self.geometry_status(None))
+                        .merge(self.poll_document_projection(
+                            Instant::now(),
+                            ProjectionTrigger::UserActivation,
+                        )),
+                    Err(error) => self.geometry_status(Some(error.to_string())),
+                }
+            }
+            (SketchIntent::Cancel, Some(_)) => self.close_sketch_edit(),
+            (SketchIntent::Escape, Some(SketchMode::Setup(_))) => self.close_sketch_edit(),
+            (SketchIntent::Draw(newell_ui::DrawTool::Insert), Some(SketchMode::Active(_))) => {
+                let recipe = self
+                    .shell
+                    .as_ref()
+                    .and_then(|shell| shell.shell().focused_features_operation())
+                    .and_then(|target| match target.kind {
+                        newell_ui::TreeTargetKind::Operation(id) => self.document.feature_id(id),
+                        _ => None,
+                    })
+                    .and_then(|id| {
+                        let edit = self.sketch_edit.as_ref()?;
+                        (edit.target != Some(id))
+                            .then(|| self.document.document().feature(id))
+                            .flatten()
+                    })
+                    .and_then(|feature| match feature {
+                        newell_model::Feature::Sketch { recipe, .. } => Some(recipe.clone()),
+                        _ => None,
+                    });
+                let Some((edit, recipe)) = self.sketch_edit.as_mut().zip(recipe) else {
+                    return self.geometry_status(Some(
+                        "Focus another Sketch in Features before Insert".into(),
+                    ));
+                };
+                if edit.recipe.support != recipe.support {
+                    return self
+                        .geometry_status(Some("Insert requires the same support plane".into()));
+                }
+                let mut recipe = recipe;
+                for (_, item) in &mut recipe.primitives {
+                    if matches!(
+                        item,
+                        newell_model::sketch::SketchPrimitive::Reference { .. }
+                            | newell_model::sketch::SketchPrimitive::BrepReference { .. }
+                            | newell_model::sketch::SketchPrimitive::BrepFaceSection { .. }
+                    ) {
+                        match self
+                            .document
+                            .document()
+                            .resolve_sketch_reference(recipe.support, *item)
+                        {
+                            Ok(geometry) => *item = geometry,
+                            Err(error) => return self.geometry_status(Some(error.to_string())),
+                        }
+                    }
+                }
+                edit.insert_from(recipe);
+                self.publish_sketch_ready()
+            }
+            (
+                SketchIntent::Draw(
+                    tool @ (newell_ui::DrawTool::Projected | newell_ui::DrawTool::Intersect),
+                ),
+                Some(SketchMode::Active(_)),
+            ) => self.start_sketch_link(tool),
+            (intent, Some(SketchMode::Active(_))) => {
+                if let Some(edit) = &mut self.sketch_edit {
+                    match intent {
+                        SketchIntent::Line => edit.set_tool(Tool::Line),
+                        SketchIntent::Rectangle => edit.set_tool(Tool::Rectangle),
+                        SketchIntent::Draw(tool) => edit.set_tool(Tool::Draw(tool)),
+                        SketchIntent::Delete => {
+                            if let Err(error) = edit.delete_selected() {
+                                return self.geometry_status(Some(error.to_string()));
+                            }
+                        }
+                        SketchIntent::Detach => {
+                            edit.refresh_reference_picks(self.document.document());
+                            if let Err(error) = edit.detach_selected() {
+                                return self.geometry_status(Some(error.to_string()));
+                            }
+                        }
+                        SketchIntent::Escape if edit.escape() => return self.close_sketch_edit(),
+                        _ => {}
+                    }
+                }
+                self.publish_sketch_ready()
+            }
+            _ => Update::default(),
+        }
+    }
+
+    fn sketch_strokes(&self) -> Vec<newell_render::SketchStroke> {
+        let camera = self.navigation.camera();
+        let scale = self
+            .window
+            .as_ref()
+            .map_or(1.0, |window| window.scale_factor());
+        let editing = self.sketch_edit.as_ref().and_then(|edit| edit.target);
+        let mut strokes: Vec<_> = self
+            .document
+            .document()
+            .features()
+            .iter()
+            .filter_map(|(id, feature)| match feature {
+                newell_model::Feature::Sketch {
+                    recipe,
+                    visible: true,
+                    ..
+                } if Some(*id) != editing => Some(recipe),
+                _ => None,
+            })
+            .flat_map(|recipe| {
+                crate::sketch::saved_strokes(recipe, camera)
+                    .chain(crate::sketch::linked_strokes(
+                        recipe,
+                        self.document.document(),
+                        camera,
+                    ))
+                    .chain(crate::sketch::dimension_strokes(
+                        recipe,
+                        self.document.document(),
+                        camera,
+                        scale,
+                    ))
+                    .chain(crate::sketch::join_strokes(recipe, camera, scale))
+            })
+            .collect();
+        if let Some(edit) = &self.sketch_edit {
+            let pointer = self.sketch_pointer();
+            if let Some((p, local)) = pointer {
+                let bypass = self.modifiers.control_key();
+                let exposed = self.sketch_exposed_regions(camera.viewport);
+                edit.update_snap(local, p, scale, camera, bypass, &exposed);
+                let rect = exposed
+                    .iter()
+                    .find(|rect| rect.contains(p.0, p.1))
+                    .copied()
+                    .unwrap_or(camera.viewport);
+                strokes.extend(edit.snap_marks(camera, [p.0, p.1], scale, rect, bypass));
+            } else {
+                edit.clear_live_snap();
+            }
+            strokes.extend(edit.strokes(camera, pointer.map(|(_, local)| edit.snapped_local(local))));
+            strokes.extend(crate::sketch::join_strokes(&edit.recipe, camera, scale));
+            strokes.extend(crate::sketch::dimension_strokes(
+                &edit.recipe,
+                self.document.document(),
+                camera,
+                scale,
+            ));
+            strokes.extend(crate::sketch::linked_strokes(
+                &edit.recipe,
+                self.document.document(),
+                camera,
+            ));
+        }
+        strokes
+    }
+
+    fn sketch_exposed_regions(&self, viewport: SceneViewport) -> Vec<SceneViewport> {
+        let occlusions = self.shell.as_ref().map_or_else(Vec::new, scene_occlusions);
+        newell_render::exposed_regions(viewport, &occlusions)
+    }
+
+    fn sketch_pointer(&self) -> Option<((f64, f64), [f64; 2])> {
+        let edit = self.sketch_edit.as_ref()?;
+        if self.navigation.has_capture() || self.nav_interaction.active() || self.native_resizing {
+            return None;
+        }
+        self.scene_pointer
+            .filter(|_| {
+                self.shell
+                    .as_ref()
+                    .is_some_and(ShellController::scene_input_enabled)
+            })
+            .filter(|p| self.scene_navigation_at((p.x, p.y)))
+            .and_then(|p| {
+                let point = (p.x, p.y);
+                let local = self
+                    .navigation
+                    .sketch_point(crate::sketch::ui_plane(edit.recipe.support), point)?;
+                Some((point, local))
+            })
+    }
+
+    fn sketch_auxiliary_admitted(&self, point: (f64, f64)) -> bool {
+        !self.occluded
+            && !self.resize.is_active()
+            && !self.native_resizing
+            && !self.nav_interaction.active()
+            && !self.nav_geometry.as_ref().is_some_and(|g| g.reserves(point))
+            && self.navigation.visible(point)
+            && self.shell.as_ref().is_some_and(|shell| {
+                shell.navigation_admission((self.last_size.width, self.last_size.height), self.resizable())
+                    && shell.shell().editing_field().is_none()
+            })
+    }
+
+    fn finish_sketch_secondary(&mut self, point: (f64, f64)) -> Update {
+        let admitted = self.sketch_auxiliary_admitted(point);
+        let (click, camera_changed) = self.navigation.finish_secondary(point);
+        if camera_changed {
+            if let (Some(renderer), Some(camera)) =
+                (&mut self.renderer, self.navigation.snapshot())
+            {
+                renderer.set_scene_camera(camera);
+            }
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        let Some(edit) = &mut self.sketch_edit else {
+            return Update::default();
+        };
+        if edit.secondary_press.take().is_some_and(|press| {
+            admitted && click
+                && press.navigation == self.navigation.revision()
+                && self.shell.as_ref().is_some_and(|shell| shell.generation() == press.layout)
+        }) && !edit.is_select() {
+            edit.set_tool(crate::sketch::Tool::Select);
+            return self.publish_sketch_ready().merge(self.geometry_status(None));
+        }
+        Update::default()
+    }
+
+    fn begin_sketch_click(&mut self, point: (f64, f64), scale: f64) {
+        let (Some(edit), Some(shell)) = (&mut self.sketch_edit, &self.shell) else {
+            return;
+        };
+        if shell.scene_input_enabled()
+            && self
+                .navigation
+                .sketch_point(crate::sketch::ui_plane(edit.recipe.support), point)
+                .is_some()
+        {
+            edit.press = Some(crate::sketch::Click {
+                point,
+                navigation: self.navigation.revision(),
+                layout: shell.generation(),
+                scale,
+            });
+        }
+    }
+
+    fn finish_sketch_click(&mut self, point: (f64, f64)) -> Update {
+        let camera = self.navigation.camera();
+        let exposed = self.sketch_exposed_regions(camera.viewport);
+        let Some(edit) = &mut self.sketch_edit else {
+            return Update::default();
+        };
+        let Some(crate::sketch::Click {
+            point: start,
+            navigation: revision,
+            layout: generation,
+            scale,
+        }) = edit.press.take()
+        else {
+            return Update::default();
+        };
+        if revision != self.navigation.revision()
+            || (point.0 - start.0).hypot(point.1 - start.1) > 4.0 * scale
+            || self.shell.as_ref().is_none_or(|shell| {
+                shell.generation() != generation || !shell.scene_input_enabled()
+            })
+        {
+            return Update::default();
+        }
+        let plane = crate::sketch::ui_plane(edit.recipe.support);
+        let Some(local) = self.navigation.sketch_point(plane, point) else {
+            return Update::default();
+        };
+        if edit.solve.is_some() {
+            return Update::default();
+        }
+        edit.refresh_reference_picks(self.document.document());
+        if edit.is_select() {
+            let message = edit.select_click(point, scale, camera, &exposed);
+            return self.geometry_status(message);
+        }
+        let placement = if edit.magnetic_tool() {
+            local
+        } else {
+            edit.update_snap(local, point, scale, camera, self.modifiers.control_key(), &exposed);
+            edit.snapped_local(local)
+        };
+        let mut draw_key = None;
+        let mut anchors = Vec::new();
+        let candidate =
+            if let Some(candidate) = edit.segment_edit(placement, point, scale, camera) {
+                match candidate {
+                    Ok(Some(recipe)) => {
+                        anchors.extend(recipe.segment_equations.iter().filter_map(
+                            |(id, equation)| {
+                                (edit.recipe.segment_equations.get(id) != Some(equation))
+                                    .then_some(equation.segment)
+                            },
+                        ));
+                        Some(recipe)
+                    }
+                    Ok(None) => {
+                        return self.publish_sketch_ready().merge(
+                            self.geometry_status(Some("Click to place the dimension".into())),
+                        );
+                    }
+                    Err(error) => return self.geometry_status(Some(error.to_string())),
+                }
+            } else if edit.magnetic_tool() {
+                match edit.magnetic_click(
+                    local,
+                    point,
+                    scale,
+                    camera,
+                    self.modifiers.control_key(),
+                    &exposed,
+                ) {
+                    Ok(Some(placement)) => {
+                        draw_key = Some(placement.key);
+                        Some(placement.recipe)
+                    }
+                    Ok(None) => None,
+                    Err(error) => return self.geometry_status(Some(error.to_string())),
+                }
+            } else {
+                if let Err(error) = edit.click(placement, point, scale, camera) {
+                    return self.geometry_status(Some(error.to_string()));
+                }
+                None
+            };
+        if let Some(recipe) = candidate {
+            let Some(runtime) = &self.geometry else {
+                return self
+                    .geometry_status(Some("Sketch solve requires the geometry worker".into()));
+            };
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if let Err(error) = runtime
+                .worker
+                .submit_sketch(crate::geometry_worker::SketchSolve {
+                    recipe,
+                    cancelled: Arc::clone(&cancelled),
+                    draw: draw_key.is_some(),
+                    anchors,
+                })
+            {
+                return self.geometry_status(Some(error.to_string()));
+            }
+            edit.solve = Some(cancelled);
+            edit.pending_draw = draw_key;
+            return self
+                .publish_sketch_ready()
+                .merge(self.geometry_status(Some("Solving Sketch".into())));
+        }
+        self.publish_sketch_ready()
+            .merge(self.geometry_status(None))
+    }
+
     fn panel_rows(&self, request: &SelectionOpen) -> Option<Vec<SelectionRow>> {
         if request.document != self.document.identity().tree() {
             return None;
         }
         match request.destination {
             SelectionDestination::Window => Some(candidate_rows(&self.document, None, None)),
+            SelectionDestination::Field { session, field }
+                if field.operation == ActionOperation::Sketch =>
+            {
+                let draft = self.live_sketch()?;
+                let shell = self.shell.as_ref()?;
+                (draft.command == session
+                    && matches!(draft.mode, SketchMode::Setup(_))
+                    && shell.shell().selection_field_visible(field))
+                .then(|| {
+                    crate::selection::sketch_plane_rows()
+                        .map(|(_, row)| row)
+                        .collect()
+                })
+            }
             SelectionDestination::Field { session, field } => {
                 let inputs = self.command_inputs.as_ref().filter(|i| {
                     i.session == session
@@ -1984,6 +2925,18 @@ impl App {
                     }
                     return self.publish_selection();
                 }
+                if matches!(active.destination, SelectionDestination::Field { field, .. }
+                    if field.operation == ActionOperation::Sketch)
+                {
+                    let [id] = ids.as_slice() else {
+                        return Update::default();
+                    };
+                    return crate::selection::sketch_plane_rows()
+                        .find(|(_, row)| row.entity == *id)
+                        .map_or_else(Update::default, |(plane, _)| {
+                            self.set_sketch_mode(SketchMode::Setup(Some(plane)), false)
+                        });
+                }
                 let entities = ids
                     .iter()
                     .map(|id| EntityId::from_raw(id.get()))
@@ -2011,9 +2964,6 @@ impl App {
         }
     }
     fn open_field_selection(&mut self, descriptor: SelectionFieldDescriptor) -> Update {
-        let Some(inputs) = self.command_inputs.as_ref() else {
-            return Update::default();
-        };
         let Some(next) = self.next_selection_id.checked_add(1) else {
             log(&newell_ui::UiError::InteractionIdentityExhausted.to_string());
             return Update::default();
@@ -2026,6 +2976,36 @@ impl App {
         {
             return Update::default();
         }
+        if descriptor.role == newell_ui::SelectionFieldRole::SketchPlane {
+            let Some(draft) = self.live_sketch() else {
+                return Update::default();
+            };
+            let SketchMode::Setup(support) = draft.mode else {
+                return Update::default();
+            };
+            let applied = crate::selection::sketch_plane_rows()
+                .filter_map(|(plane, row)| (Some(plane) == support).then_some(row.entity))
+                .collect();
+            let mut request = SelectionOpen {
+                session: SelectionSessionId(next),
+                document: self.document.identity().tree(),
+                destination: SelectionDestination::Field {
+                    session: draft.command,
+                    field: descriptor.field,
+                },
+                rows: Vec::new(),
+                applied,
+                max_count: descriptor.max_count,
+            };
+            let Some(rows) = self.panel_rows(&request) else {
+                return Update::default();
+            };
+            request.rows = rows;
+            return self.publish_field_picker(request, None);
+        }
+        let Some(inputs) = self.command_inputs.as_ref() else {
+            return Update::default();
+        };
         let mut request = SelectionOpen {
             session: SelectionSessionId(next),
             document: self.document.identity().tree(),
@@ -2088,13 +3068,21 @@ impl App {
         request
             .applied
             .retain(|id| request.rows.iter().any(|r| r.entity == *id));
+        self.publish_field_picker(request, picker)
+    }
+
+    fn publish_field_picker(
+        &mut self,
+        request: SelectionOpen,
+        picker: Option<crate::selection::GeometryPicker>,
+    ) -> Update {
         match self
             .shell
             .as_mut()
             .map(|s| s.open_selection(request.clone()))
         {
             Some(Ok(update)) => {
-                self.next_selection_id = next;
+                self.next_selection_id = request.session.0;
                 if let Some(inputs) = self.command_inputs.as_mut() {
                     inputs.geometry_picker = picker;
                 }
@@ -2102,6 +3090,7 @@ impl App {
                 self.navigation.cancel();
                 self.nav_interaction.cancel();
                 self.pending_scene_click = None;
+                self.pending_origin_click = None;
                 update
             }
             _ => Update::default(),
@@ -2126,6 +3115,7 @@ impl App {
             last_ui_publication: None,
             selection: WindowSelection::new(document_identity),
             origin_selection: Vec::new(),
+            face_selection: Vec::new(),
             command_inputs: None,
             numeric_inputs: None,
             numeric_cache: std::collections::BTreeMap::new(),
@@ -2160,6 +3150,8 @@ impl App {
             scene_initialized: false,
             pending_scene_click: None,
             pending_origin_click: None,
+            sketch: None,
+            sketch_edit: None,
             scene_selected: false,
             modifiers: ModifiersState::empty(),
             navigation: Navigation::default(),
@@ -2297,6 +3289,52 @@ impl App {
             }
         }
     }
+    fn sync_sketch_numeric(&mut self) {
+        use newell_model::Unit;
+        let Some((edit, inputs)) = self.sketch_edit.as_mut().zip(self.numeric_inputs.as_ref())
+        else {
+            return;
+        };
+        if inputs.operation == ActionOperation::Sketch {
+            if let Some(shell) = self.shell.as_ref() {
+                shell.shell().sketch_text().clone_into(&mut edit.text);
+                edit.associative_mirror = shell.shell().sketch_associative_mirror();
+                edit.transform_move = shell.shell().sketch_transform_move();
+                edit.spline_handles = shell.shell().sketch_spline_handles();
+                edit.offset_chain = shell.shell().sketch_offset_chain();
+            }
+            let input = |key: Option<u32>| {
+                let field = key.map(|key| newell_ui::NumericFieldKey {
+                    operation: ActionOperation::Sketch,
+                    key,
+                });
+                let accepted = field.and_then(|key| inputs.values.get(&key));
+                let formula = field.zip(accepted).and_then(|(key, value)| {
+                    if value.formula.is_empty() {
+                        None
+                    } else {
+                        inputs.bindings.get(&key).copied()
+                    }
+                });
+                let value = accepted.and_then(|value| {
+                    value
+                        .quantity
+                        .value_in(Unit::Unitless)
+                        .or_else(|_| value.quantity.value_in(Unit::Millimetre))
+                        .or_else(|_| value.quantity.value_in(Unit::Degree))
+                        .ok()
+                });
+                (value, formula)
+            };
+            (edit.numeric, edit.numeric_formula) =
+                input(edit.draw_tool().and_then(newell_ui::DrawTool::numeric_key));
+            (edit.second_numeric, edit.second_formula) = input(
+                edit.draw_tool()
+                    .and_then(newell_ui::DrawTool::second_numeric_key),
+            );
+        }
+    }
+
     fn process_numeric_requests(&mut self) -> (Update, bool) {
         let Some(shell) = self.shell.as_mut() else {
             return (Update::default(), false);
@@ -2330,7 +3368,25 @@ impl App {
                     inputs.descriptors.get(&request.destination.field).copied()
                 {
                     if allowed {
-                        inputs.apply(request, descriptor)
+                        let used = self.sketch_edit.as_ref().is_some_and(|edit| {
+                            inputs
+                                .bindings
+                                .get(&destination.field)
+                                .is_some_and(|id| edit.recipe.formula_ids().any(|used| used == *id))
+                        });
+                        if used && inputs.operation == ActionOperation::Sketch {
+                            let mut next = inputs.clone();
+                            next.bindings.remove(&destination.field);
+                            let accepted = next.apply(request, descriptor);
+                            if accepted.is_ok() {
+                                *inputs = next;
+                            } else {
+                                inputs.consumed_sequence = next.consumed_sequence;
+                            }
+                            accepted
+                        } else {
+                            inputs.apply(request, descriptor)
+                        }
                     } else {
                         inputs.consume_sequence(&request);
                         Err(AppError::InvalidNumericRequest)
@@ -2415,11 +3471,24 @@ impl App {
         else {
             return Update::default();
         };
-        let result = inputs
+        let mut candidate = inputs.clone();
+        if self.sketch_edit.as_ref().is_some_and(|edit| {
+            inputs
+                .bindings
+                .get(&request.destination.field)
+                .is_some_and(|id| edit.recipe.formula_ids().any(|used| used == *id))
+        }) && inputs.operation == ActionOperation::Sketch
+        {
+            candidate.bindings.remove(&request.destination.field);
+        }
+        let result = candidate
             .parameter_draft
             .validate_source(self.document.document())
             .map_err(AppError::from)
-            .and_then(|()| inputs.apply_formula(&request));
+            .and_then(|()| candidate.apply_formula(&request));
+        if result.is_ok() {
+            *inputs = candidate;
+        }
         inputs.consumed_sequence = inputs.consumed_sequence.max(request.attempt.0);
         let diagnostic = result.err().map(|error| error.to_string());
         self.numeric_preview_suspended = diagnostic.is_some();
@@ -2632,11 +3701,17 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_palette(palette);
             renderer.set_scene_display_mode(scene_display_mode(shading));
-            self.navigation.set_perspective(perspective);
-            if reset_camera {
+            if self.sketch_edit.is_none() {
+                self.navigation.set_perspective(perspective);
+            }
+            if reset_camera && self.sketch_edit.is_none() {
                 self.navigation.fit();
             }
+            if normal_view && self.sketch_edit.is_some() {
+                self.navigation.finish_sketch_alignment();
+            }
             if normal_view
+                && self.sketch_edit.is_none()
                 && self
                     .navigation
                     .start_normal_to_axis_transition(Instant::now())
@@ -2690,6 +3765,12 @@ impl App {
     fn poll_document_projection(&mut self, now: Instant, trigger: ProjectionTrigger) -> Update {
         let mut invalidation_update = Update::default();
         if self.selection.document != self.document.identity() {
+            self.face_selection.clear();
+            self.sketch = None;
+            if let Some(edit) = self.sketch_edit.take() {
+                self.navigation.leave_sketch(edit.entry_camera);
+            }
+            self.pending_origin_click = None;
             #[cfg(test)]
             {
                 self.extrude_latch = ExtrudeCommitLatch::default();
@@ -2743,6 +3824,7 @@ impl App {
             return invalidation_update;
         }
         self.selection.reconcile(&self.document);
+        self.reconcile_face_selection();
         if let Some(inputs) = &mut self.command_inputs {
             for value in inputs.values.values_mut() {
                 let ids = value
@@ -2907,17 +3989,29 @@ impl App {
         let newell_ui::TreeTargetKind::Operation(operation) = request.target.kind else {
             return Update::default();
         };
-        let Some(feature) = self.document.feature_id(operation).filter(|feature| {
-            matches!(
-                self.document.document().feature(*feature),
-                Some(newell_model::Feature::Extrude(_))
-            )
-        }) else {
-            return self.geometry_status(Some("Focus an Extrude in Features".into()));
+        let Some(feature) = self.document.feature_id(operation) else {
+            return self.geometry_status(Some("Focus a feature in Features".into()));
         };
         let Some(next) = self.next_command_id.checked_add(1) else {
             return self.geometry_status(Some("Command session capacity exhausted".into()));
         };
+        match self.document.document().feature(feature) {
+            Some(newell_model::Feature::Sketch { recipe, .. }) => {
+                let recipe = recipe.clone();
+                self.next_command_id = next;
+                let update = self.start_sketch(CommandInputSessionId(next));
+                if !update.any() {
+                    return update;
+                }
+                return update.merge(self.enter_sketch_edit(
+                    crate::sketch::ui_plane(recipe.support),
+                    Some(feature),
+                    recipe,
+                ));
+            }
+            Some(newell_model::Feature::Extrude(_)) => {}
+            _ => return self.geometry_status(Some("Focus a Sketch or Extrude in Features".into())),
+        }
         let prepared = crate::parameters::hydrate_extrude_inputs(
             self.document.identity(),
             CommandInputSessionId(next),
@@ -3040,6 +4134,11 @@ impl App {
                 self.extrude_edit_target = Some(pending.target);
                 self.numeric_inputs = Some(pending.numeric);
                 self.command_inputs = Some(pending.selections);
+                self.sketch = None;
+                if let Some(edit) = self.sketch_edit.take() {
+                    self.navigation.leave_sketch(edit.entry_camera);
+                }
+                self.pending_origin_click = None;
                 self.numeric_last_attempt = 0;
                 self.numeric_committed = false;
                 self.numeric_preview_suspended = false;
@@ -3103,6 +4202,13 @@ impl App {
         if let Some(operation) = started {
             update = update.merge(self.start_command_inputs(operation));
         }
+        if let Some(intent) = self
+            .shell
+            .as_mut()
+            .and_then(ShellController::take_sketch_intent)
+        {
+            update = update.merge(self.handle_sketch_intent(intent));
+        }
         if let Some(intent) = intent
             && self
                 .shell
@@ -3134,7 +4240,19 @@ impl App {
                             newell_ui::TreeIntentKind::SetVisibility { .. }
                         ) =>
                     {
-                        self.republish_scene_visibility();
+                        let is_sketch = match intent.target().kind {
+                            newell_ui::TreeTargetKind::Operation(id) => self
+                                .document
+                                .feature_id(id)
+                                .and_then(|id| self.document.document().feature(id))
+                                .is_some_and(|feature| {
+                                    matches!(feature, newell_model::Feature::Sketch { .. })
+                                }),
+                            _ => false,
+                        };
+                        if !is_sketch {
+                            self.republish_scene_visibility();
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => log(&error.to_string()),
@@ -3170,6 +4288,7 @@ impl App {
             self.active_selection = None;
             update = update.merge(self.publish_selection());
         }
+        self.sync_sketch_numeric();
         let projection =
             self.poll_document_projection(Instant::now(), ProjectionTrigger::UserActivation);
         self.apply(update.merge(projection));
@@ -3239,7 +4358,13 @@ impl App {
         layout.generation = self.nav_generation;
         self.nav_ui_masks = ui_masks.clone();
         let occlusions = ui.clone();
+        let before_layout = self.navigation.revision();
         self.navigation.set_layout(viewport, occlusions.clone());
+        if self.navigation.revision() != before_layout
+            && let Some(edit) = &mut self.sketch_edit
+        {
+            edit.clear_gesture();
+        }
         let (right, up, forward) = self.navigation.camera().basis();
         let geometry = NavGeometry::new(layout, NavBasis { right, up, forward }, metrics);
         let hovered = axis_hover(
@@ -3303,9 +4428,12 @@ impl App {
     }
 
     /// Uploads what `update` says changed and asks for a redraw.
-    fn apply(&mut self, update: Update) {
+    fn apply(&mut self, mut update: Update) {
         self.sync_view_choices();
         self.sync_navigation_widgets();
+        if self.sketch_edit.is_some() {
+            update = update.merge(self.publish_sketch_ready());
+        }
         self.update_os_cursor();
         if !update.any() {
             return;
@@ -3710,7 +4838,13 @@ impl App {
 
     /// A left press: window control, resize zone, MenuBar drag or normal shell routing.
     fn left_pressed(&mut self) {
+        if self.sketch_edit.is_some() && self.navigation.has_secondary_pan() {
+            return;
+        }
         self.pending_origin_click = None;
+        if let Some(edit) = &mut self.sketch_edit {
+            edit.press = None;
+        }
         self.sync_navigation_widgets();
         if !self.resize.is_active()
             && !self.native_resizing
@@ -3726,6 +4860,9 @@ impl App {
             && g.reserves((pointer.x, pointer.y))
         {
             self.pending_scene_click = None;
+            if self.sketch_edit.is_some() {
+                return;
+            }
             self.navigation.cancel_captures();
             self.nav_interaction.press(
                 g,
@@ -3764,6 +4901,16 @@ impl App {
         match press {
             Press::Shell(update) => {
                 self.finish_shell_input(update);
+                if self.sketch_edit.is_some() {
+                    if scene_input
+                        && cursor.is_some()
+                        && !self.native_resizing
+                        && let Some(pointer) = self.scene_pointer
+                    {
+                        self.begin_sketch_click((pointer.x, pointer.y), window.scale_factor());
+                    }
+                    return;
+                }
                 let origin_reference = if scene_input && cursor.is_some() && !self.native_resizing {
                     self.scene_pointer.and_then(|pointer| {
                         self.navigation
@@ -3937,7 +5084,7 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::GeometryReady => {
-                let update = self.drain_worker_reply();
+                let update = self.drain_sketch_solve().merge(self.drain_worker_reply());
                 self.apply(update);
             }
         }
@@ -4058,6 +5205,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::Focused(false) => {
+                if let Some(edit) = &mut self.sketch_edit {
+                    edit.clear_gesture();
+                }
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.pending_origin_click = None;
@@ -4157,6 +5307,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.scene_pointer = Some(position);
+                if let Some(edit) = &mut self.sketch_edit {
+                    edit.reset_marker_cycle_after_motion((position.x, position.y), window.scale_factor());
+                    window.request_redraw();
+                }
                 if self.nav_interaction.active() {
                     self.nav_interaction.advance((position.x, position.y));
                     self.update_os_cursor();
@@ -4196,6 +5350,10 @@ impl ApplicationHandler<AppEvent> for App {
                 window.set_cursor(CursorIcon::Default);
                 self.scene_pointer = None;
                 self.pending_origin_click = None;
+                if let Some(edit) = &self.sketch_edit {
+                    edit.clear_live_snap();
+                    window.request_redraw();
+                }
                 self.navigation.cancel();
                 self.nav_interaction.cancel();
                 if let Some(shell) = &mut self.shell {
@@ -4233,6 +5391,10 @@ impl ApplicationHandler<AppEvent> for App {
                 let point = self
                     .scene_pointer
                     .map_or((f64::NAN, f64::NAN), |p| (p.x, p.y));
+                if self.sketch_edit.is_some() {
+                    let update = self.finish_sketch_click(point);
+                    self.apply(update);
+                }
                 let certificate = self.navigation.finish_primary(point);
                 let origin_selection = self.finish_origin_reference_click(point);
                 let selection_update = origin_selection
@@ -4270,13 +5432,27 @@ impl ApplicationHandler<AppEvent> for App {
                             .shell
                             .as_ref()
                             .is_some_and(ShellController::scene_input_enabled);
+                    let point = (cursor.x, cursor.y);
+                    let eligible = if let Some(edit) = &self.sketch_edit {
+                        eligible && edit.press.is_none() && self.sketch_auxiliary_admitted(point)
+                    } else {
+                        eligible
+                    };
+                    if eligible {
+                        self.navigation.finish_sketch_alignment();
+                    }
                     if let Some(kind) = DragKind::from_auxiliary_button(button) {
                         if kind == DragKind::SecondaryPan {
-                            self.navigation.begin_secondary_pan(
-                                (cursor.x, cursor.y),
-                                window.scale_factor(),
-                                eligible,
-                            );
+                            let scale = window.scale_factor();
+                            if self.navigation.begin_secondary_pan(point, scale, eligible)
+                                && let (Some(edit), Some(shell)) = (&mut self.sketch_edit, &self.shell)
+                            {
+                                edit.secondary_press = Some(crate::sketch::Click {
+                                    point, scale,
+                                    navigation: self.navigation.revision(),
+                                    layout: shell.generation(),
+                                });
+                            }
                         } else {
                             self.navigation.begin(
                                 kind,
@@ -4293,7 +5469,11 @@ impl ApplicationHandler<AppEvent> for App {
                 button: button @ (MouseButton::Right | MouseButton::Middle),
                 ..
             } => {
-                if let Some(kind) = DragKind::from_auxiliary_button(button) {
+                if button == MouseButton::Right && self.sketch_edit.is_some() {
+                    let point = self.scene_pointer.map_or((f64::NAN, f64::NAN), |p| (p.x, p.y));
+                    let update = self.finish_sketch_secondary(point);
+                    self.apply(update);
+                } else if let Some(kind) = DragKind::from_auxiliary_button(button) {
                     self.navigation.release(kind);
                 }
             }
@@ -4348,6 +5528,9 @@ impl ApplicationHandler<AppEvent> for App {
                     // macOS winit emits phased PixelDelta events for trackpad scrolling. A
                     // Started stream over the scene uses the same frozen-depth pan as mouse
                     // drags; unphased PixelDelta and LineDelta continue through wheel zoom.
+                    if eligible {
+                        self.navigation.finish_sketch_alignment();
+                    }
                     if let Some(changed) = self.navigation.advance_trackpad_pan_scroll(
                         (pixels.x, pixels.y),
                         phase,
@@ -4422,6 +5605,21 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
+                if let Some((point, local)) = self.sketch_pointer()
+                    && let Some(edit) = &self.sketch_edit
+                {
+                    let camera = self.navigation.camera();
+                    let exposed = self.sketch_exposed_regions(camera.viewport);
+                    edit.update_snap(
+                        local,
+                        point,
+                        window.scale_factor(),
+                        camera,
+                        self.modifiers.control_key(),
+                        &exposed,
+                    );
+                    window.request_redraw();
+                }
                 if let Some(shell) = &mut self.shell {
                     shell.set_selection_modifiers(
                         self.modifiers.shift_key(),
@@ -4431,6 +5629,8 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let scene_capture =
+                    self.navigation.has_capture() || self.pending_origin_click.is_some();
                 self.navigation.cancel();
                 self.nav_interaction.cancel();
                 self.pending_scene_click = None;
@@ -4460,7 +5660,8 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 // Home fits only when the pointer is on unobstructed scene pixels.
-                if event.logical_key == Key::Named(NamedKey::Home)
+                if self.sketch_edit.is_none()
+                    && event.logical_key == Key::Named(NamedKey::Home)
                     && self.scene_pointer.is_some_and(|p| {
                         self.navigation.visible((p.x, p.y)) && self.scene_navigation_at((p.x, p.y))
                     })
@@ -4495,6 +5696,34 @@ impl ApplicationHandler<AppEvent> for App {
                     self.apply(update);
                     return;
                 }
+                if event.logical_key == Key::Named(NamedKey::Escape)
+                    && scene_capture
+                    && self.live_sketch().is_some()
+                {
+                    self.pending_origin_click = None;
+                    return;
+                }
+                if event.logical_key == Key::Named(NamedKey::Tab)
+                    && !scene_capture
+                    && let Some(pointer) = self.scene_pointer
+                {
+                    let point = (pointer.x, pointer.y);
+                    if self.sketch_auxiliary_admitted(point) {
+                        let camera = self.navigation.camera();
+                        let exposed = self.sketch_exposed_regions(camera.viewport);
+                        if let Some(edit) = &mut self.sketch_edit {
+                            edit.refresh_reference_picks(self.document.document());
+                            if let Some(message) = edit.cycle_marker(
+                                point, window.scale_factor(), camera, &exposed, self.modifiers.shift_key(),
+                            ) {
+                                let update = self.geometry_status(Some(message));
+                                self.apply(update);
+                                window.request_redraw();
+                                return;
+                            }
+                        }
+                    }
+                }
                 let keys = translate_key(
                     &event.logical_key,
                     event.physical_key,
@@ -4524,11 +5753,23 @@ impl ApplicationHandler<AppEvent> for App {
                     .as_ref()
                     .filter(|shell| shell.shell().view_panel_visible(4))
                     .and_then(|shell| {
-                        self.navigation
-                            .grid_snapshot(shell.shell().theme() == newell_ui::ThemeChoice::Dark)
+                        let dark = shell.shell().theme() == newell_ui::ThemeChoice::Dark;
+                        if let Some(edit) = &self.sketch_edit {
+                            self.navigation.sketch_grid_snapshot(
+                                dark,
+                                crate::sketch::ui_plane(edit.recipe.support),
+                            )
+                        } else {
+                            self.navigation.grid_snapshot(dark)
+                        }
                     });
+                let strokes = self.sketch_strokes();
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_grid(grid);
+                    renderer.set_sketch_strokes(strokes, window.scale_factor() as f32);
+                    if let Some(camera) = self.navigation.snapshot() {
+                        renderer.set_scene_camera(camera);
+                    }
                 }
                 if let Some(gate) = self.gate {
                     if Instant::now() < gate.deadline {
@@ -4698,6 +5939,1140 @@ mod tests {
     pub(super) fn key(app: &mut App, key: ShellKey) {
         let update = app.shell.as_mut().unwrap().key(key);
         app.finish_shell_input(update);
+    }
+
+    pub(super) fn sketch_row(app: &App, needle: &str) -> String {
+        let grid = app.shell.as_ref().unwrap().grid();
+        (0..grid.rows())
+            .map(|row| {
+                (0..grid.cols())
+                    .map(|col| match grid.get(col, row).unwrap().content {
+                        CellContent::Glyph(c) => c,
+                        CellContent::Empty => ' ',
+                    })
+                    .collect::<String>()
+            })
+            .find(|line| line.contains(needle))
+            .expect(needle)
+    }
+
+    fn begin_sketch(app: &mut App) {
+        click(app, "Datum");
+        click(app, "[S]ketch");
+        assert!(sketch_row(app, "Workbench").contains("Datum"));
+        assert_eq!(app.shell.as_ref().unwrap().shell().action_width(), 27);
+    }
+
+    fn sketch_viewport_click(app: &mut App, reference: newell_ui::OriginReference) {
+        let shell = app.shell.as_ref().unwrap();
+        let viewport = scene_viewport(shell);
+        app.navigation.set_layout(viewport, scene_occlusions(shell));
+        let point = (viewport.y..viewport.y + viewport.height)
+            .flat_map(|y| (viewport.x..viewport.x + viewport.width).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                app.navigation
+                    .pick_origin_reference((f64::from(x), f64::from(y)))
+                    == Some(reference)
+            })
+            .expect("visible origin reference");
+        let shell = app.shell.as_mut().unwrap();
+        shell.pointer_moved(Some(UiPoint {
+            x: point.0,
+            y: point.1,
+        }));
+        let point = (f64::from(point.0), f64::from(point.1));
+        app.pending_origin_click = Some(PendingOriginClick {
+            document: app.document.identity(),
+            generation: shell.generation(),
+            mesh_revision: app.navigation.scene().revision(),
+            navigation_revision: app.navigation.revision(),
+            reference,
+            start: point,
+            display_scale: 1.0,
+            edit: SelectionEdit::Replace,
+        });
+        let update = app.finish_origin_reference_click(point).unwrap();
+        app.apply(update);
+    }
+
+    #[test]
+    fn sketch_draw_and_commit_two_supports_without_consuming_cancelled_name() {
+        use newell_model::{Feature, sketch::SketchPrimitive};
+        let mut app = live_app();
+        let entry = app.navigation.camera();
+        let (sender, wake) = std::sync::mpsc::channel();
+        app.enable_geometry_worker(move || {
+            let _ = sender.send(());
+        })
+        .unwrap();
+        app.queue_geometry_bootstrap().unwrap();
+        for (plane, cancel) in [
+            (OriginPlane::XY, false),
+            (OriginPlane::XZ, true),
+            (OriginPlane::YZ, false),
+        ] {
+            app.origin_selection = vec![match plane {
+                OriginPlane::XY => newell_ui::OriginReference::XY,
+                OriginPlane::XZ => newell_ui::OriginReference::XZ,
+                OriginPlane::YZ => newell_ui::OriginReference::YZ,
+            }];
+            begin_sketch(&mut app);
+            click(&mut app, "OK");
+            if plane == OriginPlane::XY {
+                let opened = app.sketch_edit.as_ref().unwrap().source;
+                super::real_extrude_tests::pump(&mut app, &wake).unwrap();
+                assert!(app.document.revision() > opened.revision);
+                assert_eq!(
+                    app.sketch_edit.as_ref().unwrap().source,
+                    app.document.version()
+                );
+            }
+            app.navigation.finish_sketch_alignment();
+            let [u, v, n] = plane.basis().map(|axis| axis.map(f64::from));
+            let (right, up, forward) = app.navigation.camera().basis();
+            for (a, b) in [(right, u), (up, v), (forward, n.map(|x| -x))] {
+                assert!((crate::camera::dot(a, b) - 1.0).abs() < 1e-12);
+            }
+            let mut points = Vec::new();
+            let viewport = app.navigation.camera().viewport;
+            'points: for y in (viewport.y + 18..viewport.y + viewport.height).step_by(18) {
+                for x in (viewport.x + 8..viewport.x + viewport.width).step_by(12) {
+                    let shell = app.shell.as_mut().unwrap();
+                    shell.pointer_moved(Some(UiPoint { x, y }));
+                    if shell.scene_input_enabled()
+                        && points.last().is_none_or(|p: &UiPoint| p.x != x && p.y != y)
+                    {
+                        points.push(UiPoint { x, y });
+                        if points.len() == 2 {
+                            break 'points;
+                        }
+                        break;
+                    }
+                }
+            }
+            assert_eq!(points.len(), 2);
+            for label in ["[L]ine", "[R]ectangle"] {
+                click(&mut app, "Draw");
+                click(&mut app, label);
+                for p in &points {
+                    let shell = app.shell.as_mut().unwrap();
+                    shell.pointer_moved(Some(*p));
+                    let point = (f64::from(p.x), f64::from(p.y));
+                    app.begin_sketch_click(point, 1.0);
+                    let update = app.finish_sketch_click(point);
+                    app.apply(update);
+                }
+            }
+            let edit = app.sketch_edit.as_ref().unwrap();
+            assert_eq!(edit.recipe.primitives.len(), 2);
+            assert!(matches!(
+                edit.recipe.primitives[0].1,
+                SketchPrimitive::Line { .. }
+            ));
+            assert!(matches!(
+                edit.recipe.primitives[1].1,
+                SketchPrimitive::Rectangle { .. }
+            ));
+            let revision = app.document.revision();
+            click(&mut app, if cancel { "Cancel" } else { "OK" });
+            assert_eq!(app.document.revision(), revision + u64::from(!cancel));
+            assert!(app.sketch_edit.is_none());
+            assert!(sketch_row(&app, "Workbench").contains("Datum"));
+        }
+        let features = app.document.document().features();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].1.name(), "Sketch1");
+        assert_eq!(features[1].1.name(), "Sketch2");
+        assert!(matches!(features[1].1, Feature::Sketch { .. }));
+        assert_eq!(app.navigation.camera().orientation, entry.orientation);
+    }
+
+    #[test]
+    fn sketch_construction_tools_preview_reject_and_apply_through_the_menu() {
+        use newell_model::sketch::SketchPrimitive;
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        let camera = app.navigation.camera();
+        let a = [0., 0.];
+        let b = [8., 0.];
+        let c = [1., 3.];
+        let d = [9., 4.];
+        for (index, (menu, label, inputs)) in [
+            ("Draw", "[P]oint", &[a][..]),
+            ("Draw", "Polygon", &[a, b][..]),
+            ("Draw", "Slot", &[a, b, c][..]),
+            ("Draw", "Center Rectangle", &[a, c][..]),
+            ("Draw", "3-Points Rectangle", &[a, b, c][..]),
+            ("Draw", "[C]ircle", &[a, b][..]),
+            ("Draw", "3-Pts Circle", &[a, b, c][..]),
+            ("Draw", "Ellipse", &[a, b, c][..]),
+            ("Curve", "3 Points Arc", &[a, b, c][..]),
+            ("Curve", "Center Point Arc", &[a, b, c][..]),
+            ("Curve", "Bezier", &[a, b, c, d][..]),
+            ("Curve", "Elliptical Arc", &[a, b, c, b, d][..]),
+            ("Curve", "Conic", &[a, b, c][..]),
+            ("Curve", "Spline", &[a, b, c, d][..]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            click(&mut app, menu);
+            click(&mut app, label);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            let (&last, initial) = inputs.split_last().unwrap();
+            for &point in initial {
+                edit.click(point, (0., 0.), 1., camera).unwrap();
+            }
+            let before = edit.recipe.clone();
+            let saved = edit.strokes(camera, None).len();
+            assert!(edit.strokes(camera, Some(last)).len() > saved, "{label}");
+            assert_eq!(edit.recipe, before);
+            if !matches!(label, "Bezier" | "Spline") && !initial.is_empty() {
+                assert!(edit.click(a, (0., 0.), 1., camera).is_err(), "{label}");
+                assert_eq!(edit.recipe, before);
+            }
+            if matches!(label, "Bezier" | "Spline") {
+                assert!(!edit.escape());
+                assert_eq!(edit.recipe, before);
+                for &point in initial {
+                    edit.click(point, (0., 0.), 1., camera).unwrap();
+                }
+            }
+            edit.click(last, (0., 0.), 1., camera).unwrap();
+            assert_eq!(edit.recipe.primitives.len(), index + 1);
+            assert!(matches!(
+                edit.recipe.primitives[index].1,
+                SketchPrimitive::Draw(_) | SketchPrimitive::Rectangle { .. }
+            ));
+            assert!(!edit.escape());
+        }
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        assert!(app.sketch_strokes().len() > 8);
+    }
+
+    #[test]
+    fn sketch_formula_changes_polygon_count_and_rejects_a_non_integer() {
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Draw");
+        click(&mut app, "Polygon");
+        super::numeric_binding_tests::formula(&mut app, newell_ui::SKETCH_COUNT, "2 + 3");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().unwrap();
+        edit.click([0., 0.], (0., 0.), 1., camera).unwrap();
+        assert_eq!(edit.strokes(camera, Some([8., 0.])).len(), 5);
+        edit.click([8., 0.], (0., 0.), 1., camera).unwrap();
+        super::numeric_binding_tests::formula(&mut app, newell_ui::SKETCH_COUNT, "3.5");
+        let edit = app.sketch_edit.as_mut().unwrap();
+        let prior = edit.recipe.clone();
+        edit.click([0., 0.], (0., 0.), 1., camera).unwrap();
+        assert!(edit.click([8., 0.], (0., 0.), 1., camera).is_err());
+        assert_eq!(edit.recipe, prior);
+        key(&mut app, ShellKey::Escape);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        assert!(matches!(&app.document.document().features()[0].1,
+            newell_model::Feature::Sketch { recipe, .. }
+            if recipe.formula_ids().next().is_some_and(|id| app.document.document().parameters().definition(id).is_some())
+        ));
+    }
+
+    #[test]
+    fn sketch_text_routes_keys_and_places_font_contours() {
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Draw");
+        click(&mut app, "Text");
+        key(&mut app, ShellKey::Char('O'));
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().unwrap();
+        edit.click([0., 0.], (0., 0.), 1., camera).unwrap();
+        assert!(edit.click([0., 0.], (0., 0.), 1., camera).is_err());
+        assert!(edit.strokes(camera, Some([8., 0.])).len() > 8);
+        edit.click([8., 0.], (0., 0.), 1., camera).unwrap();
+        assert_eq!(edit.recipe.primitives.len(), 1);
+    }
+
+    #[test]
+    fn sketch_corner_tools_preview_and_trim_both_source_lines() {
+        for name in ["Fillet", "Chamfer"] {
+            let mut app = live_app();
+            app.origin_selection = vec![newell_ui::OriginReference::XY];
+            begin_sketch(&mut app);
+            click(&mut app, "OK");
+            app.navigation.finish_sketch_alignment();
+            click(&mut app, "Draw");
+            click(&mut app, "[L]ine");
+            let camera = app.navigation.camera();
+            let edit = app.sketch_edit.as_mut().unwrap();
+            for point in [[8., 0.], [0., 0.], [0., 8.]] {
+                edit.click(point, (0., 0.), 1., camera).unwrap();
+            }
+            click(&mut app, "Modify");
+            click(&mut app, name);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            let horizontal = camera.project([6., 0., 0.]).unwrap();
+            let vertical = camera.project([0., 6., 0.]).unwrap();
+            edit.click([6., 0.], horizontal, 1., camera).unwrap();
+            let before = edit.recipe.clone();
+            assert!(edit.click([6., 0.], horizontal, 1., camera).is_err());
+            assert_eq!(edit.recipe, before);
+            edit.click([0., 6.], vertical, 1., camera).unwrap();
+            assert!(edit.strokes(camera, None).len() > 2);
+            edit.click([0., 6.], vertical, 1., camera).unwrap();
+            assert_eq!(edit.recipe.primitives.len(), 3);
+            assert_eq!(edit.recipe.primitives[0].0, before.primitives[0].0);
+            assert_eq!(edit.recipe.primitives[1].0, before.primitives[1].0);
+        }
+    }
+
+    #[test]
+    fn sketch_control_point_refinement_preserves_the_curve_and_key() {
+        use newell_model::sketch::{DrawGeometry, SketchPrimitive};
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Curve");
+        click(&mut app, "Bezier");
+        let camera = app.navigation.camera();
+        let controls = [[0., 0.], [1., 3.], [5., 3.], [6., 0.]];
+        let edit = app.sketch_edit.as_mut().unwrap();
+        for point in controls {
+            edit.click(point, (0., 0.), 1., camera).unwrap();
+        }
+        click(&mut app, "Curve");
+        click(&mut app, "Add Control Points");
+        let edit = app.sketch_edit.as_mut().unwrap();
+        let [x, y] = DrawGeometry::evaluate_bezier(controls, 0.5);
+        let point = camera.project([x, y, 0.]).unwrap();
+        assert!(edit.click([x, y], (-100., -100.), 1., camera).is_err());
+        edit.click([x, y], point, 1., camera).unwrap();
+        assert!(edit.strokes(camera, None).len() > 64);
+        edit.click([x, y], point, 1., camera).unwrap();
+        let elevated = DrawGeometry::elevate_cubic(controls);
+        assert_eq!(
+            edit.recipe.primitives,
+            vec![(0, SketchPrimitive::Draw(elevated))]
+        );
+        let elevated = elevated.control_polygon().unwrap();
+        for i in 0..=16 {
+            let t = f64::from(i) / 16.;
+            let [a, b] = DrawGeometry::evaluate_bezier(controls, t);
+            let [x, y] = DrawGeometry::evaluate_bezier(elevated, t);
+            assert!((x - a).hypot(y - b) < 1e-12);
+        }
+    }
+
+    #[test]
+    fn sketch_spline_handles_and_curved_move_route_through_the_action_box() {
+        use newell_model::sketch::{DrawGeometry, SketchPrimitive};
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Curve");
+        click(&mut app, "Spline");
+        click(&mut app, "Endpoint tangents");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().unwrap();
+        for point in [[0., 0.], [2., 3.], [4., 1.], [6., 0.], [0., 2.], [7., -1.]] {
+            edit.click(point, (0., 0.), 1., camera).unwrap();
+        }
+        assert!(matches!(
+            edit.recipe.primitives.as_slice(),
+            [(
+                0,
+                SketchPrimitive::Draw(DrawGeometry::Spline {
+                    tangents: Some([[0., 2.], [1., -1.]]),
+                    ..
+                })
+            )]
+        ));
+        click(&mut app, "Pattern");
+        click(&mut app, "Transform");
+        click(&mut app, "Move source");
+        let edit = app.sketch_edit.as_mut().unwrap();
+        let hit = camera.project([2., 3., 0.]).unwrap();
+        edit.click([2., 3.], hit, 1., camera).unwrap();
+        edit.click([10., 0.], hit, 1., camera).unwrap();
+        edit.click([12., 3.], hit, 1., camera).unwrap();
+        assert!(
+            matches!(edit.recipe.primitives.as_slice(), [(0, SketchPrimitive::Draw(
+            DrawGeometry::Spline { fit, .. }))] if fit[0] == [10.,0.])
+        );
+    }
+
+    #[test]
+    fn sketch_patterns_keep_the_master_and_resolve_instances_in_order() {
+        use newell_model::sketch::SketchPrimitive;
+        for name in ["Linear Pattern", "Circular Pattern", "Transform"] {
+            let mut app = live_app();
+            app.origin_selection = vec![newell_ui::OriginReference::XY];
+            begin_sketch(&mut app);
+            click(&mut app, "OK");
+            app.navigation.finish_sketch_alignment();
+            click(&mut app, "Draw");
+            click(&mut app, "[L]ine");
+            let camera = app.navigation.camera();
+            let a = [0., 0.];
+            let b = [8., 0.];
+            let edit = app.sketch_edit.as_mut().unwrap();
+            edit.click(a, (0., 0.), 1., camera).unwrap();
+            edit.click(b, (0., 0.), 1., camera).unwrap();
+            click(&mut app, "Pattern");
+            click(&mut app, name);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            let hit = camera.project([4., 0., 0.]).unwrap();
+            edit.click([4., 0.], hit, 1., camera).unwrap();
+            edit.click(a, hit, 1., camera).unwrap();
+            if name == "Circular Pattern" {
+                edit.click(b, hit, 1., camera).unwrap();
+            }
+            let before = edit.recipe.clone();
+            assert!(edit.click(a, hit, 1., camera).is_err());
+            assert_eq!(edit.recipe, before);
+            let end = if name == "Circular Pattern" {
+                [8., 3.]
+            } else {
+                [1., 4.]
+            };
+            assert!(edit.strokes(camera, Some(end)).len() > 1);
+            edit.click(end, hit, 1., camera).unwrap();
+            assert_eq!(edit.recipe.primitives[0], before.primitives[0]);
+            if name == "Transform" {
+                assert_eq!(edit.recipe.primitives.len(), 2);
+            } else {
+                assert_eq!(edit.recipe.primitives.len(), 6);
+                for (index, &(_, instance)) in edit.recipe.primitives.iter().enumerate().skip(1) {
+                    assert!(
+                        matches!(instance, SketchPrimitive::PatternInstance { master: 0, placement, .. }
+                        if usize::from(placement) == index)
+                    );
+                    assert!(edit.recipe.resolved(instance).is_ok());
+                }
+            }
+            let update = app.publish_sketch_ready();
+            app.apply(update);
+            click(&mut app, "OK");
+            assert!(app.sketch_edit.is_none());
+        }
+    }
+
+    #[test]
+    fn sketch_tangent_arc_uses_a_unique_line_endpoint() {
+        use newell_model::sketch::{DrawGeometry, SketchPrimitive};
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Draw");
+        click(&mut app, "[L]ine");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().unwrap();
+        edit.click([0., 0.], (0., 0.), 1., camera).unwrap();
+        edit.click([8., 0.], (0., 0.), 1., camera).unwrap();
+        click(&mut app, "Curve");
+        click(&mut app, "Tangent Arc");
+        let edit = app.sketch_edit.as_mut().unwrap();
+        let tip = camera.project([8., 0., 0.]).unwrap();
+        edit.click([8., 0.], tip, 1., camera).unwrap();
+        let before = edit.recipe.clone();
+        assert!(edit.click([12., 0.], tip, 1., camera).is_err());
+        assert_eq!(edit.recipe, before);
+        assert!(edit.strokes(camera, Some([12., 4.])).len() > 1);
+        edit.click([12., 4.], tip, 1., camera).unwrap();
+        assert!(matches!(
+            edit.recipe.primitives[1].1,
+            SketchPrimitive::Draw(DrawGeometry::Arc { center, sweep, .. })
+                if (center[0] - 8.).hypot(center[1] - 4.) < 1e-12
+                    && (sweep - std::f64::consts::FRAC_PI_2).abs() < 1e-12
+        ));
+    }
+
+    #[test]
+    fn sketch_line_edits_and_mirror_preview_and_reject_atomically() {
+        use newell_model::sketch::SketchPrimitive;
+        let mut app = live_app();
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        let camera = app.navigation.camera();
+        for (menu, label, invalid, good, count) in [
+            ("Modify", "Split", [0., 0.], [3., 0.], 4),
+            ("Modify", "Offset", [3., 0.], [3., 2.], 4),
+            ("Modify", "Trim", [4., 0.], [2., 0.], 3),
+            ("Modify", "Extend", [-1., 0.], [7., 0.], 3),
+            ("Pattern", "Mirror", [0., 1.], [8., 1.], 4),
+        ] {
+            click(&mut app, menu);
+            click(&mut app, label);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            let before = edit.recipe.clone();
+            edit.recipe.primitives.clear();
+            for (start, end) in [
+                ([0., 0.], [8., 0.]),
+                ([4., -3.], [4., 3.]),
+                ([10., -3.], [10., 3.]),
+            ] {
+                edit.recipe.primitives.push((
+                    edit.recipe.primitives.len() as u64 + 10,
+                    SketchPrimitive::Line { start, end },
+                ));
+            }
+            let target = camera.project([2., 0., 0.]).unwrap();
+            edit.click([2., 0.], target, 1., camera).unwrap();
+            if label == "Mirror" {
+                edit.click([0., 1.], target, 1., camera).unwrap();
+            }
+            let source = edit.recipe.clone();
+            assert!(edit.click(invalid, target, 1., camera).is_err(), "{label}");
+            assert_eq!(edit.recipe, source);
+            let normal = edit.strokes(camera, None).len();
+            let preview = edit.strokes(camera, Some(good)).len();
+            if matches!(label, "Split" | "Offset" | "Mirror") {
+                assert!(preview > normal);
+            }
+            edit.click(good, target, 1., camera).unwrap();
+            assert_eq!(edit.recipe.primitives.len(), count, "{label}");
+            assert_eq!(edit.recipe.primitives[0].0, 10);
+            edit.recipe = before;
+        }
+        click(&mut app, "Cancel");
+        assert!(app.document.document().features().is_empty());
+    }
+
+    #[test]
+    fn sketch_projected_cubic_brep_uses_native_polynomial_controls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::{
+            Document, Length, geometry::BaseGeometryRecipe, sketch::SketchPrimitive,
+        };
+        let mut app = live_app();
+        let mut document = Document::default();
+        let controls = [[0., -2.], [2., 3.], [4., 3.], [6., -2.]];
+        document.add_base_recipe_for_test(
+            "Cubic B-Rep",
+            BaseGeometryRecipe::TestCubic {
+                control: controls,
+                depth: Length::millimetres(1.)?,
+                transform: [
+                    [1., 0., 0., 0.],
+                    [0., 1., 0., 0.],
+                    [0., 0., 1., 0.],
+                    [0., 0., 0., 1.],
+                ],
+            },
+        )?;
+        let (send, wake) = std::sync::mpsc::channel();
+        app.enable_geometry_worker(move || {
+            let _ = send.send(());
+        })?;
+        app.document.replace(document)?;
+        app.queue_geometry_bootstrap()?;
+        super::real_extrude_tests::pump(&mut app, &wake)?;
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Cubic B-Rep");
+        click(&mut app, "Reference");
+        click(&mut app, "Projected");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().ok_or("missing sketch")?;
+        assert!(edit.strokes(camera, None).len() > 20);
+        edit.click([0., 0.], (0., 0.), 1., camera)?;
+        let projected: Vec<_> = edit
+            .recipe
+            .primitives
+            .iter()
+            .map(|&(_, item)| {
+                app.document
+                    .document()
+                    .resolve_sketch_reference(newell_model::sketch::SketchSupport::XY, item)
+            })
+            .collect();
+        let matches = |a: [[f64; 2]; 4], b: [[f64; 2]; 4]| {
+            a.into_iter()
+                .zip(b)
+                .all(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-8)
+        };
+        assert!(projected.iter().any(|item| matches!(item,
+            Ok(SketchPrimitive::Draw(newell_model::sketch::DrawGeometry::Bezier { controls: p }))
+                if matches(*p, controls) || matches(*p, [controls[3],controls[2],controls[1],controls[0]])
+        )), "projected controls: {projected:?}");
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        app.origin_selection = vec![newell_ui::OriginReference::XZ];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Cubic B-Rep");
+        click(&mut app, "Reference");
+        click(&mut app, "Intersect");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().ok_or("missing section draft")?;
+        assert!(!edit.strokes(camera, None).is_empty());
+        edit.click([0., 0.], (0., 0.), 1., camera)?;
+        assert!(
+            edit.recipe
+                .primitives
+                .iter()
+                .any(|&(_, item)| matches!(item, SketchPrimitive::BrepFaceSection { .. }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sketch_projected_brep_edges_use_the_real_worker_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::sketch::SketchPrimitive;
+        let (mut app, _) = super::real_extrude_tests::runtime_app()?;
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Base Solid");
+        click(&mut app, "Reference");
+        click(&mut app, "Projected");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().ok_or("missing Sketch draft")?;
+        assert!(!edit.strokes(camera, None).is_empty());
+        edit.click([0., 0.], (0., 0.), 1., camera)?;
+        assert!(
+            edit.recipe
+                .primitives
+                .iter()
+                .all(|(_, primitive)| matches!(primitive, SketchPrimitive::BrepReference { .. }))
+        );
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn sketch_reference_commands_preview_cancel_and_place_typed_links() {
+        use newell_model::sketch::{ReferenceMode, SketchPrimitive};
+        let mut app = live_app();
+        let mut source = crate::sketch::empty_recipe(OriginPlane::XZ);
+        source.primitives.push((
+            7,
+            SketchPrimitive::Line {
+                start: [2., -4.],
+                end: [5., 4.],
+            },
+        ));
+        app.document
+            .commit_sketch(app.document.version(), None, None, source)
+            .unwrap();
+        app.finish_shell_input(Update::default());
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Sketch1");
+        let camera = app.navigation.camera();
+        for (label, mode) in [
+            ("Projected", ReferenceMode::Projected),
+            ("Intersect", ReferenceMode::Intersect),
+        ] {
+            click(&mut app, "Reference");
+            click(&mut app, label);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            assert!(!edit.strokes(camera, None).is_empty());
+            assert!(!edit.escape());
+            assert!(edit.strokes(camera, None).is_empty());
+            click(&mut app, "Reference");
+            click(&mut app, label);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            edit.click([0., 0.], (0., 0.), 1., camera).unwrap();
+            assert!(matches!(edit.recipe.primitives.last(),
+                Some((_, SketchPrimitive::Reference { element: 7, mode: actual, .. })) if *actual == mode));
+        }
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        assert_eq!(app.document.document().features().len(), 2);
+    }
+
+    #[test]
+    fn sketch_insert_copies_a_hidden_same_plane_recipe_without_linking() {
+        use newell_model::sketch::SketchPrimitive;
+        let mut app = live_app();
+        let mut source = crate::sketch::empty_recipe(OriginPlane::XY);
+        source.primitives.push((
+            2,
+            SketchPrimitive::Line {
+                start: [0., 0.],
+                end: [2., 0.],
+            },
+        ));
+        app.document
+            .commit_sketch(app.document.version(), None, None, source.clone())
+            .unwrap();
+        app.finish_shell_input(Update::default());
+        click(&mut app, "■ Sketch1");
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Sketch1");
+        click(&mut app, "Reference");
+        click(&mut app, "Insert");
+        let camera = app.navigation.camera();
+        let edit = app.sketch_edit.as_mut().unwrap();
+        assert_eq!(edit.strokes(camera, Some([0., 4.])).len(), 1);
+        edit.click([0., 4.], (0., 0.), 1., camera).unwrap();
+        assert_eq!(
+            edit.recipe.primitives,
+            vec![(
+                0,
+                SketchPrimitive::Line {
+                    start: [0., 4.],
+                    end: [2., 4.],
+                }
+            )]
+        );
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+        click(&mut app, "OK");
+        assert!(app.sketch_edit.is_none());
+        assert_eq!(app.document.document().features().len(), 2);
+    }
+
+    #[test]
+    fn sketch_segment_commands_solve_on_worker_and_reopen_records()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::sketch::SketchPrimitive;
+        let mut app = live_app();
+        let (sender, wake) = std::sync::mpsc::channel();
+        app.enable_geometry_worker(move || {
+            let _ = sender.send(());
+        })?;
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        let camera = app.navigation.camera();
+        let viewport = camera.viewport;
+        let screen = (
+            f64::from(viewport.x + viewport.width / 2),
+            f64::from(viewport.y + viewport.height / 2),
+        );
+        let center = app
+            .navigation
+            .sketch_point(OriginPlane::XY, screen)
+            .ok_or("missing sketch point")?;
+        app.sketch_edit
+            .as_mut()
+            .ok_or("missing draft")?
+            .recipe
+            .primitives
+            .push((
+                0,
+                SketchPrimitive::Line {
+                    start: [center[0] - 2.0, center[1] - 2.0],
+                    end: [center[0] + 2.0, center[1] + 2.0],
+                },
+            ));
+        let update = app.publish_sketch_ready();
+        app.apply(update);
+
+        let apply =
+            |app: &mut App, label, point: (f64, f64)| -> Result<(), Box<dyn std::error::Error>> {
+                click(app, "Constraints");
+                click(app, label);
+                app.shell
+                    .as_mut()
+                    .ok_or("missing shell")?
+                    .pointer_moved(Some(UiPoint {
+                        x: point.0 as u32,
+                        y: point.1 as u32,
+                    }));
+                for _ in 0..2 {
+                    app.begin_sketch_click(point, 1.0);
+                    let update = app.finish_sketch_click(point);
+                    app.apply(update);
+                }
+                if app
+                    .sketch_edit
+                    .as_ref()
+                    .is_none_or(|edit| edit.solve.is_none())
+                {
+                    return Err("command did not queue a solve".into());
+                }
+                wake.recv_timeout(Duration::from_secs(3))?;
+                let update = app.drain_sketch_solve();
+                app.apply(update);
+                Ok(())
+            };
+
+        apply(&mut app, "[D]imension", screen)?;
+        let line = app
+            .sketch_edit
+            .as_ref()
+            .ok_or("missing solved draft")?
+            .recipe
+            .primitives[0]
+            .1;
+        let (start, end) = line.line().ok_or("missing solved line")?;
+        assert!(((end[0] - start[0]).hypot(end[1] - start[1]) - 10.0).abs() < 1e-7);
+        apply(&mut app, "Driven Length", screen)?;
+        let recipe = app
+            .sketch_edit
+            .as_ref()
+            .ok_or("missing measured draft")?
+            .recipe
+            .clone();
+        assert_eq!(recipe.primitives[0].1, line);
+        assert_eq!(recipe.segment_equations.len(), 1);
+        assert_eq!(recipe.driven_dimensions.len(), 1);
+        assert!(app.sketch_strokes().len() > 2);
+        click(&mut app, "OK");
+        click(&mut app, "Sketch1");
+        click(&mut app, "Utilities");
+        click(&mut app, "Properties");
+        assert_eq!(
+            app.sketch_edit
+                .as_ref()
+                .ok_or("missing reopened draft")?
+                .recipe,
+            recipe
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sketch_magnetic_join_survives_driving_length_and_properties()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use newell_model::sketch::{SketchJoin, SketchPointRef};
+        let mut app = live_app();
+        let (sender, wake) = std::sync::mpsc::channel();
+        app.enable_geometry_worker(move || {
+            let _ = sender.send(());
+        })?;
+        app.origin_selection = vec![newell_ui::OriginReference::XY];
+        begin_sketch(&mut app);
+        click(&mut app, "OK");
+        app.navigation.finish_sketch_alignment();
+        let viewport = app.navigation.camera().viewport;
+        let x = f64::from(viewport.x);
+        let y = f64::from(viewport.y + viewport.height / 2);
+        let start = (x + 24., y - 75.);
+        let approximate_end = (x + 97., y - 72.);
+        let end = (approximate_end.0, start.1);
+        let arc_end = (end.0 + 36., end.1 + 27.);
+        let pointer_click = |app: &mut App, point: (f64, f64)| {
+            app.scene_pointer = Some(PhysicalPosition::new(point.0, point.1));
+            app.shell.as_mut().unwrap().pointer_moved(Some(UiPoint {
+                x: point.0 as u32,
+                y: point.1 as u32,
+            }));
+            app.sketch_strokes();
+            app.begin_sketch_click(point, 1.);
+            assert!(
+                app.sketch_edit.as_ref().unwrap().press.is_some(),
+                "unadmitted pointer {point:?}"
+            );
+            let update = app.finish_sketch_click(point);
+            app.apply(update);
+        };
+        let drain = |app: &mut App| -> Result<(), Box<dyn std::error::Error>> {
+            assert!(
+                app.sketch_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.solve.is_some())
+            );
+            wake.recv_timeout(Duration::from_secs(3))?;
+            let update = app.drain_sketch_solve();
+            app.apply(update);
+            Ok(())
+        };
+        click(&mut app, "Draw");
+        click(&mut app, "[L]ine");
+        pointer_click(&mut app, start);
+        pointer_click(&mut app, approximate_end);
+        assert!(
+            app.sketch_edit
+                .as_ref()
+                .unwrap()
+                .recipe
+                .primitives
+                .is_empty()
+        );
+        drain(&mut app)?;
+        click(&mut app, "Curve");
+        click(&mut app, "Tangent Arc");
+        pointer_click(&mut app, (end.0 + 3., end.1 + 2.));
+        pointer_click(&mut app, arc_end);
+        assert_eq!(app.sketch_edit.as_ref().unwrap().recipe.primitives.len(), 1);
+        drain(&mut app)?;
+        let recipe = app.sketch_edit.as_ref().unwrap().recipe.clone();
+        assert_eq!(recipe.segment_equations.len(), 1);
+        assert_eq!(recipe.joins.len(), 2);
+        assert!(recipe.joins.values().any(|join| matches!(
+            join,
+            SketchJoin::Tangent {
+                point: SketchPointRef::Start(1),
+                source: SketchPointRef::End(0),
+                ..
+            }
+        )));
+        click(&mut app, "OK");
+        click(&mut app, "Sketch1");
+        click(&mut app, "Utilities");
+        click(&mut app, "Properties");
+        assert_eq!(app.sketch_edit.as_ref().unwrap().recipe, recipe);
+        app.navigation.finish_sketch_alignment();
+        click(&mut app, "Constraints");
+        click(&mut app, "[D]imension");
+        let camera = app.navigation.camera();
+        let (a, b) = recipe.primitives[0].1.line().unwrap();
+        let mid = camera.project([(a[0] + b[0]) / 2., a[1], 0.]).unwrap();
+        pointer_click(&mut app, mid);
+        pointer_click(&mut app, (mid.0, mid.1 + 32.));
+        drain(&mut app)?;
+        let solved = &app.sketch_edit.as_ref().unwrap().recipe;
+        assert_eq!(solved.joins, recipe.joins);
+        let (_, new_end) = solved.primitives[0].1.line().unwrap();
+        assert!((new_end[0] - b[0]).abs() > 1e-4);
+        let (contact, tangency) = solved.primitives[1].1.endpoint_tangents().unwrap()[0];
+        assert!((contact[0] - new_end[0]).hypot(contact[1] - new_end[1]) < 1e-7);
+        assert!(tangency[1].abs() / tangency[0].hypot(tangency[1]) < 1e-8);
+        let solved = solved.clone();
+        click(&mut app, "OK");
+        click(&mut app, "Sketch1");
+        click(&mut app, "Utilities");
+        click(&mut app, "Properties");
+        assert_eq!(app.sketch_edit.as_ref().unwrap().recipe, solved);
+        Ok(())
+    }
+
+    #[test]
+    fn sketch_properties_cancels_then_replaces_under_the_same_identity() {
+        use newell_model::{Feature, sketch::SketchPrimitive};
+        let mut app = live_app();
+        let mut recipe = crate::sketch::empty_recipe(OriginPlane::XY);
+        recipe.primitives.push((
+            0,
+            SketchPrimitive::Line {
+                start: [0., 0.],
+                end: [1., 1.],
+            },
+        ));
+        let version = app.document.version();
+        app.document
+            .commit_sketch(version, None, None, recipe.clone())
+            .unwrap();
+        app.finish_shell_input(Update::default());
+        let id = app.document.document().features()[0].0;
+        assert_eq!(app.sketch_strokes().len(), 1);
+        let geometry_token = app.document.geometry_token();
+        click(&mut app, "■ Sketch1");
+        assert!(sketch_row(&app, "Sketch1").contains("□ Sketch1"));
+        assert!(app.sketch_strokes().is_empty());
+        assert_eq!(app.document.geometry_token(), geometry_token);
+        let original_version = app.document.version();
+        for cancel in [true, false] {
+            click(&mut app, "Sketch1");
+            assert!(
+                app.shell
+                    .as_ref()
+                    .unwrap()
+                    .shell()
+                    .focused_features_operation()
+                    .is_some()
+            );
+            assert_eq!(
+                app.projection_sync.acknowledged_version(),
+                Some(app.document.version())
+            );
+            click(&mut app, "Utilities");
+            assert!(
+                app.shell
+                    .as_ref()
+                    .unwrap()
+                    .shell()
+                    .focused_features_operation()
+                    .is_some()
+            );
+            click(&mut app, "Properties");
+            assert_eq!(app.sketch_strokes().len(), 1);
+            let edit = app.sketch_edit.as_mut().unwrap();
+            assert_eq!(edit.target, Some(id));
+            assert_eq!(edit.recipe, recipe);
+            edit.recipe.primitives[0].1 = SketchPrimitive::Line {
+                start: [0., 0.],
+                end: [2., 2.],
+            };
+            click(&mut app, if cancel { "Cancel" } else { "OK" });
+            assert_eq!(
+                app.document.revision(),
+                original_version.revision + u64::from(!cancel)
+            );
+            let features = app.document.document().features();
+            assert_eq!(features.len(), 1);
+            let (actual_id, feature) = &features[0];
+            let (name, actual) = match feature {
+                Feature::Sketch { name, recipe, .. } => Some((name, recipe)),
+                _ => None,
+            }
+            .expect("expected a Sketch");
+            assert_eq!(*actual_id, id);
+            assert_eq!(name, "Sketch1");
+            assert_eq!(*actual == recipe, cancel);
+            assert!(app.sketch_strokes().is_empty());
+        }
+        click(&mut app, "□ Sketch1");
+        assert!(sketch_row(&app, "Sketch1").contains("■ Sketch1"));
+        assert_eq!(app.sketch_strokes().len(), 1);
+        assert_eq!(app.document.geometry_token(), geometry_token);
+        click(&mut app, "Sketch1");
+        click(&mut app, "Utilities");
+        click(&mut app, "Properties");
+        assert_eq!(
+            app.sketch_strokes().len(),
+            1,
+            "editing replaces the saved strokes"
+        );
+        click(&mut app, "Cancel");
+    }
+
+    fn confirm_and_exit_sketch(app: &mut App, plane: OriginPlane) {
+        let before = app.document.version();
+        let camera = app.navigation.camera();
+        let menu = sketch_row(app, "File");
+        click(app, "OK");
+        assert_eq!(app.live_sketch().unwrap().mode, SketchMode::Active(plane));
+        assert!(
+            sketch_row(app, "Workbench")
+                .contains("Workbench │ Draw │ Curve │ Modify │ Pattern │ Reference │ Constraints")
+        );
+        assert_eq!(sketch_row(app, "File"), menu);
+        click(app, "Draw");
+        assert!(sketch_row(app, "╭─Draw").contains("╭─Draw───────────────╮"));
+        assert!(sketch_row(app, "[L]ine").contains("│ [L]ine             │"));
+        key(app, ShellKey::Escape);
+        assert!(app.live_sketch().is_some());
+        key(app, ShellKey::Escape);
+        assert!(app.live_sketch().is_none());
+        assert!(sketch_row(app, "Workbench").contains("Datum"));
+        assert_eq!(app.document.version(), before);
+        assert_eq!(app.navigation.camera(), camera);
+        assert!(app.document.document().features().is_empty());
+        assert!(app.selection.entities().is_empty());
+    }
+
+    #[test]
+    fn sketch_plane_first_uses_origin_selection_and_switches_command_bar_only_on_ok() {
+        let mut app = live_app();
+        sketch_viewport_click(&mut app, newell_ui::OriginReference::XY);
+        begin_sketch(&mut app);
+        assert!(sketch_row(&app, "Plane").contains("│ Plane   [XY            ]│"));
+        assert_eq!(OriginPlane::XY.basis(), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+        confirm_and_exit_sketch(&mut app, OriginPlane::XY);
+    }
+
+    #[test]
+    fn sketch_first_uses_origin_hit_and_rejects_point_and_axis() {
+        let mut app = live_app();
+        begin_sketch(&mut app);
+        assert!(sketch_row(&app, "Plane").contains("│ Plane   [Select…       ]│"));
+        for reference in [newell_ui::OriginReference::O, newell_ui::OriginReference::X] {
+            sketch_viewport_click(&mut app, reference);
+            assert_eq!(app.live_sketch().unwrap().mode, SketchMode::Setup(None));
+        }
+        assert!(!app.handle_sketch_intent(SketchIntent::Confirm).any());
+        sketch_viewport_click(&mut app, newell_ui::OriginReference::XZ);
+        assert!(sketch_row(&app, "Plane").contains("[XZ            ]"));
+        let field = app.shell.as_ref().unwrap().shell().interaction().focused;
+        key(&mut app, ShellKey::Enter);
+        assert!(app.active_selection.is_some());
+        key(&mut app, ShellKey::Escape);
+        assert_eq!(
+            app.shell.as_ref().unwrap().shell().interaction().focused,
+            field
+        );
+        assert_eq!(OriginPlane::XZ.basis(), [[1, 0, 0], [0, 0, 1], [0, -1, 0]]);
+        confirm_and_exit_sketch(&mut app, OriginPlane::XZ);
+    }
+
+    #[test]
+    fn sketch_field_first_replacement_and_cancel_share_one_draft() {
+        let mut app = live_app();
+        begin_sketch(&mut app);
+        click(&mut app, "[Select…");
+        let initial = app.active_selection.clone().unwrap();
+        assert!(
+            matches!(initial.destination, SelectionDestination::Field { field, .. }
+            if field.operation == ActionOperation::Sketch)
+        );
+        assert!(initial.applied.is_empty());
+        key(&mut app, ShellKey::Escape);
+        assert_eq!(app.live_sketch().unwrap().mode, SketchMode::Setup(None));
+        let field_focus = app.shell.as_ref().unwrap().shell().interaction().focused;
+        key(&mut app, ShellKey::Enter);
+        click(&mut app, "□ XY");
+        click(&mut app, "OK");
+        assert!(sketch_row(&app, "Plane").contains("[XY            ]"));
+        assert_eq!(
+            app.shell.as_ref().unwrap().shell().interaction().focused,
+            field_focus
+        );
+        click(&mut app, "[XY");
+        click(&mut app, "□ YZ");
+        key(&mut app, ShellKey::Escape);
+        assert!(sketch_row(&app, "Plane").contains("[XY            ]"));
+        key(&mut app, ShellKey::Enter);
+        click(&mut app, "□ YZ");
+        click(&mut app, "OK");
+        assert!(sketch_row(&app, "Plane").contains("[YZ            ]"));
+        assert!(app.origin_selection.is_empty());
+        assert_eq!(OriginPlane::YZ.basis(), [[0, 1, 0], [0, 0, 1], [1, 0, 0]]);
+        click(&mut app, "Cancel");
+        assert!(app.live_sketch().is_none());
+        assert!(sketch_row(&app, "Workbench").contains("Datum"));
+        begin_sketch(&mut app);
+        assert!(sketch_row(&app, "Plane").contains("Select…"));
+        click(&mut app, "Cancel");
+        assert!(app.live_sketch().is_none());
+
+        begin_sketch(&mut app);
+        click(&mut app, "[Select…");
+        let stale = newell_ui::SelectionCompletion {
+            session: initial.session,
+            document: initial.document,
+            destination: initial.destination,
+            outcome: SelectionOutcome::Confirmed(vec![initial.rows[0].entity]),
+        };
+        assert!(
+            !app.handle_selection_ui(SelectionUiRequest::Complete(stale))
+                .any()
+        );
+        click(&mut app, "□ YZ");
+        click(&mut app, "OK");
+        confirm_and_exit_sketch(&mut app, OriginPlane::YZ);
     }
 
     #[test]
@@ -5849,7 +8224,7 @@ mod numeric_binding_tests {
             key(a, ShellKey::Enter);
         }
     }
-    fn formula(a: &mut App, field: u32, source: &str) {
+    pub(super) fn formula(a: &mut App, field: u32, source: &str) {
         activate(a, field, 1);
         assert!(a.shell.as_ref().unwrap().shell().formula().is_open());
         key(a, ShellKey::Edit(EditKey::SelectAll));
@@ -5972,6 +8347,15 @@ mod numeric_binding_tests {
         edit(&mut a, 24, "2.4", false, true);
         activate(&mut a, 28, 0);
         super::real_extrude_tests::pump(&mut a, &wake).unwrap();
+        assert!(
+            matches!(
+                a.document.document().features().last(),
+                Some((_, Feature::Extrude(_)))
+            ),
+            "Extrude did not commit: {}; {:?}",
+            super::tests::sketch_row(&a, "Part Design"),
+            a.geometry_edit()
+        );
         let spec = committed(&a);
         assert!(spec.second_end.is_none());
         assert!(spec.end_offset.is_none());
@@ -6885,6 +9269,90 @@ mod real_extrude_tests {
         assert_eq!(app.document.document().features().len(), 1);
         Ok((app, wake))
     }
+
+    #[test]
+    fn generation_qualified_face_selection_is_independent_and_multiselects() -> TestResult {
+        let (mut app, _wake) = runtime_app()?;
+        let feature = app.document.document().features()[0].0;
+        let entity = app.document.document().feature(feature).unwrap().outputs()[0];
+        let geometry = app
+            .document
+            .document()
+            .entity_geometry(entity)
+            .unwrap()
+            .clone();
+        let point = app.navigation.camera().project([0.5, 0.5, 0.5]).unwrap();
+        let hit = app.navigation.pick(point).ok_or("viewport face pick")?;
+        let binding = app
+            .scene_bindings
+            .iter()
+            .find(|binding| {
+                usize::try_from(binding.range.face_start).is_ok_and(|start| hit.face_index >= start)
+                    && usize::try_from(binding.range.face_end).is_ok_and(|end| hit.face_index < end)
+            })
+            .ok_or("face scene binding")?;
+        let crate::geometry_worker::SceneItemBinding::Committed {
+            entity: hit_entity,
+            generation,
+        } = binding.binding
+        else {
+            return Err("committed face binding".into());
+        };
+        assert_eq!(hit_entity, entity);
+        let first = newell_model::geometry::FaceRef {
+            entity,
+            generation,
+            face: u32::try_from(hit.face_index - binding.range.face_start as usize)?,
+        };
+        let second = newell_model::geometry::FaceRef {
+            entity,
+            generation: geometry.generation,
+            face: geometry
+                .faces
+                .iter()
+                .find(|face| face.face != first.face)
+                .ok_or("second face")?
+                .face,
+        };
+
+        assert!(app.navigation.begin_primary_orbit(point, 1.0, true));
+        app.pending_scene_click = Some(PendingSceneClick {
+            document: app.document.identity(),
+            generation: app.shell.as_ref().unwrap().generation(),
+            mesh_revision: app.navigation.scene().revision(),
+            edit: SelectionEdit::Replace,
+        });
+        let certificate = app.navigation.finish_primary(point);
+        let update = app.finish_scene_selection(point, certificate);
+        app.apply(update);
+        assert_eq!(app.selection.entities(), &[entity]);
+        assert_eq!(app.face_selection, [first]);
+        app.handle_face_selection_request(entity, second, SelectionOp::Add);
+        assert_eq!(app.selection.entities(), &[entity]);
+        assert_eq!(app.face_selection, [first, second]);
+
+        // The linked tree row selects the entity as a whole and clears the
+        // subshape override; it does not leave a stale face accent behind.
+        app.handle_selection_request(SelectionRequest {
+            document: app.document.identity(),
+            op: SelectionOp::Replace,
+            entities: vec![entity],
+        });
+        assert!(app.face_selection.is_empty());
+        assert_eq!(app.selection.entities(), &[entity]);
+
+        app.handle_face_selection_request(entity, first, SelectionOp::Replace);
+        let stale = newell_model::geometry::FaceRef {
+            generation: newell_model::geometry::GeometryGeneration(
+                first.generation.0.saturating_add(1),
+            ),
+            ..first
+        };
+        app.handle_face_selection_request(entity, stale, SelectionOp::Add);
+        assert_eq!(app.face_selection, [first]);
+        Ok(())
+    }
+
     #[test]
     fn entity_visibility_republishes_only_the_stable_entity_after_rename() -> TestResult {
         let (mut app, wake) = runtime_app()?;

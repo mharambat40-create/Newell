@@ -25,6 +25,7 @@ pub(super) const ACT_VIEW_THEME: u32 = 223;
 pub(super) const ACT_VIEW_COLOR: u32 = 224;
 pub(super) const ACT_VIEW_NAVIGATOR_KIND: u32 = 225;
 pub(super) const ACT_VIEW_FULLSCREEN: u32 = 222;
+pub(super) const ACT_SKETCH: u32 = 290;
 pub(super) const ACT_EXTRUDE: u32 = 300;
 pub(super) const ACT_REVOLVE: u32 = 301;
 pub(super) const ACT_LOFT: u32 = 302;
@@ -110,7 +111,7 @@ const WORKBENCH: [MenuEntry<'static>; 9] = [
 ];
 // Commands remain UI-only mocks except the existing Action Box dispatch.
 const DATUM: [MenuEntry<'static>; 4] = [
-    item(290, "[S]ketch", "S"),
+    item(ACT_SKETCH, "[S]ketch", "S"),
     item(340, "[Pl]ane", "Pl"),
     item(341, "[A]xis", "A"),
     item(342, "[P]oint", "P"),
@@ -178,6 +179,110 @@ pub(super) static COMMAND_MENUS: [MenuDef<'static>; 7] = [
     menu("Modify", "", &MODIFY),
     menu("Pattern", "", &PATTERN),
     menu("Utilities", "", &UTILITIES),
+];
+
+const SKETCH_DRAW: [MenuEntry<'static>; 13] = [
+    item(crate::sketch::LINE_ACTION, "[L]ine", "L"),
+    item(crate::DrawTool::Point.action(), "[P]oint", "P"),
+    item(crate::DrawTool::Polygon.action(), "Polygon", ""),
+    item(crate::DrawTool::Slot.action(), "Slot", ""),
+    item(crate::DrawTool::Text.action(), "Text", ""),
+    MenuEntry::Separator,
+    item(crate::sketch::RECTANGLE_ACTION, "[R]ectangle", "R"),
+    item(
+        crate::DrawTool::CenterRectangle.action(),
+        "Center Rectangle",
+        "",
+    ),
+    item(
+        crate::DrawTool::OrientedRectangle.action(),
+        "3-Points Rectangle",
+        "",
+    ),
+    MenuEntry::Separator,
+    item(crate::DrawTool::Circle.action(), "[C]ircle", "C"),
+    item(crate::DrawTool::Circumcircle.action(), "3-Pts Circle", ""),
+    item(crate::DrawTool::Ellipse.action(), "Ellipse", ""),
+];
+const SKETCH_CURVE: [MenuEntry<'static>; 9] = [
+    item(crate::DrawTool::ThreePointArc.action(), "3 Points Arc", ""),
+    item(crate::DrawTool::TangentArc.action(), "Tangent Arc", ""),
+    item(crate::DrawTool::CenterArc.action(), "Center Point Arc", ""),
+    item(
+        crate::DrawTool::EllipticalArc.action(),
+        "Elliptical Arc",
+        "",
+    ),
+    item(crate::DrawTool::Conic.action(), "Conic", ""),
+    MenuEntry::Separator,
+    item(crate::DrawTool::Spline.action(), "Spline", ""),
+    item(crate::DrawTool::Bezier.action(), "Bezier", ""),
+    item(
+        crate::DrawTool::AddControlPoints.action(),
+        "Add Control Points",
+        "",
+    ),
+];
+const SKETCH_MODIFY: [MenuEntry<'static>; 7] = [
+    item(crate::DrawTool::Fillet.action(), "Fillet", ""),
+    item(crate::DrawTool::Chamfer.action(), "Chamfer", ""),
+    MenuEntry::Separator,
+    item(crate::DrawTool::Trim.action(), "Trim", ""),
+    item(crate::DrawTool::Extend.action(), "Extend", ""),
+    item(crate::DrawTool::Split.action(), "Split", ""),
+    item(crate::DrawTool::Offset.action(), "Offset", ""),
+];
+const SKETCH_PATTERN: [MenuEntry<'static>; 5] = [
+    item(crate::DrawTool::Mirror.action(), "Mirror", ""),
+    item(
+        crate::DrawTool::LinearPattern.action(),
+        "Linear Pattern",
+        "",
+    ),
+    item(
+        crate::DrawTool::CircularPattern.action(),
+        "Circular Pattern",
+        "",
+    ),
+    MenuEntry::Separator,
+    item(crate::DrawTool::Transform.action(), "Transform", ""),
+];
+const SKETCH_REFERENCE: [MenuEntry<'static>; 3] = [
+    item(crate::DrawTool::Projected.action(), "Projected", ""),
+    item(crate::DrawTool::Intersect.action(), "Intersect", ""),
+    item(crate::DrawTool::Insert.action(), "Insert", ""),
+];
+const SKETCH_CONSTRAINTS: [MenuEntry<'static>; 21] = [
+    item(crate::DrawTool::DrivingLength.action(), "[D]imension", "D"),
+    item(crate::DrawTool::DrivenLength.action(), "Driven Length", ""),
+    MenuEntry::Separator,
+    item(crate::DrawTool::Horizontal.action(), "[H]orizontal", "H"),
+    item(crate::DrawTool::Vertical.action(), "[V]ertical", "V"),
+    item(0, "Parallel", ""),
+    item(0, "Perpendicular", ""),
+    item(0, "Collinear", ""),
+    item(0, "Normal", ""),
+    MenuEntry::Separator,
+    item(0, "Coincident", ""),
+    item(0, "Point on Curve", ""),
+    item(0, "Concentric", ""),
+    item(0, "[M]idpoint", "M"),
+    item(0, "[T]angent", "T"),
+    item(0, "Curvature", ""),
+    MenuEntry::Separator,
+    item(0, "[E]qual", "E"),
+    item(0, "[S]ymmetric", "S"),
+    item(0, "[F]ix", "F"),
+    item(0, "Rigid Group", ""),
+];
+pub(super) static SKETCH_MENUS: [MenuDef<'static>; 7] = [
+    menu("Workbench", "", &WORKBENCH),
+    menu("Draw", "", &SKETCH_DRAW),
+    menu("Curve", "", &SKETCH_CURVE),
+    menu("Modify", "", &SKETCH_MODIFY),
+    menu("Pattern", "", &SKETCH_PATTERN),
+    menu("Reference", "", &SKETCH_REFERENCE),
+    menu("Constraints", "", &SKETCH_CONSTRAINTS),
 ];
 
 pub(super) const PROJECTION: [&str; 2] = ["Perspective", "Orthographic"];

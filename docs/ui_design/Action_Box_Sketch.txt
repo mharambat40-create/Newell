@@ -1,4 +1,5 @@
 "Sketch Action Box"
+Setup, unassigned. OK is disabled. The Command Bar remains normal.
 ╭─Sketch──────────────────╮
 │ Plane   [Select…       ]│
 │─────────────────────────│
@@ -15,3 +16,44 @@
 │─────────────────────────│
 │     OK     │   Cancel   │
 ╰─────────────────────────╯
+
+Setup, assigned (example). The Plane field can be reopened. OK enters Sketch mode.
+╭─Sketch──────────────────╮
+│ Plane   [XY            ]│
+│─────────────────────────│
+│ □ Construction          │
+│ □ Slice                 │
+│─────────────────────────│
+│ □ Sketch Grid           │
+│ □ Profile               │
+│ □ Point                 │
+│ □ Dimension             │
+│ □ Constraints           │
+│ □ Projected Geometries  │
+│ □ Construction          │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+
+Only Plane, OK and Cancel are active during setup.
+See README_UI.md section 29.2 for the picker and both cancellation paths.
+
+Editing (example with the grid enabled and a ready draft).
+╭─Sketch──────────────────╮
+│ Plane   [XY            ]│
+│─────────────────────────│
+│ □ Construction          │
+│ □ Slice                 │
+│─────────────────────────│
+│ ■ Sketch Grid           │
+│ □ Profile               │
+│ □ Point                 │
+│ □ Dimension             │
+│ □ Constraints           │
+│ □ Projected Geometries  │
+│ □ Construction          │
+│─────────────────────────│
+│     OK     │   Cancel   │
+╰─────────────────────────╯
+Plane is fixed. Sketch Grid mirrors View > Grid Overlay.
+OK saves a ready draft. Cancel discards it. See README_UI.md section 42.
